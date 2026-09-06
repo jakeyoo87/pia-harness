@@ -18,8 +18,8 @@ after review; the plan is not merged separately.
 - Usable input budget is context limit minus the 4,096-token response limit.
 - Turn count never triggers compaction.
 - Recent raw turns are protected by a token budget, not by a fixed number of turns.
-- The rolling summary is used only by the same session, replaced by the next compaction, and excluded
-  immediately after reset.
+- The rolling summary is used only by the same session, replaced by the next compaction, and deleted
+  after reset or account closure.
 - Explicit long-term memory remains a separate later feature.
 - Covered raw turns are deleted after the replacement summary is stored successfully.
 - Compaction and its storage live in pia-harness. Actual AWS resources, IAM, environment wiring, and
@@ -60,14 +60,10 @@ provider adapter hierarchy, or model metadata service in this branch.
 For a 256K context and 4K response limit, the trigger is about 227K prompt tokens. Exact values use
 the integer context limit supplied for the selected model.
 
-Compaction has two invocation points:
-
-1. Normal path: after an assistant response is delivered, use its total_tokens and compact immediately
-   when the threshold is reached. The user has already received the response, so the current reply is
-   not delayed.
-2. Preflight path: before a request, compact only when the last exact usage plus conservatively
-   estimated new context would exceed the usable input budget. This handles an unusually large new
-   message without sending an oversized request.
+After an assistant response is delivered, use its total_tokens and compact immediately when the
+threshold is reached. The user has already received the response, so the current reply is not delayed.
+Preflight compaction is deferred until a future input channel can submit documents or another payload
+large enough to exceed the remaining headroom.
 
 There is no scheduler or background worker. The caller invokes the compactor in the existing turn
 lifecycle and serializes work for one user/session.
@@ -77,6 +73,7 @@ lifecycle and serializes work for one user/session.
 Selection operates on whole completed turns. A user message and assistant response are never split.
 
 - Start from the newest turn and retain complete turns within 12.5% of the model context limit.
+- Always retain the newest completed turn verbatim, even when it alone exceeds the tail budget.
 - Everything older than that protected tail is eligible source material.
 - The existing rolling summary, if any, is included with the newly covered turns.
 - If there is no eligible old material, do not compact.
@@ -133,9 +130,13 @@ through_turn_id is the newest covered turn represented by summary_text. No summa
 copy, version table, S3 archive, or audit item is stored.
 
 The existing delete_all_for_user operation already deletes the summary because it deletes the entire
-user partition. Reset atomically changes the active session ID and deletes the previous session's
-summary in the same DynamoDB transaction. This directly implements the product decision that a
-summary lasts only until reset; it is not a general transaction or recovery framework.
+user partition. Reset keeps the existing conditional pointer update and then deletes the previous
+session's summary. Once the pointer moves, the old summary is unreachable even if that cleanup fails;
+account deletion still removes every item in the partition.
+
+An active session summary has no TTL. It remains available even when all raw turns have expired, so a
+user returning after a long break keeps the compacted context. It is removed by reset or account
+closure, not by speculative inactivity detection.
 
 ## Commit sequence
 
@@ -159,7 +160,9 @@ fourteen-day TTL. No outbox, worker, recovery ledger, or generalized retry frame
 - should_compact using provider usage when available and estimation otherwise.
 - compact_session using one summarize callable and one token-estimator callable.
 - DynamoDB methods to read and conditionally replace a session summary.
-- DynamoDB methods to read turns after a summary boundary and delete covered turns.
+- One boundary-aware load_context method that returns the summary and only turns after its boundary;
+  it replaces list_turns as the public context-read path.
+- DynamoDB methods to delete covered turns.
 
 No abstract repository, model gateway, tokenizer registry, plugin, hook system, or in-memory storage
 implementation is introduced.
@@ -172,8 +175,6 @@ implementation is introduced.
 - Conditional summary write loses: preserve raw turns and return a non-fatal stale result.
 - Raw deletion fails: keep the committed summary boundary so duplicate context is not returned; let
   remaining raw rows expire by TTL and report the cleanup failure to the caller.
-- Hard input limit would be exceeded and preflight compaction fails: do not truncate silently; return an
-  explicit failure for the caller to render as a temporary service error.
 
 Compaction is never exposed as a Telegram command or user-facing concept.
 
@@ -220,8 +221,7 @@ suite, repeated stress loop, or provider mock framework is required.
 Please identify only concrete blockers or material design defects:
 
 1. Does the 90% usable-input trigger leave a real 4K response budget for 256K-or-larger models?
-2. Will post-response compaction normally avoid visible user latency, with preflight reserved for hard
-   capacity risk?
+2. Will post-response compaction normally avoid visible latency for the user who triggered it?
 3. Can provider usage and a conservative estimator coexist without pretending estimates are exact?
 4. Does the summary boundary prevent both raw-data loss and duplicate context?
 5. Is one summary item per session sufficient for repeated compaction and reset?
@@ -322,3 +322,15 @@ Apply corrections 1, 2 and 3 to the plan text before writing code, and record th
 Remove the transaction sentence from the DynamoDB representation section per item 4. Decide item 5 and
 say which way you went. None of this changes the architecture; if all five are handled, the plan is
 ready to implement as written.
+
+## Owner decisions after review
+
+1. The newest completed turn is always retained verbatim.
+2. A summary stays untimed for the active session, even when raw turns expire, because preserving
+   context after a long break is a primary user experience requirement. Reset and account closure
+   remove it.
+3. load_context is the only public context-read API and replaces list_turns.
+4. Reset uses the existing conditional pointer update followed by summary deletion; no DynamoDB
+   transaction is added.
+5. Preflight compaction is excluded until a future channel can submit large documents. Telegram-only
+   input cannot consume the headroom left by the 90% trigger.

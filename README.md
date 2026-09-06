@@ -15,6 +15,21 @@ deliberately added as separate features.
 
 See [the feature plan](plans/conversation-session-core.md) for the exact contracts.
 
+## Token-based compaction
+
+- Triggers after a response at 90% of the model's usable input budget
+- Reserves the configured 4,096-token response limit before calculating the trigger
+- Prefers provider total-token usage and uses conservative estimation as a fallback
+- Keeps the newest turn and a token-budgeted recent tail verbatim
+- Stores one rolling summary per session before deleting covered raw turns
+- Loads context through one boundary-aware path to prevent summary/turn duplication
+- Removes the session summary on reset and all data on account closure
+
+Model network integration is intentionally separate. The compactor accepts one summary callable;
+OpenRouter and Nemotron will be connected in a later feature.
+
+See [the compaction plan](plans/token-compaction.md) for the exact contracts.
+
 ## Local verification
 
 Start DynamoDB Local, install the package, and run:

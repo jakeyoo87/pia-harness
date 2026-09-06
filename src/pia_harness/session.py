@@ -36,3 +36,20 @@ class CompletedTurn:
     assistant_message: str
     created_at: datetime
     expires_at: int
+
+
+@dataclass(frozen=True, slots=True)
+class RollingSummary:
+    user_key: str
+    session_id: str
+    summary_text: str
+    through_turn_id: str
+    summary_tokens: int
+    model_id: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationContext:
+    summary: RollingSummary | None
+    turns: tuple[CompletedTurn, ...]

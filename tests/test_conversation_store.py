@@ -80,16 +80,16 @@ class DynamoDBConversationStoreTest(unittest.TestCase):
         self.assertEqual(
             1,
             len(
-                self.store.list_turns(
+                self.store.load_context(
                     user_key="member-a", session_id=first.session_id, now=self.now
-                )
+                ).turns
             ),
         )
         self.assertEqual(
-            [],
-            self.store.list_turns(
+            (),
+            self.store.load_context(
                 user_key="member-b", session_id=second.session_id, now=self.now
-            ),
+            ).turns,
         )
 
     def test_concurrent_get_or_create_returns_one_session(self) -> None:
@@ -126,9 +126,9 @@ class DynamoDBConversationStoreTest(unittest.TestCase):
             sorted([earlier.turn_id, same_time.turn_id]) + [later.turn_id],
             [
                 turn.turn_id
-                for turn in self.store.list_turns(
+                for turn in self.store.load_context(
                     user_key="member-order", session_id=session.session_id, now=self.now
-                )
+                ).turns
             ],
         )
 
@@ -150,10 +150,10 @@ class DynamoDBConversationStoreTest(unittest.TestCase):
             created_at=self.now - timedelta(days=15),
         )
         self.assertEqual(
-            [],
-            self.store.list_turns(
+            (),
+            self.store.load_context(
                 user_key="member-expired", session_id=session.session_id, now=self.now
-            ),
+            ).turns,
         )
 
     def test_reset_moves_only_the_active_pointer(self) -> None:
@@ -167,10 +167,10 @@ class DynamoDBConversationStoreTest(unittest.TestCase):
 
         self.assertNotEqual(current.session_id, replacement.session_id)
         self.assertEqual(
-            [],
-            self.store.list_turns(
+            (),
+            self.store.load_context(
                 user_key="member-reset", session_id=replacement.session_id, now=self.now
-            ),
+            ).turns,
         )
         self.assertEqual(
             replacement,
@@ -194,9 +194,9 @@ class DynamoDBConversationStoreTest(unittest.TestCase):
         self.assertEqual(
             1,
             len(
-                self.store.list_turns(
+                self.store.load_context(
                     user_key="member-keep", session_id=other.session_id, now=self.now
-                )
+                ).turns
             ),
         )
         recreated = self.store.get_or_create_active_session("member-delete", now=self.now)
@@ -217,10 +217,10 @@ class DynamoDBConversationStoreTest(unittest.TestCase):
                 created_at=self.now,
             )
         self.assertEqual(
-            [],
-            store.list_turns(
+            (),
+            store.load_context(
                 user_key="member-large", session_id=session.session_id, now=self.now
-            ),
+            ).turns,
         )
 if __name__ == "__main__":
     unittest.main()

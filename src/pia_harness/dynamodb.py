@@ -7,7 +7,14 @@ from uuid import uuid4
 
 from botocore.exceptions import ClientError
 
-from .session import ActiveSession, CompletedTurn, as_utc, utc_text
+from .session import (
+    ActiveSession,
+    CompletedTurn,
+    ConversationContext,
+    RollingSummary,
+    as_utc,
+    utc_text,
+)
 
 
 _ACTIVE_SESSION_SK = "ACTIVE_SESSION"
@@ -139,16 +146,103 @@ class DynamoDBConversationStore:
                 return turn
             raise TurnConflictError("turn_id already exists with different content") from error
 
-    def list_turns(
+    def load_context(
         self,
         *,
         user_key: str,
         session_id: str,
         now: datetime | None = None,
-    ) -> list[CompletedTurn]:
+    ) -> ConversationContext:
         user_key = _user_key(user_key)
         session_id = _required("session_id", session_id)
         now_epoch = int(as_utc(now or datetime.now(UTC)).timestamp())
+        summary = self.get_summary(user_key=user_key, session_id=session_id)
+        items = self._query_turn_items(user_key, session_id)
+        turns = tuple(
+            _turn_from_item(item)
+            for item in items
+            if int(item["expires_at"]["N"]) > now_epoch
+            and (
+                summary is None
+                or item["turn_id"]["S"] > summary.through_turn_id
+            )
+        )
+        return ConversationContext(summary=summary, turns=turns)
+
+    def get_summary(
+        self, *, user_key: str, session_id: str
+    ) -> RollingSummary | None:
+        user_key = _user_key(user_key)
+        session_id = _required("session_id", session_id)
+        response = self._client.get_item(
+            TableName=self._table_name,
+            Key={
+                "pk": {"S": _pk(user_key)},
+                "sk": {"S": _summary_sk(session_id)},
+            },
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        return None if item is None else _summary_from_item(item)
+
+    def replace_summary(
+        self,
+        summary: RollingSummary,
+        *,
+        expected_through_turn_id: str | None,
+    ) -> bool:
+        _user_key(summary.user_key)
+        _required("session_id", summary.session_id)
+        _required("summary_text", summary.summary_text)
+        _required("model_id", summary.model_id)
+        if not _TURN_ID.fullmatch(summary.through_turn_id):
+            raise ValueError("through_turn_id must be created by new_turn_id")
+        if summary.summary_tokens <= 0:
+            raise ValueError("summary_tokens must be positive")
+
+        condition = "attribute_not_exists(pk) AND attribute_not_exists(sk)"
+        values: dict[str, dict[str, str]] | None = None
+        if expected_through_turn_id is not None:
+            if not _TURN_ID.fullmatch(expected_through_turn_id):
+                raise ValueError("expected_through_turn_id must be a turn ID")
+            condition = "through_turn_id = :expected"
+            values = {":expected": {"S": expected_through_turn_id}}
+
+        request: dict[str, Any] = {
+            "TableName": self._table_name,
+            "Item": _summary_item(summary),
+            "ConditionExpression": condition,
+        }
+        if values is not None:
+            request["ExpressionAttributeValues"] = values
+        try:
+            self._client.put_item(**request)
+            return True
+        except ClientError as error:
+            if _is_conditional_failure(error):
+                return False
+            raise
+
+    def delete_turns_through(
+        self, *, user_key: str, session_id: str, through_turn_id: str
+    ) -> int:
+        user_key = _user_key(user_key)
+        session_id = _required("session_id", session_id)
+        if not _TURN_ID.fullmatch(through_turn_id):
+            raise ValueError("through_turn_id must be a turn ID")
+        items = self._query_turn_items(user_key, session_id)
+        keys = [
+            {"pk": item["pk"], "sk": item["sk"]}
+            for item in items
+            if item["turn_id"]["S"] <= through_turn_id
+        ]
+        for key in keys:
+            self._client.delete_item(TableName=self._table_name, Key=key)
+        return len(keys)
+
+    def _query_turn_items(
+        self, user_key: str, session_id: str
+    ) -> list[dict[str, dict[str, str]]]:
         request: dict[str, Any] = {
             "TableName": self._table_name,
             "KeyConditionExpression": "pk = :pk AND begins_with(sk, :prefix)",
@@ -166,12 +260,7 @@ class DynamoDBConversationStore:
             if not last_key:
                 break
             request["ExclusiveStartKey"] = last_key
-
-        return [
-            _turn_from_item(item)
-            for item in items
-            if int(item["expires_at"]["N"]) > now_epoch
-        ]
+        return items
 
     def reset_active_session(
         self,
@@ -197,6 +286,13 @@ class DynamoDBConversationStore:
                     ":new_id": {"S": session.session_id},
                     ":created_at": {"S": utc_text(created_at)},
                     ":expected_id": {"S": expected_session_id},
+                },
+            )
+            self._client.delete_item(
+                TableName=self._table_name,
+                Key={
+                    "pk": {"S": _pk(user_key)},
+                    "sk": {"S": _summary_sk(expected_session_id)},
                 },
             )
             return session
@@ -260,6 +356,10 @@ def _turn_sk(session_id: str, turn_id: str) -> str:
     return f"{_turn_prefix(session_id)}{turn_id}"
 
 
+def _summary_sk(session_id: str) -> str:
+    return f"SUMMARY#{session_id}"
+
+
 def _turn_item(turn: CompletedTurn) -> dict[str, dict[str, str]]:
     return {
         "pk": {"S": _pk(turn.user_key)},
@@ -284,6 +384,33 @@ def _turn_from_item(item: dict[str, dict[str, str]]) -> CompletedTurn:
             item["created_at"]["S"], "%Y-%m-%dT%H:%M:%S.%fZ"
         ).replace(tzinfo=UTC),
         expires_at=int(item["expires_at"]["N"]),
+    )
+
+
+def _summary_item(summary: RollingSummary) -> dict[str, dict[str, str]]:
+    return {
+        "pk": {"S": _pk(summary.user_key)},
+        "sk": {"S": _summary_sk(summary.session_id)},
+        "session_id": {"S": summary.session_id},
+        "summary_text": {"S": summary.summary_text},
+        "through_turn_id": {"S": summary.through_turn_id},
+        "summary_tokens": {"N": str(summary.summary_tokens)},
+        "model_id": {"S": summary.model_id},
+        "updated_at": {"S": utc_text(summary.updated_at)},
+    }
+
+
+def _summary_from_item(item: dict[str, dict[str, str]]) -> RollingSummary:
+    return RollingSummary(
+        user_key=item["pk"]["S"].removeprefix("USER#"),
+        session_id=item["session_id"]["S"],
+        summary_text=item["summary_text"]["S"],
+        through_turn_id=item["through_turn_id"]["S"],
+        summary_tokens=int(item["summary_tokens"]["N"]),
+        model_id=item["model_id"]["S"],
+        updated_at=datetime.strptime(
+            item["updated_at"]["S"], "%Y-%m-%dT%H:%M:%S.%fZ"
+        ).replace(tzinfo=UTC),
     )
 
 
