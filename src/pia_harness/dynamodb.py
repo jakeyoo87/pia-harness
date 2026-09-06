@@ -63,7 +63,6 @@ class DynamoDBConversationStore:
         item = {
             "pk": {"S": _pk(user_key)},
             "sk": {"S": _ACTIVE_SESSION_SK},
-            "entity": {"S": "active_session"},
             "session_id": {"S": session.session_id},
             "created_at": {"S": utc_text(session.created_at)},
         }
@@ -265,7 +264,6 @@ def _turn_item(turn: CompletedTurn) -> dict[str, dict[str, str]]:
     return {
         "pk": {"S": _pk(turn.user_key)},
         "sk": {"S": _turn_sk(turn.session_id, turn.turn_id)},
-        "entity": {"S": "turn"},
         "session_id": {"S": turn.session_id},
         "turn_id": {"S": turn.turn_id},
         "user_message": {"S": turn.user_message},

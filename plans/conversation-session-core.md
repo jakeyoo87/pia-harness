@@ -102,7 +102,7 @@ The first feature supports only:
 
 1. Get or create the active session for a user: one GetItem on the pointer, then a conditional
    create when it is absent.
-2. Append a completed turn to that user's active session: one conditional Put.
+2. Append a completed turn to the user and session supplied by the caller: one conditional Put.
 3. Query recent unexpired turns for that user's session in chronological order: one Query on the
    turn key prefix.
 4. Reset: one conditional write that moves the pointer to a new session ID.
@@ -136,8 +136,8 @@ remains. It does not add a worker, outbox, deletion state machine, or recovery l
 
 The caller appends a turn only after the assistant response has been successfully delivered. The harness does not decide whether delivery succeeded.
 
-An append retry for the same user, session and turn ID must not create a duplicate turn. Conflicting
-reuse of a turn ID must fail rather than overwrite different content. Both follow
+An append retry for the same user, session, turn ID and created_at must not create a duplicate turn.
+Conflicting reuse of a turn ID must fail rather than overwrite different content. Both follow
 from a conditional Put that requires the item to be absent, followed by a content comparison when
 the condition fails.
 
