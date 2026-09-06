@@ -56,7 +56,7 @@ Partition boundary:
 
 - PK: opaque user key
 - SK for the active session pointer: a single fixed value per user, holding the current session ID
-- SK for turns: session, session ID, created_at, and turn ID
+- SK for turns: session, session ID, and a lexically sortable turn ID
 
 The dedicated table name separates environments. A namespace parameter is intentionally omitted;
 no current consumer needs several logical applications inside one table.
@@ -85,12 +85,10 @@ carries no TTL, and updated_at is not written per turn because nothing reads it.
 - created_at
 - expires_at
 
-Turn identifiers are unique within a user's session. Message content is treated as opaque text.
-
-created_at is supplied by the caller together with the turn, not generated inside the repository.
-A retry must present the same created_at, because it is part of the item key; a repository-generated
-timestamp would place a retry at a different key and defeat the append guarantee below. expires_at
-is derived from created_at and the retention setting, so a retry produces an identical item.
+Turn identifiers are generated once when the caller accepts a user message and are unique within a
+user's session. They contain a fixed-width UTC timestamp followed by random entropy, so their lexical
+order is chronological and the same ID addresses the same item on every retry. created_at is supplied
+with the turn as a regular attribute and expires_at is derived from it and the retention setting.
 
 Timestamps are stored in UTC with a fixed-width format, so lexical sort order equals chronological
 order. expires_at is stored as epoch seconds in a Number attribute, which is the only form the
@@ -117,8 +115,8 @@ Each completed turn receives an expires_at value calculated from the configurabl
 
 DynamoDB TTL performs physical deletion asynchronously. Reads must therefore exclude expired turns even when DynamoDB has not removed them yet.
 
-Reads that apply a limit must filter expired turns first and then take the limit. A DynamoDB
-Limit is applied before any filter, so combining the two returns fewer turns than requested.
+The first API returns all unexpired turns in the active session and follows DynamoDB pagination. It
+does not add a turn-count limit; future context selection will use a token budget.
 
 The pointer must never carry a TTL. Turns expire while the pointer stays, which is intended: a user
 returning after the retention window keeps the same session with no turns.
@@ -134,8 +132,8 @@ remains. It does not add a worker, outbox, deletion state machine, or recovery l
 
 The caller appends a turn only after the assistant response has been successfully delivered. The harness does not decide whether delivery succeeded.
 
-An append retry for the same user, session, turn ID and created_at must not create a duplicate
-turn. Conflicting reuse of a turn ID must fail rather than overwrite different content. Both follow
+An append retry for the same user, session and turn ID must not create a duplicate turn. Conflicting
+reuse of a turn ID must fail rather than overwrite different content. Both follow
 from a conditional Put that requires the item to be absent, followed by a content comparison when
 the condition fails.
 
@@ -211,6 +209,10 @@ The append guarantee did not hold. The turn sort key contains a timestamp, but t
 said who produces created_at. A repository-generated timestamp puts a retry at a different key, so
 the conditional write never fires, and both the idempotent-replay rule and the conflicting-turn-ID
 rule fail. created_at is now caller-supplied and part of the retry contract.
+
+The owner follow-up after this review removed created_at from the key entirely. A fixed-width,
+time-sortable turn ID is now generated once when the message is accepted and reused for persistence
+retries, so turn-ID uniqueness and chronological Query order use the same key.
 
 The active session was not unique. Session rows keyed by session ID force get-or-create to read every
 session the user ever had and filter by status, which lets two concurrent calls create two active
