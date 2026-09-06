@@ -89,6 +89,8 @@ Turn identifiers are generated once when the caller accepts a user message and a
 user's session. They contain a fixed-width UTC timestamp followed by random entropy, so their lexical
 order is chronological and the same ID addresses the same item on every retry. created_at is supplied
 with the turn as a regular attribute and expires_at is derived from it and the retention setting.
+A retry presents the same created_at as the original call, because the turn ID encodes that timestamp
+and the store rejects a turn ID whose timestamp does not match.
 
 Timestamps are stored in UTC with a fixed-width format, so lexical sort order equals chronological
 order. expires_at is stored as epoch seconds in a Number attribute, which is the only form the
@@ -115,8 +117,10 @@ Each completed turn receives an expires_at value calculated from the configurabl
 
 DynamoDB TTL performs physical deletion asynchronously. Reads must therefore exclude expired turns even when DynamoDB has not removed them yet.
 
-The first API returns all unexpired turns in the active session and follows DynamoDB pagination. It
-does not add a turn-count limit; future context selection will use a token budget.
+The first API returns all unexpired turns of the session it is given and follows DynamoDB
+pagination. It does not add a turn-count limit; future context selection will use a token budget.
+The caller passes the active session; the store does not refuse a session the caller kept from
+before a reset.
 
 The pointer must never carry a TTL. Turns expire while the pointer stays, which is intended: a user
 returning after the retention window keeps the same session with no turns.
@@ -242,3 +246,50 @@ turns expire in fourteen days, so adding fields later needs no migration.
 4. The implementation must include the core capabilities above without speculative prevention layers.
    In particular, do not add generalized retries, locks, outboxes, workers, recovery ledgers, unused
    provider abstractions, or future migrations.
+
+## Review record: 2026-09-06, Claude, implementation commit 3071196
+
+Implementation review against this plan. Nothing was implemented by the reviewer and nothing was
+merged. Verdict: no blocker, the branch may be merged to main.
+
+Verified by running, not only by reading. The eight tests pass against DynamoDB Local through the
+command in the README, ruff reports no unused imports or definitions, cfn-lint passes on the table
+template, and the source contains no Scan call.
+
+Pagination was checked by forcing a real page boundary rather than trusting the loop. Eight turns of
+roughly 180 KB in one partition made a single raw Query return seven of nine items; list_turns still
+returned all eight turns in order, delete_all_for_user removed all nine items including the pointer,
+a second deletion returned zero, and another user's data was untouched.
+
+Append idempotency is pinned: replacing the stored-content comparison with an unconditional success
+fails a test. Turn ordering, expiry filtering, reset with its compare-and-set conflict, per-user
+deletion and the size limit each have one test and no duplicates.
+
+The three corrections from the plan review are present. The turn size limit is configurable, deletion
+uses individual deletes so unprocessed batch items cannot silently leave data behind, and a
+get-or-create that loses the race re-reads and returns the winner, with a concurrent test.
+
+No speculative structure was added. There is no repository interface, provider abstraction, in-memory
+fake, retry layer, lock, outbox, worker or migration. Removing created_at from the key in favour of
+one time-sortable turn ID is simpler than the reviewer's own earlier correction and keeps the same
+guarantee.
+
+## Instructions for Codex
+
+None of these block the merge. Do them in this order.
+
+1. Add one test for pagination. Both pagination loops can be deleted today with all eight tests still
+   passing, so nothing pins them. Write about 1.5 MB into one partition, then assert that list_turns
+   returns every turn and that delete_all_for_user empties the partition. The deletion half matters
+   most: it backs a deletion promise made to members.
+2. Before adding CI, make skipped tests fail the run. With no endpoint set, seven of eight tests skip
+   and the runner still reports OK, so a CI job without DynamoDB Local would go green while testing
+   almost nothing. The agent project solves this in ops/run_ci_tests.py; copy that behaviour.
+3. Leave the table template as it is for now. DeletionPolicy, PointInTimeRecovery and deletion
+   protection are deliberately absent while production deployment is a non-goal and turns are
+   fourteen-day data. Re-open this before the table holds real member traffic, not sooner.
+
+Two things are worth knowing but need no change. The entity attribute is written and never read,
+which is fine as a self-describing marker in a single-table design. session_id is only checked for
+being non-empty while turn_id is format-checked; the store generates every session_id, so this is a
+consistency nit rather than a risk.
