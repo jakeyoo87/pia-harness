@@ -232,3 +232,93 @@ Please identify only concrete blockers or material design defects:
 
 If a blocker exists, propose the smallest correction. Do not add generalized orchestration,
 multi-provider abstractions, or production deployment machinery.
+
+## Review record: 2026-09-06, Claude, plan commit 159136d
+
+Plan-only review. Nothing was implemented and nothing was merged. The design is sound and the
+arithmetic holds; three gaps and two pieces of unnecessary prevention are listed below, each with the
+smallest correction.
+
+Checked arithmetic first. For a 256K context and a 4,096-token response limit the usable input budget
+is 258,048 tokens and the trigger is 232,243, which leaves roughly 26K of headroom above the reserved
+response space. After a compaction the next prompt is the summary of at most 4,096 tokens plus a
+protected tail of 12.5% of context, about 37K in total, so the trigger cannot fire again immediately
+and compaction cannot oscillate. At trigger time the material handed to the summarizer is about 200K
+tokens, which still fits a 256K model. Preferring provider total_tokens as the next turn's baseline is
+correct because the delivered completion becomes input, and counting reasoning tokens only makes the
+trigger fire early rather than late.
+
+The commit sequence is right in the order that matters: the summary is written under a compare-and-set
+on the previously observed through_turn_id, and only then are covered turns deleted. A partial deletion
+cannot resurrect covered context because reads are bounded by through_turn_id, and the leftover rows
+expire under the existing fourteen-day TTL. The compare-and-set is at the minimum necessary level: one
+conditional write, a losing writer aborting without touching raw turns, and no lock, lease or ledger.
+Session-scoped keys make reset and account closure work by construction, since SUMMARY#{session_id} is
+unreachable after the pointer moves and delete_all_for_user removes the whole partition.
+
+Sortable turn IDs from the previous feature carry this design: "turns after through_turn_id" is a
+plain sort-key range on the existing schema, with no index and no scan.
+
+## Gaps to close before implementing
+
+1. The newest turn can be summarized away. Tail selection retains complete turns within 12.5% of
+   context, but nothing says what happens when the newest turn alone exceeds that budget. As written
+   the tail can be empty, the user's most recent exchange becomes covered material, and the next reply
+   loses the thing the user just said. This is the exact failure the feature exists to prevent.
+   Smallest correction, in "Selecting source and protected tail":
+   `The newest completed turn is always retained verbatim, even when it alone exceeds the tail budget.`
+
+2. Summary retention is undefined for an abandoned session. Raw turns expire in fourteen days; the
+   summary, which is derived from the same content, would live forever unless the user resets or closes
+   the account. Do not fix this with a plain TTL on the summary item: a user who chats daily may compact
+   less often than every fourteen days, and the summary would expire underneath an active conversation,
+   silently truncating context. Decide explicitly, and record the decision here. The smallest safe
+   option is to keep the summary untimed like the pointer and delete it lazily on the read path:
+   `get_or_create_active_session deletes a summary whose session has no unexpired turns left.`
+
+3. Two read APIs would coexist. list_turns returns every unexpired turn of a session, while this plan
+   adds a boundary-aware read. Between the summary write and the end of covered-turn deletion the two
+   disagree, and a caller that picks the wrong one sends duplicate context. Say which one callers use.
+   Smallest correction, in "Minimal API surface":
+   `The boundary-aware read replaces list_turns for context assembly; list_turns keeps its meaning only
+   for tests and administrative inspection.`
+
+## Prevention that can be removed
+
+4. Reset does not need a DynamoDB transaction. The summary key contains the session ID, so once the
+   pointer moves no read can reach the old summary, and delete_all_for_user still removes it at account
+   closure. A transaction buys nothing here and costs a TransactWriteItems path plus
+   TransactionCanceledException handling, which would be the most intricate error handling in the
+   store. Keep the existing conditional UpdateItem on the pointer and delete the old summary after it;
+   a failed delete leaves a row that nothing reads and that gap 2's rule cleans up.
+
+5. The preflight path cannot fire under the only caller that exists. Telegram messages are capped well
+   below the roughly 26K of headroom the trigger leaves, so no single new message can overflow the
+   budget. Keep it only if it stays a few lines inside the same entry point as the post-response check,
+   with one test rather than a second documented path. Revisit it when a caller can submit a large
+   input such as an uploaded document.
+
+## Answers to the review questions
+
+1. Yes. The response budget is subtracted before the 90% is applied, so the reserved 4,096 tokens are
+   never spent by input.
+2. Yes for the user whose turn triggered it, because the reply is already delivered. One integration
+   note for pia-agent: the Bot processes updates sequentially in one loop, so a summarization call
+   placed inline would stall other users' messages. That belongs in the pia-agent integration, not
+   here, but the plan should not assume the call is free.
+3. Yes. Provider usage is preferred, estimation is the fallback, and a changed model ID invalidates a
+   stored count.
+4. Yes, with gap 1 closed.
+5. Yes. One item per session is enough because replacement advances through_turn_id in place.
+6. Yes. One summarize callable and one estimator callable are the smallest seam that lets the feature
+   be tested before the gateway exists.
+7. See item 5. Everything else in the failure list corresponds to a reachable state.
+8. Yes. Keeping AWS resources and deployment in pia-agent is the right split and is already reflected
+   in the branch.
+
+## Instructions for Codex
+
+Apply corrections 1, 2 and 3 to the plan text before writing code, and record the decision made for 2.
+Remove the transaction sentence from the DynamoDB representation section per item 4. Decide item 5 and
+say which way you went. None of this changes the architecture; if all five are handled, the plan is
+ready to implement as written.
