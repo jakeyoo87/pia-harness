@@ -61,11 +61,17 @@ class TokenCompactionTest(unittest.TestCase):
         )
 
     def append_turns(
-        self, user_key: str, session_id: str, count: int, *, size: int = 6
+        self,
+        user_key: str,
+        session_id: str,
+        count: int,
+        *,
+        size: int = 6,
+        start_seconds: int = 0,
     ):
         turns = []
         for index in range(count):
-            created_at = self.now + timedelta(seconds=index)
+            created_at = self.now + timedelta(seconds=start_seconds + index)
             turns.append(
                 self.store.append_completed_turn(
                     user_key=user_key,
@@ -122,7 +128,7 @@ class TokenCompactionTest(unittest.TestCase):
 
         def summarize(request):
             requests.append(request)
-            return SummaryOutput("short", "nemotron", 5)
+            return SummaryOutput(f"summary-{len(requests)}", "nemotron", 5)
 
         summary = self.compact(user_key, session.session_id, summarize)
         self.assertIsNotNone(summary)
@@ -134,6 +140,20 @@ class TokenCompactionTest(unittest.TestCase):
         )
         self.assertEqual(summary, context.summary)
         self.assertEqual((turns[-1],), context.turns)
+
+        more_turns = self.append_turns(
+            user_key, session.session_id, 3, start_seconds=10
+        )
+        replacement = self.compact(user_key, session.session_id, summarize)
+        self.assertIsNotNone(replacement)
+        self.assertEqual(summary.summary_text, requests[1].previous_summary)
+        self.assertEqual((turns[-1], *more_turns[:2]), requests[1].turns)
+        self.assertEqual(more_turns[1].turn_id, replacement.through_turn_id)
+        context = self.store.load_context(
+            user_key=user_key, session_id=session.session_id, now=self.now
+        )
+        self.assertEqual(replacement, context.summary)
+        self.assertEqual((more_turns[-1],), context.turns)
         items = self.client.query(
             TableName=self.table_name,
             KeyConditionExpression="pk = :pk",
@@ -144,12 +164,12 @@ class TokenCompactionTest(unittest.TestCase):
     def test_newest_turn_is_kept_even_when_over_tail_budget(self) -> None:
         user_key = "compact-large-tail"
         session = self.store.get_or_create_active_session(user_key, now=self.now)
-        turns = self.append_turns(user_key, session.session_id, 2, size=30)
+        turns = self.append_turns(user_key, session.session_id, 2, size=3000)
         requests = []
 
         def summarize(request):
             requests.append(request)
-            return SummaryOutput("s", "nemotron", 1)
+            return SummaryOutput("가" * 1500, "nemotron")
 
         self.compact(user_key, session.session_id, summarize)
         self.assertEqual((turns[0],), requests[0].turns)

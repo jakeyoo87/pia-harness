@@ -154,7 +154,10 @@ class TokenCompactor:
         )
         if summary_tokens <= 0:
             raise SummaryValidationError("summary token count must be positive")
-        if summary_tokens > self._policy.max_response_tokens:
+        if (
+            output.token_count is not None
+            and summary_tokens > self._policy.max_response_tokens
+        ):
             raise SummaryValidationError("summary exceeds the output token limit")
         if estimated_summary_tokens >= source_tokens:
             raise SummaryValidationError("summary is not smaller than its source")

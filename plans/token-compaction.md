@@ -52,6 +52,10 @@ For the first implementation:
 The estimator is deliberately small and replaceable by one callable. There is no tokenizer registry,
 provider adapter hierarchy, or model metadata service in this branch.
 
+The fallback estimator counts UTF-8 bytes rather than model tokens. This is intentionally
+conservative and makes the protected Korean tail smaller than 12.5% until a model tokenizer is
+connected; it must not be compared directly with a provider token-output limit.
+
 ## Trigger calculation
 
     usable_input_tokens = context_limit - max_response_tokens
@@ -334,6 +338,9 @@ ready to implement as written.
    transaction is added.
 5. Preflight compaction is excluded until a future channel can submit large documents. Telegram-only
    input cannot consume the headroom left by the 90% trigger.
+6. The fallback byte estimator may conservatively shrink the protected tail for Korean text. Output
+   limits are enforced only when the summarizer reports a real token count; the same estimator still
+   verifies that a summary is smaller than its source.
 
 ## Review record: 2026-09-06, Claude, implementation commit fc0d242
 
