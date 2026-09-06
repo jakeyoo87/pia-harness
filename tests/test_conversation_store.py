@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 import os
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
 import boto3
@@ -224,22 +222,5 @@ class DynamoDBConversationStoreTest(unittest.TestCase):
                 user_key="member-large", session_id=session.session_id, now=self.now
             ),
         )
-
-
-class InfrastructureTemplateTest(unittest.TestCase):
-    def test_template_is_minimal(self) -> None:
-        template = json.loads(
-            (Path(__file__).parents[1] / "infra" / "conversation-table.template.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        table = template["Resources"]["ConversationTable"]["Properties"]
-        self.assertEqual("PAY_PER_REQUEST", table["BillingMode"])
-        self.assertEqual(
-            "expires_at", table["TimeToLiveSpecification"]["AttributeName"]
-        )
-        self.assertNotIn("GlobalSecondaryIndexes", table)
-
-
 if __name__ == "__main__":
     unittest.main()

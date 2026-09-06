@@ -29,9 +29,8 @@ This branch remains plan-only until independent review is complete. Implementati
 6. Reset by replacing the active session pointer with a new session ID.
 7. Delete all session and turn data for one user after the caller has blocked new writes for that user.
 8. DynamoDB-backed repository.
-9. Minimal dedicated DynamoDB table definition with partition key, sort key, and TTL only.
-10. Configuration for table name and raw-turn retention days.
-11. Focused DynamoDB Local tests for isolation, ordering, reset, deletion, and expiry filtering.
+9. Configuration for table name and raw-turn retention days.
+10. Focused DynamoDB Local tests for isolation, ordering, reset, deletion, and expiry filtering.
 
 ## Non-goals
 
@@ -43,7 +42,7 @@ This branch remains plan-only until independent review is complete. Implementati
 - Skills, hooks, plugins, vector search, or embeddings.
 - S3 storage.
 - Telegram or PIA Bot integration.
-- Production AWS deployment.
+- AWS resource definitions, IAM, and deployment. Those belong to the consuming pia-agent service.
 - GSI, secondary indexes, analytics, or archival.
 
 ## Trust and user isolation
@@ -185,7 +184,6 @@ Keep tests focused on the actual contracts:
 6. User deletion removes the pointer and all turn pages without touching another user.
 7. A turn over the configured size limit is rejected before the write.
 8. Repository access uses keyed operations and does not Scan.
-9. Infrastructure template defines only the required keys, TTL, encryption-at-rest default, and on-demand billing unless review finds a blocker.
 
 ## Review questions
 
@@ -293,3 +291,11 @@ Two things are worth knowing but need no change. The entity attribute is written
 which is fine as a self-describing marker in a single-table design. session_id is only checked for
 being non-empty while turn_id is format-checked; the store generates every session_id, so this is a
 consistency nit rather than a risk.
+
+## Post-review ownership correction
+
+The owner assigned actual AWS infrastructure to pia-agent after the implementation review. The
+CloudFormation template and its template-only test were therefore removed from pia-harness. This
+library owns the DynamoDB access contract and DynamoDB Local behavior; pia-agent owns the real table,
+IAM, environment configuration, change sets, and deployment. The unused entity attributes were also
+removed before merge.
