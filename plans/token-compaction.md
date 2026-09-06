@@ -334,3 +334,70 @@ ready to implement as written.
    transaction is added.
 5. Preflight compaction is excluded until a future channel can submit large documents. Telegram-only
    input cannot consume the headroom left by the 90% trigger.
+
+## Review record: 2026-09-06, Claude, implementation commit fc0d242
+
+Implementation review against this plan. Nothing was implemented by the reviewer and nothing was
+merged. Verdict: one blocker, fixable in one line. Everything else in the feature is correct and
+minimal, and the branch is ready to merge once that line changes.
+
+All five owner decisions are in the code. The newest turn is retained unconditionally in _split_turns,
+the summary has no TTL, load_context replaces list_turns as the only context read, reset keeps its
+conditional pointer update and then deletes the old summary, and preflight is absent.
+
+Verified by running, not only by reading. Twelve tests pass against DynamoDB Local and ruff reports no
+unused imports or definitions. Two paths the suite does not cover were probed directly.
+
+Repeated compaction was run end to end. After two compactions the partition held exactly one summary
+row, the boundary advanced, the second summarize call received the previous summary and only the turns
+not already covered, and load_context returned the protected tail with no duplicate and no missing
+turn. Account closure was probed with a summary present: delete_all_for_user removed the pointer, the
+turn and the summary, leaving the partition empty.
+
+The write order gives no path that loses raw data. Covered turns are deleted only after
+replace_summary returns True, a lost compare-and-set returns None without deleting, a failed or
+invalid summary raises before any write, and a deletion that stops partway leaves rows that
+load_context already excludes by boundary and that expire under the existing TTL.
+
+## Blocker: the byte estimator is compared against a token limit
+
+conservative_token_estimate counts UTF-8 bytes, and compact_after_response compares that number to
+policy.max_response_tokens. Korean text is three bytes per character, so a normal rolling summary is
+rejected for being too long when the summarize callable reports no token count.
+
+Probed with the real policy: a 1,500-character Korean summary estimates 4,500 against a 4,096 limit and
+raises "summary exceeds the output token limit". The identical summary is stored when a provider token
+count is supplied. Until the OpenRouter gateway reports usage, that is the normal path, so compaction
+would fail on every attempt for a Korean conversation, raw turns would never be compacted, and the
+prompt would keep growing until requests exceed the model limit. The user sees a conversation that
+breaks, with nothing in the failure naming the cause.
+
+Smallest correction, in compact_after_response: apply the output-limit check only to a
+provider-reported count.
+
+    if output.token_count is not None and summary_tokens > self._policy.max_response_tokens:
+        raise SummaryValidationError("summary exceeds the output token limit")
+
+The model's own max output setting already bounds generation, and the "summary must be smaller than
+its source" check still guards the estimated path. Do not fix this by scaling bytes into tokens with a
+fudge factor.
+
+## Non-blocking notes
+
+1. The same unit mismatch makes the protected tail smaller than the plan states for non-ASCII text. The
+   tail budget is 12.5% of the context in tokens, but turn cost is measured in bytes, so a Korean tail
+   holds roughly a third of the intended conversation. This errs toward summarizing more rather than
+   losing data, so it is not a blocker, but the plan should say the default estimator is a byte count
+   and that a real tokenizer will change the effective tail size.
+2. Repeated compaction has no test. It works, as probed above, but nothing pins it, and it is the path
+   where a regression would silently drop turns. One test that compacts twice and asserts a single
+   summary row, an advanced boundary and no duplicate turn would cover it.
+3. Recorded consequence of owner decision 2: a summary of an abandoned session is retained until the
+   user resets or closes the account, outliving the fourteen-day raw-turn retention. That was chosen
+   deliberately for context after a long break; it is written here so the retention story stays visible.
+
+## Instructions for Codex
+
+Change the one line above, add the repeated-compaction test from note 2, and add the sentence from note
+1 to the plan. Then the branch can merge. Nothing else needs to change; the API surface, the failure
+paths and the test set are the right size, and no speculative structure was added.
