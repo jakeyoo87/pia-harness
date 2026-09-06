@@ -16,6 +16,8 @@ This branch remains plan-only until independent review is complete. Implementati
 - S3 is not used for conversation turns or long-term memory in this feature.
 - Future compaction will be driven by the complete assembled-context token count, not a turn-count threshold.
 - When a model/provider reports token usage, future compaction will prefer that value. Pre-request checks may use a model tokenizer or a conservative estimate.
+- Token-based compaction and explicit long-term memory are required follow-up capabilities. They are
+  excluded only so this branch can deliver and verify one feature at a time.
 
 ## Scope
 
@@ -24,11 +26,12 @@ This branch remains plan-only until independent review is complete. Implementati
 3. Create or retrieve the active session for one authenticated user.
 4. Append one completed turn.
 5. Read recent, unexpired turns in chronological order.
-6. Reset by closing the active session and creating a new active session.
-7. DynamoDB-backed repository.
-8. Minimal dedicated DynamoDB table definition with partition key, sort key, and TTL only.
-9. Configuration for table name and raw-turn retention days.
-10. Focused DynamoDB Local tests for isolation, ordering, reset, and expiry filtering.
+6. Reset by replacing the active session pointer with a new session ID.
+7. Delete all session and turn data for one user after the caller has blocked new writes for that user.
+8. DynamoDB-backed repository.
+9. Minimal dedicated DynamoDB table definition with partition key, sort key, and TTL only.
+10. Configuration for table name and raw-turn retention days.
+11. Focused DynamoDB Local tests for isolation, ordering, reset, deletion, and expiry filtering.
 
 ## Non-goals
 
@@ -47,16 +50,16 @@ This branch remains plan-only until independent review is complete. Implementati
 
 PIA performs authentication. The harness accepts only a trusted, opaque user key derived by the caller from its authenticated member identity.
 
-Every repository operation requires both a namespace and user key. There is no interface that loads a session or turn by session ID alone.
+Every repository operation requires a user key. There is no interface that loads a session or turn by session ID alone.
 
 Partition boundary:
 
-- PK: namespace and opaque user key
+- PK: opaque user key
 - SK for the active session pointer: a single fixed value per user, holding the current session ID
 - SK for turns: session, session ID, created_at, and turn ID
 
-The namespace is bound when the repository is constructed, not passed per call, so no call site
-can reach another namespace by mistake.
+The dedicated table name separates environments. A namespace parameter is intentionally omitted;
+no current consumer needs several logical applications inside one table.
 
 The library must not require an email address, Telegram ID, Cognito subject, or other direct identifier. It must not log message content or user keys.
 
@@ -64,7 +67,6 @@ The library must not require an email address, Telegram ID, Cognito subject, or 
 
 ### Active session pointer
 
-- namespace
 - user_key
 - session_id
 - created_at
@@ -75,7 +77,6 @@ carries no TTL, and updated_at is not written per turn because nothing reads it.
 
 ### Completed turn
 
-- namespace
 - user_key
 - session_id
 - turn_id
@@ -105,8 +106,10 @@ The first feature supports only:
 3. Query recent unexpired turns for that user's session in chronological order: one Query on the
    turn key prefix.
 4. Reset: one conditional write that moves the pointer to a new session ID.
+5. Delete all data for one user: query only that user's partition through all pages and delete every
+   returned item. The caller must block new writes before invoking deletion.
 
-The design must not require Scan operations, and none of the four needs a secondary index.
+The design must not require Scan operations, and none of the five needs a secondary index.
 
 ## Retention
 
@@ -123,8 +126,9 @@ returning after the retention window keeps the same session with no turns.
 Reset moves the pointer to a new session ID. It does not define or delete future long-term memories,
 and it does not delete the previous session's turns, which remain until they expire.
 
-Deleting every turn for one user is not part of the four access patterns above. See the open
-decisions at the end of this plan before this library is connected to real member traffic.
+Account closure calls delete_all_for_user and removes the pointer and every remaining turn without
+waiting for TTL. The operation is idempotent: retrying after a partial failure deletes whatever
+remains. It does not add a worker, outbox, deletion state machine, or recovery ledger.
 
 ## Write boundary
 
@@ -161,8 +165,9 @@ No placeholder compactor, model abstraction, summary item, or unused interface s
 - A duplicate turn ID with different content is rejected.
 - Expired turns are not returned.
 - Reset must not expose or modify another user's session.
-- A pointer whose session has no turns left is a normal state, not an error. Absence of a target is
-  a recovery path: get-or-create returns the pointer, and a missing pointer creates a new session.
+- A pointer with no turns is a normal state. The pointer holds a session ID; there is no separate
+  session target row to recover.
+- User deletion removes only that user's partition and can be safely retried.
 
 Do not add generalized retries, distributed locks, outbox processing, migrations, background workers, or recovery frameworks in this first feature.
 
@@ -175,9 +180,10 @@ Keep tests focused on the actual contracts:
 3. Identical append replay is idempotent and conflicting replay is rejected.
 4. Expired turns are filtered before asynchronous TTL deletion.
 5. Reset moves the pointer and the new session reads none of the previous session's turns.
-6. A turn over the configured size limit is rejected before the write.
-7. Repository access uses Query/Get/Put-style key access and does not Scan.
-8. Infrastructure template defines only the required keys, TTL, encryption-at-rest default, and on-demand billing unless review finds a blocker.
+6. User deletion removes the pointer and all turn pages without touching another user.
+7. A turn over the configured size limit is rejected before the write.
+8. Repository access uses keyed operations and does not Scan.
+9. Infrastructure template defines only the required keys, TTL, encryption-at-rest default, and on-demand billing unless review finds a blocker.
 
 ## Review questions
 
@@ -185,7 +191,7 @@ Please identify only concrete blockers or material design defects:
 
 1. Is cross-user isolation structurally enforced by every access path?
 2. Is the completed-turn boundary sufficient without persisting internal model activity?
-3. Are the DynamoDB keys and four access patterns minimal and viable without a GSI?
+3. Are the DynamoDB keys and five access patterns minimal and viable without a GSI?
 4. Are TTL and application-side expiry filtering correct?
 5. Does idempotent append avoid both duplicate writes and accidental overwrite?
 6. Does the plan remain compatible with future token-based compaction and separate explicit memory?
@@ -223,17 +229,14 @@ boundary matches the delivery-then-persist rule already used in the agent projec
 patterns need no secondary index, and the plan stays compatible with later token-based compaction. Raw
 turns expire in fourteen days, so adding fields later needs no migration.
 
-## Open decisions
+## Owner decisions: 2026-09-06
 
-These need an owner's answer rather than a code change.
-
-1. Per-user deletion. A fourteen-day TTL is not the same as deletion on request, and the member-facing
-   consent document in the agent project promises removal at account closure. Adding delete_all_for_user
-   now is one method and one test over the existing keys; adding it after integration reopens the
-   deletion path. Decide whether it enters this feature, or whether this library stays disconnected from
-   real member traffic until it exists.
-2. Reset wording. The Bot answers /reset with a message about clearing the conversation context, while
-   this plan keeps the previous turns until they expire. Either the wording or the retention should move.
-3. Namespace. Configuration already carries the table name, which separates environments. Unless a named
-   consumer needs several namespaces inside one table, the plan's own rule against unused interfaces
-   argues for dropping it. Cheap to decide now, since no data exists yet.
+1. Per-user deletion is included. Account closure must remove all harness data immediately rather than
+   wait for the fourteen-day TTL.
+2. Reset is retained as a small user-control feature. It changes the active session ID, so previous
+   turns leave the model context immediately while their raw records expire normally. Explicit
+   long-term memory will not be affected by reset.
+3. Namespace is removed. The dedicated table name already separates environments and consumers.
+4. The implementation must include the core capabilities above without speculative prevention layers.
+   In particular, do not add generalized retries, locks, outboxes, workers, recovery ledgers, unused
+   provider abstractions, or future migrations.
