@@ -491,3 +491,54 @@ CLEAR result without writing. Pre-Compaction failure is retryable through the un
 session, while pre-reset failure is documented as a one-time attempt whose old-session Turns become
 unreachable after reset. Per the product owner's instruction, implementation proceeds on this same
 branch and the final implementation review will verify both corrections.
+
+## Review record: 2026-09-08, Claude, implementation commit 4e5899d
+
+Implementation review against this plan. Nothing was implemented by the reviewer and nothing was
+merged. Verdict: no blocker. The branch may be merged to main once Codex confirms main CI succeeds.
+
+Verified by running. All 21 tests pass against DynamoDB Local (12 from the two earlier features plus 9
+new Memory tests), and ruff reports no unused imports or definitions.
+
+The CLEAR gate was checked by mutation, not only by reading. Deleting the allow_clear check in
+_validated_output, or having review_if_due pass allow_clear=True instead of its hardcoded False, each
+fail the suite. force_review defaults to allow_clear=False and only an explicit-forget caller can pass
+True; review_if_due never exposes the parameter at all, so a normal revisit Review has no path to
+CLEAR. A third mutation, writing the Memory item without its expected_last_reviewed_turn_id condition,
+also fails two tests, confirming the compare-and-set is load-bearing rather than decorative.
+
+Isolation, TTL and boundary queries match the plan. get_memory, replace_memory and delete_memory all
+key on pk = USER#{user_key}, and delete_all_for_user already removes the Memory item because it scans
+the whole partition; a dedicated test creates two users' Memory and confirms deleting one leaves the
+other untouched. The store's default retention_days changed from 14 to 30, and one existing
+conversation-session-core test was updated from a 15-day to a 31-day gap to keep testing "expired" at
+the new boundary; every other test in that file was unaffected, which is what a compare-and-set on a
+plain configuration default should look like. load_unreviewed_turns queries turn IDs directly past the
+boundary and deliberately ignores the Conversation Summary boundary that load_context enforces; one
+test builds a summary that would hide an earlier turn from load_context and confirms
+load_unreviewed_turns still returns it, which is the exact behavior the plan requires so a
+pre-Compaction flush cannot silently skip the turns it exists to capture.
+
+The one-hour revisit policy is tested at its exact boundary (59:59 does not trigger, 1:00:00 does) and
+confirms no turn-count trigger exists on its own by holding 25 turns short of the gap without firing.
+4,000-character enforcement is checked in both memory.py's validation and dynamodb.py's write path,
+which is deliberate defense in depth rather than duplication, since dynamodb.py is usable directly
+without the reviewer layer. Change-summary validation rejects more than three items, an empty item, an
+oversized item, and a summary attached to UNCHANGED, and returns it to the caller only after the write
+wins its compare-and-set, never before.
+
+Reviewer failure, invalid output and a lost compare-and-set all leave Memory exactly where it was.
+A raised exception from the reviewer callable propagates before any store call is made, so a first-ever
+Review that fails still has no item at all, and a later Review that fails still has its prior document
+and boundary; a dedicated test exercises six invalid output shapes plus a raising reviewer and checks
+get_memory and the unreviewed-turn set after every one. A stale compare-and-set returns
+MemoryReviewStatus.STALE with no memory and leaves the actual winner in place, verified by forcing a
+concurrent winning write from inside the review callable itself before the loser's write is attempted.
+
+No unnecessary code was added. There is no repository abstraction, category system, history table, or
+new DynamoDB table; the feature reuses the existing user partition and the existing turn schema's
+sortable turn IDs for its boundary.
+
+## Instructions for Codex
+
+Nothing to fix. Confirm main CI succeeds after merge, per the branch's own workflow in AGENTS.md.
