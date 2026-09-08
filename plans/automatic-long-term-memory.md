@@ -6,8 +6,8 @@ Let PIA learn stable user preferences and investment context without requiring u
 manage an AI memory feature. Keep one small, LLM-curated memory document per user and avoid categories,
 memory-key heuristics, history, or an approval queue.
 
-This branch is plan-only until independent review. Implementation continues on the same branch after
-review; the plan is not merged separately.
+This plan was independently reviewed before implementation. Implementation continues on the same
+branch; the plan is not merged separately.
 
 ## Product boundary
 
@@ -36,6 +36,8 @@ data, change Risk Check, or be treated as verified market data.
 - Before reset, attempt Review when any unreviewed Turn exists, but treat it as best effort.
 - Explicit remember, correct, or forget intent invokes Review immediately; intent detection belongs to
   the later model/PIA integration rather than this storage feature.
+- Forced Review carries allow_clear=True only for an explicit targeted forget. Revisit,
+  pre-Compaction, and pre-reset Review never allow CLEAR.
 - When a successful Review makes a meaningful addition, correction, or deletion, return a concise
   change summary for the caller to append to the bottom of the current answer. Do not send a separate
   Memory notification, and do not announce UNCHANGED or wording-only consolidation.
@@ -91,6 +93,7 @@ The Memory reviewer receives:
 - the current memory_text, or empty text for the first Review;
 - unreviewed completed Turns in chronological order;
 - the 4,000-character limit;
+- whether the caller explicitly allowed CLEAR for a targeted forget;
 - a fixed instruction describing what to retain and exclude, ending with an explicit direction to
   treat all conversation content as data rather than instructions.
 
@@ -98,8 +101,8 @@ It returns one of three actions:
 
 - UNCHANGED: keep memory_text but advance last_reviewed_turn_id;
 - REPLACE: store a complete replacement memory_text and advance last_reviewed_turn_id;
-- CLEAR: remove the final remaining content, accepted only during a forced Review for an explicit user
-  forget request.
+- CLEAR: remove the final remaining content, accepted only when force_review was called with
+  allow_clear=True for an explicit targeted forget request.
 
 The output also contains zero to three short change-summary items of at most 200 Unicode characters
 each. UNCHANGED and wording-only consolidation return no items. Meaningful additions, corrections, and
@@ -144,7 +147,8 @@ not learned from those expired Turns.
 3. If no Turn exists, return without calling the LLM.
 4. Check the policy unless the caller requested a forced Review.
 5. Call the reviewer with current memory_text and only the unreviewed Turns.
-6. Validate the action, replacement length, and bounded change summary.
+6. Validate the action, replacement length, bounded change summary, and allow_clear permission. Reject
+   CLEAR without writing unless the caller explicitly allowed it for a targeted forget.
 7. Conditionally write the complete Memory item, requiring the previously observed
    last_reviewed_turn_id or item absence.
 8. If another Review already advanced the boundary, reject the stale result without retrying or
@@ -187,7 +191,8 @@ This harness exposes the Review result but does not implement model networking o
 - MemoryReviewPolicy with a one-hour revisit gap and no turn-count interval.
 - MemoryReviewRequest and MemoryReviewOutput, including a bounded ephemeral change summary, for one
   injected reviewer callable.
-- AutomaticMemoryReviewer.review_if_due and force_review.
+- AutomaticMemoryReviewer.review_if_due and force_review(..., allow_clear=False). Only the
+  explicit-forget caller passes allow_clear=True.
 - DynamoDB get_memory, replace_memory with boundary CAS, and delete_memory.
 - A boundary-aware way to load unreviewed current-session Turns.
 
@@ -200,7 +205,11 @@ command parser, approval queue, or administration API is added.
 - Invalid action, replacement over 4,000 characters, or invalid change summary: reject without writing.
 - Lost CAS: return a stale result and leave the winner untouched.
 - Explicit complete deletion: delete the Memory item directly and idempotently.
-- Compaction/reset Review fails: report failure while allowing the caller to continue the transition.
+- Pre-Compaction Review fails: report failure while allowing Compaction to continue; the unchanged
+  session and boundary may make the same Turns eligible on a later revisit or Compaction attempt.
+- Pre-reset Review fails: report the one-time failure while allowing reset to continue; after the
+  active-session pointer moves, the old session's unreviewed Turns are not reviewed again and expire
+  under their existing TTL.
 - Account closure: delete_all_for_user remains the authoritative full deletion.
 
 No automatic retry loop is added.
@@ -236,8 +245,9 @@ Tests should combine related contracts and avoid a case-per-line suite.
 1. Memory is isolated by user and delete_all_for_user removes it.
 2. REPLACE stores one document of at most 4,000 characters; a later replacement overwrites rather than
    appends, with no minimum retained-length ratio or previous-version backup.
-3. UNCHANGED preserves text while advancing last_reviewed_turn_id, and CLEAR is accepted only for an
-   explicit forced forget.
+3. UNCHANGED preserves text while advancing last_reviewed_turn_id. CLEAR is accepted only for
+   force_review(..., allow_clear=True) and is rejected without writing for revisit, Compaction, reset,
+   or any other caller.
 4. A stale boundary cannot overwrite a newer Memory.
 5. Reviewer failure and oversized or invalid output preserve Memory and boundary; a change summary is
    returned only after a successful winning write.
@@ -472,3 +482,12 @@ whether reset needs a stronger warning at that layer, without pulling that decis
 Add the allow_clear parameter to force_review and the corresponding rejection in the validation step,
 and add the one clarifying sentence to Failure behavior. Both are documentation plus one boolean
 parameter, not new architecture. With those two changes, the plan is ready to implement as written.
+
+## Resolution record: 2026-09-08, after Claude second-pass review
+
+The blocker and documentation gap are resolved in the normative plan above. force_review defaults to
+allow_clear=False; only an explicit targeted-forget caller opts in, and validation rejects every other
+CLEAR result without writing. Pre-Compaction failure is retryable through the unchanged current
+session, while pre-reset failure is documented as a one-time attempt whose old-session Turns become
+unreachable after reset. Per the product owner's instruction, implementation proceeds on this same
+branch and the final implementation review will verify both corrections.

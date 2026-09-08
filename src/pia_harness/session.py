@@ -5,6 +5,9 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 
+MEMORY_MAX_CHARS = 4_000
+
+
 def as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("datetime must be timezone-aware")
@@ -46,6 +49,14 @@ class RollingSummary:
     through_turn_id: str
     summary_tokens: int
     model_id: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryDocument:
+    user_key: str
+    memory_text: str
+    last_reviewed_turn_id: str
     updated_at: datetime
 
 

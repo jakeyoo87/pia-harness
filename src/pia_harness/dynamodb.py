@@ -11,6 +11,8 @@ from .session import (
     ActiveSession,
     CompletedTurn,
     ConversationContext,
+    MEMORY_MAX_CHARS,
+    MemoryDocument,
     RollingSummary,
     as_utc,
     utc_text,
@@ -18,6 +20,7 @@ from .session import (
 
 
 _ACTIVE_SESSION_SK = "ACTIVE_SESSION"
+_MEMORY_SK = "MEMORY"
 _TURN_ID = re.compile(r"^[0-9]{8}T[0-9]{12}Z_[0-9a-f]{32}$")
 
 
@@ -43,7 +46,7 @@ class DynamoDBConversationStore:
         client: Any,
         table_name: str,
         *,
-        retention_days: int = 14,
+        retention_days: int = 30,
         max_turn_bytes: int = 256 * 1024,
     ) -> None:
         if not table_name:
@@ -184,6 +187,80 @@ class DynamoDBConversationStore:
         )
         item = response.get("Item")
         return None if item is None else _summary_from_item(item)
+
+    def get_memory(self, user_key: str) -> MemoryDocument | None:
+        user_key = _user_key(user_key)
+        response = self._client.get_item(
+            TableName=self._table_name,
+            Key={"pk": {"S": _pk(user_key)}, "sk": {"S": _MEMORY_SK}},
+            ConsistentRead=True,
+        )
+        item = response.get("Item")
+        return None if item is None else _memory_from_item(item)
+
+    def replace_memory(
+        self,
+        memory: MemoryDocument,
+        *,
+        expected_last_reviewed_turn_id: str | None,
+    ) -> bool:
+        _user_key(memory.user_key)
+        if not isinstance(memory.memory_text, str):
+            raise ValueError("memory_text must be a string")
+        if len(memory.memory_text) > MEMORY_MAX_CHARS:
+            raise ValueError("memory_text exceeds the character limit")
+        if not _TURN_ID.fullmatch(memory.last_reviewed_turn_id):
+            raise ValueError("last_reviewed_turn_id must be a turn ID")
+
+        condition = "attribute_not_exists(pk) AND attribute_not_exists(sk)"
+        values: dict[str, dict[str, str]] | None = None
+        if expected_last_reviewed_turn_id is not None:
+            if not _TURN_ID.fullmatch(expected_last_reviewed_turn_id):
+                raise ValueError("expected_last_reviewed_turn_id must be a turn ID")
+            condition = "last_reviewed_turn_id = :expected"
+            values = {":expected": {"S": expected_last_reviewed_turn_id}}
+
+        request: dict[str, Any] = {
+            "TableName": self._table_name,
+            "Item": _memory_item(memory),
+            "ConditionExpression": condition,
+        }
+        if values is not None:
+            request["ExpressionAttributeValues"] = values
+        try:
+            self._client.put_item(**request)
+            return True
+        except ClientError as error:
+            if _is_conditional_failure(error):
+                return False
+            raise
+
+    def delete_memory(self, user_key: str) -> None:
+        user_key = _user_key(user_key)
+        self._client.delete_item(
+            TableName=self._table_name,
+            Key={"pk": {"S": _pk(user_key)}, "sk": {"S": _MEMORY_SK}},
+        )
+
+    def load_unreviewed_turns(
+        self,
+        *,
+        user_key: str,
+        session_id: str,
+        after_turn_id: str | None,
+        now: datetime | None = None,
+    ) -> tuple[CompletedTurn, ...]:
+        user_key = _user_key(user_key)
+        session_id = _required("session_id", session_id)
+        if after_turn_id is not None and not _TURN_ID.fullmatch(after_turn_id):
+            raise ValueError("after_turn_id must be a turn ID")
+        now_epoch = int(as_utc(now or datetime.now(UTC)).timestamp())
+        return tuple(
+            _turn_from_item(item)
+            for item in self._query_turn_items(user_key, session_id)
+            if int(item["expires_at"]["N"]) > now_epoch
+            and (after_turn_id is None or item["turn_id"]["S"] > after_turn_id)
+        )
 
     def replace_summary(
         self,
@@ -408,6 +485,27 @@ def _summary_from_item(item: dict[str, dict[str, str]]) -> RollingSummary:
         through_turn_id=item["through_turn_id"]["S"],
         summary_tokens=int(item["summary_tokens"]["N"]),
         model_id=item["model_id"]["S"],
+        updated_at=datetime.strptime(
+            item["updated_at"]["S"], "%Y-%m-%dT%H:%M:%S.%fZ"
+        ).replace(tzinfo=UTC),
+    )
+
+
+def _memory_item(memory: MemoryDocument) -> dict[str, dict[str, str]]:
+    return {
+        "pk": {"S": _pk(memory.user_key)},
+        "sk": {"S": _MEMORY_SK},
+        "memory_text": {"S": memory.memory_text},
+        "last_reviewed_turn_id": {"S": memory.last_reviewed_turn_id},
+        "updated_at": {"S": utc_text(memory.updated_at)},
+    }
+
+
+def _memory_from_item(item: dict[str, dict[str, str]]) -> MemoryDocument:
+    return MemoryDocument(
+        user_key=item["pk"]["S"].removeprefix("USER#"),
+        memory_text=item["memory_text"]["S"],
+        last_reviewed_turn_id=item["last_reviewed_turn_id"]["S"],
         updated_at=datetime.strptime(
             item["updated_at"]["S"], "%Y-%m-%dT%H:%M:%S.%fZ"
         ).replace(tzinfo=UTC),

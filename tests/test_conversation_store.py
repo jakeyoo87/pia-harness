@@ -147,7 +147,7 @@ class DynamoDBConversationStoreTest(unittest.TestCase):
         self.append(
             "member-expired",
             session.session_id,
-            created_at=self.now - timedelta(days=15),
+            created_at=self.now - timedelta(days=31),
         )
         self.assertEqual(
             (),
