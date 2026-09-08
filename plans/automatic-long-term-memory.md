@@ -394,3 +394,81 @@ intentionally differ from the historical review record.
 - Periodic twenty-Turn Review is removed. No scheduler or background idle job is added.
 - The later PIA integration should run a due revisit Review concurrently with answer generation and
   append any successful meaningful change summary to that same answer, never as a separate message.
+
+## Review record: 2026-09-08, Claude, second pass on plan commit 3bd30eb
+
+Plan-only review of the resolved plan. Nothing was implemented and nothing was merged. One blocker,
+fixable without new architecture, plus one documentation gap worth naming explicitly. Everything else
+checked below holds.
+
+The owner's resolutions are coherent as recorded. Rejecting the first-contact trigger is a deliberate,
+accepted trade: real usage naturally produces a greater-than-one-hour gap between days for almost any
+engaged user, so the trigger fires in practice for everyone except a user who chats only within
+continuous same-hour bursts and never returns — a case the resolution already accepts. Keeping CLEAR
+distinct from delete_memory was the right call against my earlier suggestion to remove it: CLEAR
+answers a specific, LLM-judged forget request that happens to leave the document empty, while
+delete_memory answers an unrelated, unconfirmed-by-any-LLM "forget everything" command that bypasses
+the reviewer entirely. The two do not overlap once that distinction is read carefully, so removal 1's
+rejection is correct and this review does not reopen it.
+
+## Blocker: CLEAR is reachable from every forced Review, not only an explicit forget
+
+CLEAR's contract is "accepted only during a forced Review for an explicit user forget request," but
+nothing in the persistence sequence or the reviewer's input carries that reason. force_review is one
+method with no parameter distinguishing why it was called, and the reviewer receives only memory_text,
+the unreviewed Turns, the character limit, and the fixed instruction — never the reason for the call.
+A pre-Compaction flush and a pre-reset flush are both forced Reviews, and today's contract gives the
+storage layer no way to reject CLEAR coming out of either one. If the reviewer misreads an unrelated
+turn as a forget statement during a routine token-budget flush, nothing stops it from returning CLEAR
+and erasing the entire document as a side effect of conversation length, with no explicit user
+confirmation behind it. This is exactly the accidental total-loss path the product boundary is meant to
+prevent, and it is reachable without any prompt injection — an ordinary LLM misjudgment is enough.
+
+Smallest correction: thread one boolean through the existing forced-Review path instead of adding a new
+mechanism.
+
+    force_review(..., allow_clear: bool)
+
+The caller passes allow_clear=True only when it is forcing Review for a detected explicit forget
+intent, and allow_clear=False for a pre-Compaction or pre-reset flush. Validation (persistence step 6)
+rejects a CLEAR result exactly like any other invalid action whenever allow_clear is False, without
+writing. review_if_due, which never forces a Review, never allows CLEAR either. Add one line to
+verification item 3: CLEAR is rejected as invalid when the caller did not request it for an explicit
+forget.
+
+## Gap, not blocking: reset's best-effort failure is permanent, unlike Compaction's
+
+The Failure behavior section states Compaction and reset Review failures in one line, but their
+consequences differ. A failed forced Review before Compaction leaves the boundary and the session's
+Turns exactly where they were; the same session is queried again on the next revisit or the next
+Compaction attempt, so the unreviewed Turns get another chance. A failed best-effort Review before
+reset does not: the persistence sequence reads unreviewed Turns through a current-session boundary
+query, and once reset moves the active session pointer, nothing ever queries the old session_id again.
+Those Turns are not delayed, they are unreachable, and they are gone for good once the thirty-day TTL
+removes the raw rows. The plan text already says "reset may make its old session inaccessible," so the
+outcome is not undocumented, but the Failure behavior bullet still reads as if the two cases were
+equally recoverable. Retries stay out of scope per this plan's own non-goals, so the fix here is one
+sentence, not code: mark the reset bullet as a one-time, unrecoverable attempt, distinct from
+Compaction's bullet. That gives whoever builds the later PIA integration the information to decide
+whether reset needs a stronger warning at that layer, without pulling that decision into this feature.
+
+## Answers to the review questions
+
+1. Yes, coherent with real usage; the only unhelped case is one the resolution already accepts.
+2. Yes, given time-sortable turn IDs and a boundary query scoped correctly to the current session.
+3. Yes, matching the pattern already used by delete_turns_through and load_context in this codebase.
+4. No race found. The write-then-summarize order in the persistence sequence is correct, and
+   cross-request concurrency for one user is not a practical concern given the Bot's existing single
+   sequential update loop.
+5. Yes for Compaction. For reset, see the gap above: the failure is real but its severity differs from
+   Compaction's and the plan should say so.
+6. No, not as written; see the blocker above. It becomes yes once allow_clear is threaded through.
+7. Yes, once CLEAR's rejection is included as stated above.
+8. No unnecessary API, field, or test found in this revision.
+9. Yes. Memory stays advisory context; nothing here touches Portfolio, Risk Check, or order approval.
+
+## Instructions for Codex
+
+Add the allow_clear parameter to force_review and the corresponding rejection in the validation step,
+and add the one clarifying sentence to Failure behavior. Both are documentation plus one boolean
+parameter, not new architecture. With those two changes, the plan is ready to implement as written.
