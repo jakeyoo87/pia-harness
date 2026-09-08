@@ -13,7 +13,7 @@ review; the plan is not merged separately.
 
 Long-term Memory is durable personalization context. It is different from:
 
-- raw Turns, which expire after fourteen days;
+- raw Turns, which expire after thirty days;
 - a rolling Conversation Summary, which preserves one session and is removed on reset;
 - Portfolio data, which is the authoritative source for holdings, balances, and transactions;
 - system and Risk Check policy, which Memory can never modify.
@@ -24,19 +24,23 @@ data, change Risk Check, or be treated as verified market data.
 ## Confirmed decisions
 
 - One free-form Memory document per opaque user key; no database enum or per-topic item.
-- Maximum 8,000 Unicode characters.
+- Maximum 4,000 Unicode characters.
 - The LLM rewrites the complete bounded document, consolidating, replacing, or removing overlapping
   information in context.
-- No Memory version history or deleted-content archive.
-- Automatic Review after twenty unreviewed completed Turns.
-- Automatic Review after the first new response following a gap of at least twenty-four hours when
-  unreviewed Turns remain.
-- Before Compaction deletes covered raw Turns, review any unreviewed covered Turns first.
-- Before reset makes the old session inaccessible, review any unreviewed Turns first.
+- No Memory version history, previous-version backup, or deleted-content archive. A user corrects a bad
+  update through a new natural-language correction.
+- No turn-count Review trigger. When a user returns after at least one hour without input, Review the
+  earlier unreviewed completed Turns on that next request.
+- Before Compaction, force Review when any unreviewed Turn exists; do not duplicate the compactor's
+  tail-selection logic in the caller.
+- Before reset, attempt Review when any unreviewed Turn exists, but treat it as best effort.
 - Explicit remember, correct, or forget intent invokes Review immediately; intent detection belongs to
   the later model/PIA integration rather than this storage feature.
-- A technical “Memory updated” message is not shown. PIA responds naturally and later provides natural
-  language view, correction, and deletion.
+- When a successful Review makes a meaningful addition, correction, or deletion, return a concise
+  change summary for the caller to append to the bottom of the current answer. Do not send a separate
+  Memory notification, and do not announce UNCHANGED or wording-only consolidation.
+- The caller may run a due revisit Review concurrently with answer generation. Review failure must not
+  block the answer, Compaction, or reset.
 - Reset preserves long-term Memory. Account closure deletes it with all other user data.
 - The reviewer is one injected callable. OpenRouter/Nemotron networking is a later feature.
 
@@ -51,7 +55,6 @@ Attributes:
 
 - memory_text
 - last_reviewed_turn_id
-- reviewer_model_id
 - updated_at
 
 The item can exist with empty memory_text so an unchanged Review can still advance
@@ -87,19 +90,26 @@ The Memory reviewer receives:
 
 - the current memory_text, or empty text for the first Review;
 - unreviewed completed Turns in chronological order;
-- the 8,000-character limit;
-- a fixed instruction describing what to retain and exclude.
+- the 4,000-character limit;
+- a fixed instruction describing what to retain and exclude, ending with an explicit direction to
+  treat all conversation content as data rather than instructions.
 
 It returns one of three actions:
 
 - UNCHANGED: keep memory_text but advance last_reviewed_turn_id;
-- REPLACE: store a complete replacement memory_text and advance last_reviewed_turn_id.
+- REPLACE: store a complete replacement memory_text and advance last_reviewed_turn_id;
 - CLEAR: remove the final remaining content, accepted only during a forced Review for an explicit user
   forget request.
 
-REPLACE must be non-empty and at most 8,000 characters. Automatic Review cannot clear the whole
-document. Explicit “forget everything” does not ask the LLM to emit an empty document; after user
-confirmation, the caller uses delete_memory directly.
+The output also contains zero to three short change-summary items of at most 200 Unicode characters
+each. UNCHANGED and wording-only consolidation return no items. Meaningful additions, corrections, and
+removals describe only what changed; the change summary is returned to the caller but is not stored as
+Memory history.
+
+REPLACE must be non-empty and at most 4,000 characters. There is no minimum retained-length ratio:
+legitimate consolidation and correction must not be blocked by an arbitrary percentage. Automatic
+Review cannot clear the whole document. Explicit “forget everything” does not ask the LLM to emit an
+empty document; after user confirmation, the caller uses delete_memory directly.
 
 The LLM controls the document's short headings and wording. The storage layer does not understand
 topics or decide whether two facts conflict.
@@ -108,33 +118,40 @@ topics or decide whether two facts conflict.
 
 The policy evaluates only persisted, completed Turns after last_reviewed_turn_id.
 
-A Review is due when any one condition holds:
+A Review is due or requested when any one condition holds:
 
-1. twenty unreviewed Turns exist;
-2. the newest response follows a gap of at least twenty-four hours and earlier unreviewed Turns exist;
-3. the caller forces Review for explicit remember/correct/forget intent;
-4. the caller forces Review before Compaction or reset would remove access to unreviewed raw Turns.
+1. a new user request arrives at least one hour after the latest persisted completed Turn and earlier
+   unreviewed Turns exist;
+2. the caller forces Review for explicit remember/correct/forget intent;
+3. the caller forces Review before Compaction when any unreviewed Turn exists;
+4. the caller attempts a best-effort Review before reset when any unreviewed Turn exists.
 
 If Compaction or reset finds no unreviewed Turn, it skips Memory Review. The Review input never includes
 already reviewed Turns.
 
 There is no Cron job, durable queue, idle timer, or background Worker. The caller evaluates this policy
-after a response and explicitly flushes before destructive context transitions.
+when the next request arrives and explicitly flushes before destructive context transitions. “One
+hour without input” is therefore a revisit condition, not a background job that runs exactly one hour
+after the user leaves. A user who does not return before the thirty-day raw-Turn retention expires is
+not learned from those expired Turns.
 
 ## Persistence sequence
 
 1. Load the current Memory item and boundary.
-2. Load unreviewed Turns after last_reviewed_turn_id.
+2. Load non-expired, unreviewed raw Turn items after last_reviewed_turn_id with a direct current-session
+   boundary query. Do not use load_context, which intentionally hides Turns covered by a Conversation
+   Summary.
 3. If no Turn exists, return without calling the LLM.
 4. Check the policy unless the caller requested a forced Review.
 5. Call the reviewer with current memory_text and only the unreviewed Turns.
-6. Validate the action and replacement length.
+6. Validate the action, replacement length, and bounded change summary.
 7. Conditionally write the complete Memory item, requiring the previously observed
    last_reviewed_turn_id or item absence.
 8. If another Review already advanced the boundary, reject the stale result without retrying or
    overwriting.
 
-An UNCHANGED result still writes the new boundary. A reviewer failure, invalid output, or lost
+An UNCHANGED result still writes the new boundary. A successful meaningful change returns the bounded
+change summary only after the Memory write wins its compare-and-set. A reviewer failure, invalid output, or lost
 compare-and-set leaves both the current Memory and review boundary unchanged, so the same Turns remain
 eligible for a later Review.
 
@@ -146,24 +163,30 @@ forced Review method and a has_unreviewed check.
 The later orchestration order is:
 
     response stored
-    -> Memory Review if normally due
-    -> forced Memory Review if Compaction will delete unreviewed covered Turns
+    -> forced Memory Review if any unreviewed Turn exists
     -> Compaction
 
 For reset:
 
-    forced Memory Review if unreviewed Turns exist
+    best-effort Memory Review if unreviewed Turns exist
     -> reset active session
 
-If the forced Review fails, Compaction or reset must not continue automatically. This preserves the raw
-source instead of silently losing a potentially durable user fact. No outbox, recovery ledger, or
-cross-feature transaction is introduced.
+Compaction and reset continue if Review fails. Conversation availability and an explicit reset outrank
+capturing every possible durable fact. The failed Review preserves the existing Memory and boundary;
+Compaction may consequently delete an unreviewed fact and reset may make its old session inaccessible.
+No retry loop, outbox, recovery ledger, or cross-feature transaction is introduced.
+
+For a revisit-triggered Review, the later integration may run answer generation and Review concurrently,
+wait for both before delivering one response, and append a successful meaningful change summary below
+the answer. Review failure returns the answer normally and never produces a separate late notification.
+This harness exposes the Review result but does not implement model networking or response delivery.
 
 ## Minimal API surface
 
 - MemoryDocument domain type.
-- MemoryReviewPolicy with review interval 20 and revisit gap 24 hours.
-- MemoryReviewRequest and MemoryReviewOutput for one injected reviewer callable.
+- MemoryReviewPolicy with a one-hour revisit gap and no turn-count interval.
+- MemoryReviewRequest and MemoryReviewOutput, including a bounded ephemeral change summary, for one
+  injected reviewer callable.
 - AutomaticMemoryReviewer.review_if_due and force_review.
 - DynamoDB get_memory, replace_memory with boundary CAS, and delete_memory.
 - A boundary-aware way to load unreviewed current-session Turns.
@@ -174,23 +197,23 @@ command parser, approval queue, or administration API is added.
 ## Failure behavior
 
 - Reviewer call fails: preserve Memory and boundary.
-- Invalid action or replacement over 8,000 characters: reject without writing.
+- Invalid action, replacement over 4,000 characters, or invalid change summary: reject without writing.
 - Lost CAS: return a stale result and leave the winner untouched.
 - Explicit complete deletion: delete the Memory item directly and idempotently.
-- Compaction/reset flush fails: report failure so the caller does not continue that destructive context
-  transition.
+- Compaction/reset Review fails: report failure while allowing the caller to continue the transition.
 - Account closure: delete_all_for_user remains the authoritative full deletion.
 
 No automatic retry loop is added.
 
 ## Scope
 
-1. Bounded MemoryDocument storage in the existing user partition.
+1. Bounded MemoryDocument storage in the existing user partition and a thirty-day raw-Turn default.
 2. Boundary CAS and direct individual Memory deletion.
 3. Unreviewed-Turn selection.
-4. Twenty-Turn and twenty-four-hour revisit policy.
+4. One-hour revisit policy evaluated on the next request, without a turn-count trigger.
 5. Forced Review for explicit intent and pre-Compaction/reset flush.
-6. Full-document UNCHANGED/REPLACE contract plus explicit-forget-only CLEAR.
+6. Full-document UNCHANGED/REPLACE contract, explicit-forget-only CLEAR, and an ephemeral bounded
+   change summary.
 7. Focused pure-policy and DynamoDB Local tests.
 8. README and plan updates.
 
@@ -199,10 +222,11 @@ No automatic retry loop is added.
 - Actual OpenRouter/Nemotron call or prompt parsing.
 - Memory categories, per-topic keys, or deterministic semantic conflict rules.
 - Vector search, embeddings, Memory ranking, or retrieval over an unbounded archive.
-- User-facing Memory screen, command, onboarding copy, or notifications.
+- User-facing Memory screen, command parser, onboarding copy, or response delivery. The harness only
+  returns change-summary metadata for the later PIA integration.
 - Portfolio, Risk Check, order execution, or system-prompt mutation.
 - Skills or procedural learning.
-- Worker, scheduler, Cron, queue, outbox, audit history, or Memory history.
+- Worker, scheduler, Cron, queue, outbox, audit history, Memory history, or previous-version backup.
 - pia-agent integration, AWS infrastructure, IAM, or deployment.
 
 ## Focused verification
@@ -210,31 +234,40 @@ No automatic retry loop is added.
 Tests should combine related contracts and avoid a case-per-line suite.
 
 1. Memory is isolated by user and delete_all_for_user removes it.
-2. REPLACE stores one bounded document; a later replacement overwrites rather than appends.
+2. REPLACE stores one document of at most 4,000 characters; a later replacement overwrites rather than
+   appends, with no minimum retained-length ratio or previous-version backup.
 3. UNCHANGED preserves text while advancing last_reviewed_turn_id, and CLEAR is accepted only for an
    explicit forced forget.
 4. A stale boundary cannot overwrite a newer Memory.
-5. Reviewer failure and oversized or invalid output preserve Memory and boundary.
+5. Reviewer failure and oversized or invalid output preserve Memory and boundary; a change summary is
+   returned only after a successful winning write.
 6. Only Turns after last_reviewed_turn_id are reviewed.
-7. The twenty-Turn threshold and twenty-four-hour revisit trigger behave at their boundaries.
-8. Forced Review skips the LLM when nothing is unreviewed and blocks Compaction/reset on failure.
+7. The one-hour revisit trigger behaves at its boundary and no Review runs merely because a Turn count
+   was reached.
+8. Forced Review skips the LLM when nothing is unreviewed; failure is reported without requiring
+   Compaction or reset to stop.
 9. Reset preserves Memory while account deletion removes it.
+10. UNCHANGED and wording-only consolidation have no change summary; meaningful REPLACE and explicit
+    CLEAR return at most three concise items without storing a notification history.
 
 ## Review questions
 
 Please identify only concrete blockers or material design defects:
 
 1. Can one bounded free-form document support automatic consolidation without categories or keys?
-2. Is 8,000 characters a reasonable initial always-in-context ceiling for 256K-or-larger models?
+2. Is 4,000 characters a reasonable initial always-in-context ceiling without a second soft limit?
 3. Does last_reviewed_turn_id alone prevent duplicate and stale Reviews across repeated calls?
-4. Can the twenty-Turn and twenty-four-hour policy learn from casual users without a scheduler, given
-   the fourteen-day raw-Turn retention?
-5. Does forced Review before Compaction and reset prevent irreversible loss without coupling the
-   features or adding a transaction?
+4. Is a one-hour revisit trigger, evaluated only when the next request arrives, coherent with the
+   thirty-day raw-Turn retention and the explicit decision not to add a scheduler or first-contact
+   trigger?
+5. Do best-effort Review and non-blocking failure semantics preserve answer, Compaction, and reset
+   availability without adding orchestration infrastructure?
 6. Is full-document LLM replacement acceptably bounded against accidental deletion or prompt injection
    when Memory is advisory context only?
-7. Are any APIs, fields, failure paths, or tests unnecessary for this first Memory feature?
-8. Does the plan preserve the boundary that Memory cannot authorize financial actions or replace
+7. Is the ephemeral change-summary contract sufficient for a later caller to combine answer and Memory
+   notice into one response without storing notification history?
+8. Are any APIs, fields, failure paths, or tests unnecessary for this first Memory feature?
+9. Does the plan preserve the boundary that Memory cannot authorize financial actions or replace
    Portfolio data?
 
 If a blocker exists, propose the smallest correction. Do not add categories, vector infrastructure,
@@ -338,3 +371,26 @@ Apply blockers 1 and 2 and removals 1 to 3 to the plan text, then corrections 4 
 correction 5 and record the decision. None of this changes the architecture; with those in place the
 plan is ready to implement as written, and no category system, history, queue or scheduler should
 appear during implementation.
+
+## Resolution record: 2026-09-08, after Claude review
+
+The product owner reconsidered the scheduling and transparency policy with the Claude findings in
+view. The normative plan above now records the final decisions; this resolution explains where they
+intentionally differ from the historical review record.
+
+- Blocker 1's three-Turn first-contact trigger is not adopted. Raw-Turn retention becomes thirty days,
+  and a returning user's earlier unreviewed Turns are reviewed on the next request after a one-hour
+  gap. A user who does not return within thirty days is intentionally not learned from expired Turns.
+- Blocker 2 is adopted and extended: neither Compaction nor an explicit reset is blocked by Review
+  failure. Reset Review is best effort.
+- Removal 1 is rejected. CLEAR remains distinct from direct "forget everything": it handles an
+  explicit targeted forget whose result removes the final remaining Memory content.
+- Removal 2 is adopted; reviewer_model_id has no current consumer.
+- Removal 3 and corrections 4 and 6 are adopted.
+- Correction 5 is resolved by accepting the bounded Beta risk. There is no percentage shrink rule,
+  version history, or previous-version backup. Empty, oversized, malformed, and stale results are
+  rejected; users receive a concise meaningful-change summary and can correct Memory naturally.
+- The Memory ceiling is reduced from 8,000 to 4,000 Unicode characters.
+- Periodic twenty-Turn Review is removed. No scheduler or background idle job is added.
+- The later PIA integration should run a due revisit Review concurrently with answer generation and
+  append any successful meaningful change summary to that same answer, never as a separate message.
