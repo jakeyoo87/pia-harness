@@ -216,3 +216,106 @@ Please identify only concrete blockers, material omissions, or unnecessary scope
 
 If a blocker exists, propose the smallest correction. Do not add a provider adapter, model call,
 Compaction trigger, retry loop, tool schema, Portfolio context, user-facing behavior, or AWS work.
+
+## Review record: 2026-09-09, Claude, plan commit a38323d
+
+Plan-only review against the merged Session, Compaction, and Memory features. Nothing was implemented
+and nothing was merged. One blocker, three smaller corrections, and one removal follow. The shape of
+the feature is right and most of it needs no change.
+
+What holds. The typed part list is the correct boundary: it is the only artifact in this repository
+that can carry a trust classification, because a provider message list has nothing but roles. The
+domain objects line up exactly with what `main` already stores, including the two details that are easy
+to get wrong — Memory carries no session, so only its `user_key` can be checked, and a Memory document
+is allowed to be empty with an advanced boundary, which is why omitting empty Memory rather than
+emitting a blank part is correct. Re-checking the Summary boundary is worth its ten lines: it is the
+last place before content reaches a model where a cross-user or duplicated-context bug can still be
+caught, and `load_context` applying the same filter does not make a second check redundant when the
+consequence of a caller mistake is another user's conversation in the prompt. Not validating
+`memory.last_reviewed_turn_id` is right; assembly does not depend on it. The chosen order also puts the
+stable content first, so a later provider adapter can reuse a cached prefix across turns, and Memory
+sits where it changes least often.
+
+## Blocker: reserved_input_tokens can open a band where assembly always fails and Compaction always declines
+
+`TokenCompactor` exposes only `compact_after_response`, which begins by asking
+`CompactionPolicy.should_compact` and returns `None` when the trigger has not been reached. There is no
+force-compaction entry point. So the Orchestrator described in the responsibility boundary can ask for
+Compaction, but it cannot make it happen below the trigger.
+
+The two components measure a different budget:
+
+    assembler  input_budget = context_limit - reserved_response_tokens - reserved_input_tokens
+    compaction trigger      = 0.90 * (context_limit - max_response_tokens)
+
+With the defaults and `reserved_input_tokens` of zero, the trigger sits at ninety percent of the
+assembler's budget and Compaction always fires first, which is the intended behavior. But
+`reserved_input_tokens` is caller-configurable and is exactly the field that grows as PIA adds tool
+schemas. Once it exceeds the Compaction headroom, the trigger rises above the assembler's budget and a
+band opens between them. A conversation whose next request lands in that band overflows on every
+attempt while `should_compact` reports that no Compaction is due — including when the Orchestrator
+passes the overflow's own `required_input_tokens` as the estimate, because that value is still below
+the trigger. Nothing in either feature recovers, and the user's conversation stops working
+permanently. For a 262,144-token model the band opens once `reserved_input_tokens` passes about 25,800.
+
+Smallest correction: state the invariant in the token budget contract and leave the assembler pure.
+
+    reserved_input_tokens must not exceed the Compaction headroom:
+    reserved_input_tokens <= (1 - CompactionPolicy.trigger_ratio) * (context_limit - reserved_response_tokens),
+    with CompactionPolicy.max_response_tokens configured equal to reserved_response_tokens. The later
+    Orchestrator asserts this once at startup; the assembler does not import Compaction to check it.
+
+Add one verification item that the arithmetic holds for the default policy, so the relationship is
+pinned by a test rather than by a paragraph.
+
+## Smaller corrections
+
+1. Name the two rendering rules the typed parts exist to enforce. The plan tells the adapter not to
+   promote untrusted parts to trusted instructions, but `MEMORY` and `SUMMARY` have no natural provider
+   role, and the two most likely implementations both damage the property: folding them into the system
+   message promotes them, and emitting them as a bare user message makes stored content
+   indistinguishable from what the user just typed. State both rules here, where the reason for the
+   trust field lives, so the adapter review has something to check:
+
+       No UNTRUSTED_DATA part may be rendered into a provider system or developer role. An adapter may
+       label untrusted parts when rendering them; the label is a hint to the model, and the boundary is
+       the role separation plus the guarantee that the system part never contains stored content.
+
+2. Name the Orchestrator's termination condition. Overflow plus retry after Compaction is the right
+   split, but Compaction returns `None` when every remaining Turn is inside the protected tail, and a
+   retry loop that does not treat that as a stop condition never ends. One sentence in the
+   responsibility boundary: the Orchestrator stops and surfaces the failure when Compaction reports no
+   progress, rather than reassembling.
+
+3. Say that the counter must come from the adapter that renders the request. The split between a
+   whole-context counter and `reserved_input_tokens` is clean, but only if the counter measures the same
+   text the adapter will send. If they diverge, the budget check is arithmetic about a string nobody
+   transmits.
+
+## Removal
+
+4. `AssembledPromptContext` echoes `context_limit`, `reserved_response_tokens`, and
+   `reserved_input_tokens` back to a caller that just supplied them and is still holding them. Keep
+   `input_budget` and `estimated_input_tokens`, which are derived, and keep all of the reserves on
+   `ContextBudgetExceeded`, where they travel up the stack away from the call site and are genuinely
+   needed. Dropping the three echoed fields on the success path matches the precedent set when
+   `reviewer_model_id` was removed from the Memory item for having no reader.
+
+## Answers to the review questions
+
+1. Right boundary. The typed list is the only place trust can be represented, and it defers rendering
+   without deferring the rule; correction 1 makes that rule explicit.
+2. Sufficient in this repository, not yet sufficient at the adapter. See correction 1.
+3. Validate defensively. The checks are cheap and guard the one failure that is both silent and
+   catastrophic.
+4. Yes, once the invariant from the blocker is written down and the counter is sourced per correction 3.
+5. Yes. Returning counts and refusing to truncate is the correct boundary, and it is what makes the
+   overflow recoverable by a layer that can see the whole turn.
+6. Only the three echoed fields in removal 4. Every type, enum value, and validation earns its place.
+
+## Instructions for Codex
+
+Add the budget invariant and its verification item, the two rendering rules, the Orchestrator
+termination sentence, and the counter-sourcing sentence; drop the three echoed fields. All five are
+plan text plus one test. With them in place the plan is ready to implement as written, and no provider
+adapter, Compaction trigger, retry loop, or tool schema should appear in this branch.
