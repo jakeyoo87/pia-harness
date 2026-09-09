@@ -377,3 +377,59 @@ completed Turn already exists, the explicit method validates it and reviews its 
 targeted forget retains access to CLEAR rather than falling back to generic force Review. Per the
 user's instruction, implementation proceeds on this branch and final review will verify these choices
 alongside the future Orchestrator serialization contract.
+
+## Review record: 2026-09-09, Claude, implementation commit 478888b
+
+Implementation review against this plan. Verdict: no blocker. One coverage defect was found and fixed
+on this branch; the branch may be merged to main once the assigned agent confirms main CI succeeds.
+
+Verified by running. All 32 tests pass against DynamoDB Local, and ruff reports no unused imports, no
+undefined names and no bugbear findings. The existing Session, Compaction, Memory and Assembler tests
+are green alongside the new ones, so nothing regressed.
+
+Contracts were checked by mutation rather than only by reading. Deleting the reload-and-compare block,
+deleting the older-than-boundary rejection, deleting the equal-boundary early return, and making
+`review_if_due` pass `allow_clear=True` each fail the suite. The late-append test is the strongest of
+the new ones: it appends a Turn from inside the reviewer callable itself, so the race the plan review
+raised is reproduced deterministically rather than argued about, and the result is `STALE` with Memory
+still absent.
+
+The boundary advancing to an unpersisted ID is safe as implemented. `load_unreviewed_turns` compares
+turn IDs as strings and never checks existence, so a boundary pointing at a Turn that was never
+appended excludes nothing that is stored, and one test appends the completed Turn under the same ID
+afterwards and confirms a later `force_review` returns `None` rather than reviewing it twice.
+
+Two of the plan review's proposals were rejected with better answers, and both rejections are correct.
+Keeping `created_at` is right, though for a sharper reason than the resolution states: a consistent but
+wrong pair would still pass the check, so what it actually prevents is a pair whose halves disagree, and
+`append_completed_turn` would later refuse that Turn outright — leaving the boundary advanced for a Turn
+that can never be persisted. Validating before the Memory write is what closes that. Keeping the explicit
+path open when the matching completed Turn already exists is also better than the fallback to generic
+`force_review` that the review suggested, because `force_review` no longer permits CLEAR, so a targeted
+forget arriving after the append would have had no way to complete. That case is covered by a test that
+passes a real persisted Turn's ID, message and timestamp as the current input and receives `CLEARED`.
+
+The residual read-to-write window is described honestly. The plan states in two places, and the README
+repeats, that the reload is defense in depth rather than the concurrency boundary, and that a later
+Orchestrator must serialize completed-Turn append, explicit Memory commit, Compaction commit and reset
+per user and session. That is the right characterization: no finite number of re-reads closes a
+read-then-write window, and naming the caller contract is more honest than implying the check is
+sufficient.
+
+## Defect found and fixed: two validation rules were unpinned
+
+Removing `_validate_persisted_current`, so a persisted Turn carrying the current ID is accepted without
+checking that it is the same accepted message, left all 31 tests green. Turning the newer-persisted-Turn
+rejection into an ordinary prior-Turn append, which would sweep a Turn above the current ID below the
+new boundary and leave it to be reviewed a second time, also left all 31 tests green.
+
+Fixed in this branch by one test that appends a Turn and then presents two bad current inputs against
+it: one reusing its ID with a different message, and one whose ID sorts below it. Both are rejected
+before the reviewer is called and leave Memory absent. Both mutations now fail and the full suite still
+passes.
+
+## Instructions for Codex
+
+Nothing to fix. Confirm main CI succeeds after merge. When the Orchestrator is built, its
+state-commit serialization is the contract this feature depends on; it is stated in this plan and in
+the README and should be verified there rather than re-derived.

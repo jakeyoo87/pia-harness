@@ -390,6 +390,54 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
                     )
         self.assertEqual(1, len(calls))
 
+    def test_explicit_input_rejects_a_conflicting_or_newer_persisted_turn(self) -> None:
+        # The persisted Turn carrying the current ID must be the same accepted
+        # message, and a Turn above the current ID must not be swept below the
+        # new boundary, where it would be reviewed a second time.
+        user_key = "memory-current-conflict"
+        session = self.store.get_or_create_active_session(user_key, now=self.now)
+        persisted = self.append(user_key, session.session_id, created_at=self.now)
+        calls = []
+
+        def review(request):
+            calls.append(request)
+            return MemoryReviewOutput(MemoryReviewAction.REPLACE, "memory")
+
+        reviewer = AutomaticMemoryReviewer(self.store, review)
+        mismatched = CurrentMemoryInput(
+            user_key=user_key,
+            session_id=session.session_id,
+            turn_id=persisted.turn_id,
+            user_message="다른 질문",
+            created_at=persisted.created_at,
+        )
+        with self.assertRaisesRegex(
+            MemoryReviewValidationError, "does not match the current input"
+        ):
+            reviewer.review_explicit_input(
+                user_key=user_key,
+                session_id=session.session_id,
+                current_input=mismatched,
+                now=self.now,
+            )
+
+        older = self.current_input(
+            user_key,
+            session.session_id,
+            created_at=self.now - timedelta(seconds=1),
+        )
+        with self.assertRaisesRegex(
+            MemoryReviewValidationError, "older than a persisted Turn"
+        ):
+            reviewer.review_explicit_input(
+                user_key=user_key,
+                session_id=session.session_id,
+                current_input=older,
+                now=self.now,
+            )
+        self.assertEqual([], calls)
+        self.assertIsNone(self.store.get_memory(user_key))
+
     def test_invalid_or_failed_review_preserves_memory_and_boundary(self) -> None:
         user_key = "memory-invalid"
         session_id, turn = self.session_and_turn(user_key)
