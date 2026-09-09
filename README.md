@@ -67,6 +67,23 @@ adapter and Orchestrator responsibilities.
 
 See [the Context Assembler plan](plans/prompt-context-assembler.md) for the exact contracts.
 
+## Conversation orchestration
+
+- A newer message supersedes an answer still being generated and restarts with all pending input
+- Generation IDs discard late results even when provider cancellation is ignored
+- Once a response claims commit ownership, newer messages queue for the next response
+- Session, Memory, Compaction, delivery, and completed-Turn commits are serialized per user
+- Different users continue independently
+- Explicit Memory updates run only for the winning response and their changes appear in that response
+- Context overflow permits one Compaction and one reassembly attempt without truncation
+- Delivery success clears covered pending input even if completed-Turn persistence later fails
+
+The implementation is single-process and provider/channel independent. Model adapters, natural-language
+Memory intent detection, Telegram, state-changing tools, distributed coordination, and durable in-flight
+recovery remain separate.
+
+See [the Orchestrator plan](plans/conversation-orchestrator.md) for the exact lifecycle.
+
 ## Local verification
 
 Start DynamoDB Local, install the package, and run:

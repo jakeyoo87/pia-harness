@@ -38,6 +38,16 @@ from .memory import (
     MemoryReviewStatus,
     MemoryReviewValidationError,
 )
+from .orchestrator import (
+    MESSAGE_SEPARATOR,
+    ConversationInput,
+    ConversationOrchestrator,
+    ConversationResetResult,
+    ConversationResult,
+    ExplicitMemoryMode,
+    GeneratedAnswer,
+    OrchestratorStatus,
+)
 from .session import (
     ActiveSession,
     CompletedTurn,
@@ -57,6 +67,10 @@ __all__ = [
     "ContextUsage",
     "ContextBudgetExceeded",
     "ConversationContext",
+    "ConversationInput",
+    "ConversationOrchestrator",
+    "ConversationResetResult",
+    "ConversationResult",
     "CurrentMemoryInput",
     "DynamoDBConversationStore",
     "DEFAULT_MAX_RESPONSE_TOKENS",
@@ -72,6 +86,10 @@ __all__ = [
     "MemoryReviewResult",
     "MemoryReviewStatus",
     "MemoryReviewValidationError",
+    "MESSAGE_SEPARATOR",
+    "ExplicitMemoryMode",
+    "GeneratedAnswer",
+    "OrchestratorStatus",
     "PromptContextAssembler",
     "PromptContextKind",
     "PromptContextPart",

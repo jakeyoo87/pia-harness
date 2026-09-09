@@ -7,9 +7,8 @@ provider-independent conversation lifecycle with interruption behavior suitable 
 message may supersede an answer still being generated; the replacement generation sees every pending
 user message. Durable state changes remain serialized per user and session.
 
-This branch is plan-only until independent review. The current handoff assigns plan authorship to
-Codex and plan review to Claude. Implementation continues on this branch after review; later role
-assignments may change by explicit user instruction.
+This plan was independently reviewed before implementation. Implementation continues on this branch;
+later role assignments may change by explicit user instruction.
 
 ## Existing baseline
 
@@ -99,6 +98,11 @@ separator. The same combined text is passed to Prompt Context assembly.
 Message boundary labels are untrusted-data presentation hints only. They do not create a trusted
 instruction boundary and are never placed in the system prompt.
 
+When the newest pending input is explicit, its current-input Memory Review uses the complete combined
+pending text that the final Turn will store, while keeping the newest input's ID and timestamp. Earlier
+explicit inputs keep their own text, ID, and timestamp. A Memory boundary therefore never advances to
+the final Turn ID without the reviewer seeing all user text stored under that ID.
+
 ## Injected seams
 
 The Orchestrator receives existing store, assembler, Memory reviewer, and Compactor instances plus:
@@ -123,6 +127,10 @@ accept a newer message. Once durable work starts it is shielded from task cancel
 under the user's commit lock; its result is accepted only for the generation or explicit input it
 belongs to.
 
+Add one read-only `TokenCompactor.should_compact` proxy over its existing policy so the Orchestrator can
+decide whether pre-Compaction Memory flush is needed before calling the mutating compaction method. It
+does not add another policy or trigger.
+
 ## Per-user coordination state
 
 Maintain only in-process state while work is active:
@@ -131,11 +139,15 @@ Maintain only in-process state while work is active:
 - ordered pending inputs not yet represented by a delivered completed Turn;
 - active generation task and cancellation handle;
 - phase: `GENERATING` or `COMMITTING`;
-- successful Memory change-summary items waiting to be attached to the next final response.
+- successful Memory change-summary items waiting to be attached to the current winning response.
 
 No pending prompt, partial output, hidden reasoning, or change-summary outbox is persisted. Process
 restart loses in-flight work; completed durable writes remain valid and the messaging channel may
 redeliver or the user may retry.
+
+Change summaries are commit-local. They are removed after successful delivery and discarded after
+delivery failure; they are never carried into a later response. This deliberately avoids an outbox or
+cross-response notification recovery in the first Orchestrator.
 
 ## Interruption algorithm
 
@@ -168,7 +180,8 @@ For the current pending batch:
 7. atomically claim the `COMMITTING` phase under the state lock;
 8. under the per-user commit lock, run due Memory work, optional Compaction, delivery, and completed-Turn
    append in the order below;
-9. clear only the inputs covered by the successfully delivered Turn;
+9. clear inputs covered by the response immediately after delivery succeeds, regardless of whether
+   completed-Turn append succeeds;
 10. if later inputs queued during commit, start their generation; otherwise remove idle coordinator
     state.
 
@@ -191,6 +204,10 @@ Memory Review or Compaction failure is recorded in the structured result but doe
 delivery. Failed explicit Memory Review must not produce a success notice. Delivery failure prevents
 completed-Turn append but does not roll back already committed explicit Memory, automatic Memory, or
 Compaction changes.
+
+If completed-Turn append fails after successful delivery, the covered pending inputs remain cleared so
+the user is not answered twice. Return `PERSISTENCE_FAILED`; no automatic append retry, retry payload,
+or durable recovery record is added in this Beta scope.
 
 A new message arriving after step 7's commit ownership was claimed is queued for the next generation;
 it does not interrupt delivery or append. The state-commit lock therefore closes the explicit Memory
@@ -237,7 +254,8 @@ Add a separate orchestrated reset operation:
 3. attempt best-effort Memory Review of persisted unreviewed Turns;
 4. reset the active Session regardless of Review success;
 5. clear in-process pending inputs and change summaries for the old Session;
-6. return the new Session or a structured failure.
+6. resolve every submit discarded by reset as `SUPERSEDED`;
+7. return the new Session or a structured failure.
 
 Reset does not interrupt delivery or another commit already in progress; it waits for that commit,
 then runs. Long-term Memory remains; the old rolling Summary is removed by the existing store method.
@@ -265,8 +283,8 @@ contains hidden reasoning, partial output, Memory text, credentials, or raw prov
 - Memory failure: answer proceeds without a Memory success notice.
 - Compaction failure: answer proceeds when generation already succeeded; pre-generation overflow stops.
 - Delivery failure: no completed Turn is stored; committed Memory or Compaction is not rolled back.
-- Turn append failure after delivery: return `PERSISTENCE_FAILED` with the stable turn ID so the caller
-  may invoke an idempotent append retry; do not regenerate or redeliver automatically.
+- Turn append failure after delivery: clear the delivered inputs and return `PERSISTENCE_FAILED`; do
+  not regenerate, redeliver, create a retry payload, or retain recovery state.
 - Process restart: in-flight state is lost; no recovery worker or outbox is introduced.
 - Different users never share coordinator state, locks, pending input, Context, or results.
 
@@ -276,6 +294,7 @@ contains hidden reasoning, partial output, Memory text, credentials, or raw prov
 - `GeneratedAnswer`;
 - Orchestrator status and result;
 - `ConversationOrchestrator.submit` and `reset` async methods;
+- read-only `TokenCompactor.should_compact` using the existing policy;
 - one internal per-user coordinator with generation ownership and commit serialization;
 - injected async answer and delivery callables.
 
@@ -320,10 +339,10 @@ executor, workflow framework, or generalized event bus is added.
    notice.
 8. Exact Context overflow runs at most one Compaction and one reassembly, passes the assembler total
    with no provider usage, and stops when Compaction makes no progress.
-9. Delivery failure writes no completed Turn; append failure after delivery returns the stable ID for
-   idempotent retry without redelivery.
+9. Delivery failure writes no completed Turn and discards commit-local change summaries; append failure
+   after delivery clears the covered inputs and returns `PERSISTENCE_FAILED` without retry state.
 10. Reset waits for an active commit, cancels only interruptible generation, preserves Memory, and
-    switches the Session.
+    switches the Session; discarded submits resolve as `SUPERSEDED`.
 11. Idle coordinator state is removed and pending data never crosses users.
 12. Existing Session, Compaction, Memory, and Assembler tests remain green.
 
@@ -450,3 +469,12 @@ Apply the blocker's one-sentence rule and the two corrections before implementin
 item for the blocker: a batch whose newest input is explicit must leave no stored Turn below or at the
 Memory boundary whose text never reached a reviewer. Nothing else in the plan needs to change, and no
 provider adapter, queue, outbox or distributed lock should appear during implementation.
+
+## Resolution record: 2026-09-09, after Claude plan review
+
+The blocker is adopted: the newest explicit input is reviewed with the exact combined pending text
+that will be stored under its ID. Pending inputs clear on delivery success, and reset resolves discarded
+submits as SUPERSEDED. The owner chose the simpler Beta failure boundary: Memory change summaries are
+commit-local and discarded after delivery failure, and a completed-Turn append failure returns
+PERSISTENCE_FAILED without an automatic retry, retry payload, outbox, or cross-response notification.
+Implementation proceeds on this branch with those limits.
