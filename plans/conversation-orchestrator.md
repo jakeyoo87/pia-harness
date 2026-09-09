@@ -352,3 +352,101 @@ Please identify only concrete blockers, material omissions, or unnecessary scope
 
 If a blocker exists, propose the smallest correction. Do not add a provider adapter, Telegram code,
 streaming UI, state-changing tools, distributed coordination, queue, worker, outbox, or AWS work.
+
+## Review record: 2026-09-09, Claude, plan commit d39f12e
+
+Plan-only review against the merged Session, Compaction, Memory, explicit current-input, and Assembler
+contracts. Nothing was implemented and nothing was merged. One blocker and two smaller corrections
+follow. The concurrency design itself is sound and needs no structural change.
+
+What holds. Claiming `COMMITTING` under the same state lock that decides interrupt-versus-queue closes
+the window that question 1 asks about: there is no instant where a message can both see `GENERATING`
+and arrive after commit ownership was taken. The two locks are not redundant, because they answer
+different questions — the phase decides whether a new message interrupts, and the commit lock is what
+`reset` waits on when it arrives from outside the generation flow. Generation ownership rather than
+provider cancellation as the correctness mechanism is the right call, and it is what makes best-effort
+cancellation acceptable. The commit lock also delivers exactly what the explicit Memory feature asked
+for: no Turn append can land between that feature's final persisted-Turn reload and its Memory write,
+because both happen inside one commit under the same lock. Running explicit Review only after commit
+ownership is claimed is likewise correct — a superseded batch can never commit a Memory change.
+
+Two integration details are also right and worth recording because they were easy to get wrong. The
+overflow flow passes the assembler's own total as `estimated_context_tokens` with `usage=None`, which
+avoids `should_compact` preferring the previous response's smaller provider usage and declining the
+Compaction that assembly just demanded. And running the pre-Compaction force Review before Compaction
+deletes covered Turns keeps unreviewed content from being deleted before Memory ever sees it.
+
+## Blocker: an ordinary pending message is lost to Memory when the newest pending message is explicit
+
+The plan stores one completed Turn under the newest pending input's ID with the combined text of every
+pending message, and separately reviews each explicit input using its own ID and its own text. When the
+newest pending input is the explicit one, those two rules collide.
+
+Take a batch of message A, an ordinary question, and message B, an explicit remember request that
+arrived while A was still being answered. This is an ordinary interaction, not a corner case: a user
+asks something and then adds "and remember that I prefer long-term positions" before the answer lands.
+Commit runs `review_explicit_input` for B with B's own text, which advances the Memory boundary to B's
+turn ID. The completed Turn is then appended under that same ID with A's text, B's text and the answer.
+`load_unreviewed_turns` filters on a strictly greater turn ID, so that Turn is excluded from every
+later Review. A's text and the assistant's answer were never sent to any reviewer and never will be.
+
+Without interruption the same message A would have become its own Turn and been reviewed on the next
+revisit, so interruption silently reduces Memory coverage, and nothing reports it. The reverse ordering
+is safe: when the explicit input is not the newest, the boundary stops below the combined Turn's ID and
+that Turn stays eligible.
+
+Smallest correction: make the explicit Review that shares the completed Turn's ID present the same text
+that Turn will store.
+
+    The explicit input whose turn ID equals the newest pending input's ID is reviewed with the combined
+    pending text, not with its own message alone. Explicit inputs that are not the newest keep their own
+    ID and their own text.
+
+The boundary then only passes content the reviewer actually saw, which is the invariant the rest of the
+Memory design rests on. It also makes the recovery path consistent: `review_explicit_input` compares a
+persisted Turn carrying the current ID against the current input's `user_message`, and after this change
+the two are the same combined string, so a Review attempted after the append still validates.
+
+## Smaller corrections
+
+1. Say that pending inputs are cleared on delivery success, not on completed-Turn persistence. Step 9
+   currently reads "clear only the inputs covered by the successfully delivered Turn", which conflates
+   the two. If an append failure left the inputs pending, the next batch would re-include a question the
+   user has already been answered, produce a second answer to it, and store both texts in one Turn. The
+   user has received the answer once delivery succeeds; a failed append should leave that exchange out
+   of stored history rather than cause it to be answered again.
+
+2. Give the submits that reset discards a defined outcome. Reset clears pending inputs for the old
+   Session, but the status list has no result for a `submit` whose input is cleared that way, and those
+   callers are left awaiting a response that will never be generated. Return `SUPERSEDED` for them: it
+   already means "this invocation was replaced and must not send a response", which is exactly the
+   situation, and it avoids adding a status.
+
+## Answers to the review questions
+
+1. Sufficient, because the phase claim and the interrupt-or-queue decision share one lock.
+2. Yes. Ownership by generation ID suppresses late results, and the commit lock orders everything
+   durable, including reset arriving from outside the generation flow.
+3. Yes, and this is the simplest arrangement that also lets a change summary ride the same answer
+   without a notification outbox.
+4. Compatible for the Turn, the Session and the assembler, but not for the Memory boundary as written;
+   see the blocker.
+5. No conflict. Durable work begins only after commit ownership, which is the point at which
+   interruption already stops, so shielding never protects a cancelled generation. An executor thread
+   cannot be cancelled anyway, so the shield concerns the awaiting task only.
+6. Coherent, with correction 1 applied. Delivery is the point where the user has the answer, so it is
+   the right boundary for clearing pending state and for refusing to roll Memory back.
+7. Enough. One Compaction plus one reassembly terminates, and stopping when Compaction reports no
+   progress is the condition that makes it terminate rather than loop.
+8. Correct at the boundary, with correction 2 for the discarded submits.
+9. No unnecessary state, status or lock. One field's lifetime is unclear: the per-user state holds
+   change summaries "waiting to be attached to the next final response", while the failure section says
+   a summary may simply be lost when delivery fails. Say which it is, so an implementer does not build a
+   cross-response carry-over that the rest of the plan does not want.
+
+## Instructions for Codex
+
+Apply the blocker's one-sentence rule and the two corrections before implementing. Add one verification
+item for the blocker: a batch whose newest input is explicit must leave no stored Turn below or at the
+Memory boundary whose text never reached a reviewer. Nothing else in the plan needs to change, and no
+provider adapter, queue, outbox or distributed lock should appear during implementation.
