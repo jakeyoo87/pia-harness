@@ -238,3 +238,103 @@ Please identify only concrete blockers, material omissions, or unnecessary scope
 
 If a blocker exists, propose the smallest correction. Do not add intent parsing, model networking,
 delivery, interruption, transactions, outbox state, Memory history, `pia-agent`, or AWS work.
+
+## Review record: 2026-09-09, Claude, plan commit 5fd71ef
+
+Plan-only review against the merged Memory implementation. Nothing was implemented and nothing was
+merged. One blocker, one removal, and one smaller correction follow. The rest of the design is sound
+and the two hardest judgment calls in it are the right way round.
+
+What holds. Reusing the preassigned turn ID as the boundary is safe against a permanently absent
+completed Turn: `load_unreviewed_turns` filters on `turn_id > after_turn_id` as a plain string
+comparison and never checks existence, and every later ID sorts above the current one, so a boundary
+pointing at a Turn that was never appended skips nothing that is stored. Reusing the same ID when the
+Turn is finally appended is what keeps that Turn out of a second Review, which is correct: its user half
+was already reviewed as current input, and its assistant half is the confirmation, which the Memory
+instruction would drop anyway. Rejecting a current input whose ID is below the boundary is also right,
+because writing an older ID would move the boundary backwards and make already-reviewed Turns eligible
+again.
+
+## Blocker: the boundary can advance past Turns the reviewer never saw
+
+Today `_apply` writes `last_reviewed_turn_id=turns[-1].turn_id`, the newest Turn it actually read. That
+makes the current design race-free by construction: a Turn appended while the reviewer is running has a
+larger ID than anything that was read, stays above the boundary, and remains eligible for the next
+Review. This plan breaks that invariant. The boundary becomes `current_input.turn_id`, which sorts
+above Turns the reviewer may never have been given.
+
+The window is the reviewer call itself, and the Orchestrator this plan anticipates is exactly what
+opens it. Message A is accepted, answered and delivered, and its completed Turn append begins. Message
+B, an explicit remember request, is accepted with a later ID. `review_explicit_input` loads the Memory
+boundary and the persisted Turns after it; A's append has not landed, so A is not among them. The
+reviewer runs for as long as a model call takes. A's append lands, with an ID between the old boundary
+and B's. The conditional write still sees the old boundary, so it succeeds, and the boundary jumps to
+B's ID. Turn A now sits below the boundary, was never sent to any reviewer, and never will be. Nothing
+reports it.
+
+Smallest correction: keep the invariant that the boundary may only pass Turns the reviewer was given,
+using machinery that already exists. After the reviewer returns and before the conditional write,
+reload the persisted Turns after the same boundary and compare their IDs with the set that was sent. If
+they differ, return `STALE` without writing. The caller already may reload and retry within its own
+request lifecycle, and on that retry the new Turn is included and the boundary then covers everything
+below it. This costs one `load_unreviewed_turns` call and one tuple comparison, adds no type, no
+transaction and no retry loop, and reuses the outcome the plan already defines for a lost race.
+
+Do not solve this by advancing the boundary to `turns[-1].turn_id` instead. That reintroduces a second
+Review of the explicit request and has no answer at all when there are no earlier Turns, which is the
+first-explicit-request case in verification item 1.
+
+## Removal: `created_at` on `CurrentMemoryInput`
+
+The field carries no information the value does not already hold. `new_turn_id` builds the ID from the
+timestamp, and the plan's own rule is that `created_at` must match that prefix, so the only thing the
+check can establish is that the caller copied its own value consistently. The same mismatch is caught
+later anyway by `append_completed_turn`, which already validates both the format and the prefix. The
+caller must keep its own `created_at` regardless, because `append_completed_turn` takes it as a
+separate argument and derives `expires_at` from it, so nothing is saved by carrying a second copy
+through the Memory API.
+
+Drop the field and its matching rule. The shared validation helper is still worth extracting, scoped to
+the ID format alone: the compiled pattern is currently private to `dynamodb.py` while `new_turn_id`
+lives in `session.py`, so a small validator next to `new_turn_id`, used by both modules, removes the
+duplicate pattern without touching `append_completed_turn`'s timestamp rule. Without that helper the
+current-input path would reach `replace_memory` and fail with a bare `ValueError` instead of a
+`MemoryReviewValidationError`.
+
+## Smaller correction: name the recovery path when the Turn is already persisted
+
+Rule 5 requires the current ID to be greater than every included persisted Turn ID. If the process
+dies after the completed Turn is appended but before any Memory Review runs, that Turn is now loaded
+with an ID equal to the current input's, the rule fails, and `review_explicit_input` can never be used
+for that request again. The request is not lost, because the Turn is persisted and generic
+`force_review` reviews it on the next flush or revisit, but a reader of this plan will not deduce that
+from a validation error. One sentence in the failure list: once the completed Turn exists, the explicit
+path is closed and the persisted path is the recovery.
+
+## Answers to the review questions
+
+1. Safe, for the reason in the opening paragraph, once the blocker above is closed. The absent-Turn
+   case is fine; the unseen-Turn case is not.
+2. Correct precedence. An explicit Memory request is a user-directed state change and should not be
+   conditional on transport. The alternative fails in the worse direction: committing after delivery
+   means the user can be told something was remembered that was not.
+3. Yes. Keeping the current input structurally separate is what preserves the completed-Turn contract
+   that Compaction, the boundary query and the assembler all depend on.
+4. `None` is enough. It is unambiguous here because this method always has a current input, so it
+   cannot mean "nothing to review"; an already-applied status would add a type for a distinction the
+   caller can already make.
+5. Yes. Removing the parameter is smaller and stronger than validating its use, and it makes the
+   targeted-forget path the only place CLEAR can be requested at all.
+6. Acceptable as best effort. Durable notification state is an outbox, which this project has excluded
+   repeatedly, and the failure is benign in both directions: an unseen remember is discoverable by
+   asking, and an unseen targeted forget leads at worst to a repeated request that reviews to UNCHANGED.
+7. Only the `created_at` field and its rule; see the removal. Every other validation is reachable, and
+   rule 5 in particular is load-bearing rather than decorative, since without it an included Turn above
+   the current ID would stay eligible and be reviewed twice.
+
+## Instructions for Codex
+
+Close the blocker with the reload-and-compare check, drop `created_at` and scope the shared helper to
+the ID format, and add the recovery sentence. Add one verification item for the blocker: a Turn that
+appears between load and write leaves Memory and the boundary unchanged and returns `STALE`. Nothing
+else in the plan needs to change.
