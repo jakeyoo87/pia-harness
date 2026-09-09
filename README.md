@@ -43,7 +43,14 @@ See [the compaction plan](plans/token-compaction.md) for the exact contracts.
 The reviewer is one injected callable. Response generation, user-facing notices, OpenRouter/Nemotron,
 and `pia-agent` integration remain separate.
 
+Explicit remember, correction, and targeted-forget callers may also pass the accepted current user
+input before its completed Turn exists. The Memory boundary advances to the input's preassigned turn
+ID, CLEAR remains available only on that explicit path, and the later completed Turn reuses the same
+ID. The later Orchestrator must serialize same-user/session state commits; the harness also rejects a
+stale result when the persisted-Turn set changes during Review.
+
 See [the automatic Memory plan](plans/automatic-long-term-memory.md) for the exact contracts.
+See [the explicit current-input plan](plans/explicit-memory-current-input.md) for this follow-up.
 
 ## Prompt and Context assembly
 

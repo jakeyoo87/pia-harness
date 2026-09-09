@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -15,13 +14,14 @@ from .session import (
     MemoryDocument,
     RollingSummary,
     as_utc,
+    is_valid_turn_id,
+    turn_id_matches_created_at,
     utc_text,
 )
 
 
 _ACTIVE_SESSION_SK = "ACTIVE_SESSION"
 _MEMORY_SK = "MEMORY"
-_TURN_ID = re.compile(r"^[0-9]{8}T[0-9]{12}Z_[0-9a-f]{32}$")
 
 
 class SessionStoreError(RuntimeError):
@@ -103,7 +103,7 @@ class DynamoDBConversationStore:
     ) -> CompletedTurn:
         user_key = _user_key(user_key)
         session_id = _required("session_id", session_id)
-        if not _TURN_ID.fullmatch(turn_id):
+        if not is_valid_turn_id(turn_id):
             raise ValueError("turn_id must be created by new_turn_id")
         user_message = _required("user_message", user_message)
         assistant_message = _required("assistant_message", assistant_message)
@@ -114,8 +114,7 @@ class DynamoDBConversationStore:
             raise TurnTooLargeError("turn content exceeds the configured byte limit")
 
         created_at = as_utc(created_at)
-        expected_prefix = created_at.strftime("%Y%m%dT%H%M%S%fZ_")
-        if not turn_id.startswith(expected_prefix):
+        if not turn_id_matches_created_at(turn_id, created_at):
             raise ValueError("turn_id timestamp must match created_at")
         expires_at = int(
             (created_at + timedelta(days=self._retention_days)).timestamp()
@@ -209,13 +208,13 @@ class DynamoDBConversationStore:
             raise ValueError("memory_text must be a string")
         if len(memory.memory_text) > MEMORY_MAX_CHARS:
             raise ValueError("memory_text exceeds the character limit")
-        if not _TURN_ID.fullmatch(memory.last_reviewed_turn_id):
+        if not is_valid_turn_id(memory.last_reviewed_turn_id):
             raise ValueError("last_reviewed_turn_id must be a turn ID")
 
         condition = "attribute_not_exists(pk) AND attribute_not_exists(sk)"
         values: dict[str, dict[str, str]] | None = None
         if expected_last_reviewed_turn_id is not None:
-            if not _TURN_ID.fullmatch(expected_last_reviewed_turn_id):
+            if not is_valid_turn_id(expected_last_reviewed_turn_id):
                 raise ValueError("expected_last_reviewed_turn_id must be a turn ID")
             condition = "last_reviewed_turn_id = :expected"
             values = {":expected": {"S": expected_last_reviewed_turn_id}}
@@ -252,7 +251,7 @@ class DynamoDBConversationStore:
     ) -> tuple[CompletedTurn, ...]:
         user_key = _user_key(user_key)
         session_id = _required("session_id", session_id)
-        if after_turn_id is not None and not _TURN_ID.fullmatch(after_turn_id):
+        if after_turn_id is not None and not is_valid_turn_id(after_turn_id):
             raise ValueError("after_turn_id must be a turn ID")
         now_epoch = int(as_utc(now or datetime.now(UTC)).timestamp())
         return tuple(
@@ -272,7 +271,7 @@ class DynamoDBConversationStore:
         _required("session_id", summary.session_id)
         _required("summary_text", summary.summary_text)
         _required("model_id", summary.model_id)
-        if not _TURN_ID.fullmatch(summary.through_turn_id):
+        if not is_valid_turn_id(summary.through_turn_id):
             raise ValueError("through_turn_id must be created by new_turn_id")
         if summary.summary_tokens <= 0:
             raise ValueError("summary_tokens must be positive")
@@ -280,7 +279,7 @@ class DynamoDBConversationStore:
         condition = "attribute_not_exists(pk) AND attribute_not_exists(sk)"
         values: dict[str, dict[str, str]] | None = None
         if expected_through_turn_id is not None:
-            if not _TURN_ID.fullmatch(expected_through_turn_id):
+            if not is_valid_turn_id(expected_through_turn_id):
                 raise ValueError("expected_through_turn_id must be a turn ID")
             condition = "through_turn_id = :expected"
             values = {":expected": {"S": expected_through_turn_id}}
@@ -305,7 +304,7 @@ class DynamoDBConversationStore:
     ) -> int:
         user_key = _user_key(user_key)
         session_id = _required("session_id", session_id)
-        if not _TURN_ID.fullmatch(through_turn_id):
+        if not is_valid_turn_id(through_turn_id):
             raise ValueError("through_turn_id must be a turn ID")
         items = self._query_turn_items(user_key, session_id)
         keys = [

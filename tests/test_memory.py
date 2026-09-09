@@ -12,6 +12,7 @@ from pia_harness import (
     MEMORY_REVIEW_INSTRUCTION,
     AutomaticMemoryReviewer,
     CompletedTurn,
+    CurrentMemoryInput,
     DynamoDBConversationStore,
     MemoryDocument,
     MemoryReviewAction,
@@ -126,6 +127,23 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
             user_key, session.session_id, created_at=created_at
         )
 
+    def current_input(
+        self,
+        user_key: str,
+        session_id: str,
+        *,
+        created_at: datetime | None = None,
+        user_message: str = "이 내용을 기억해줘",
+    ) -> CurrentMemoryInput:
+        created_at = created_at or self.now
+        return CurrentMemoryInput(
+            user_key=user_key,
+            session_id=session_id,
+            turn_id=new_turn_id(created_at),
+            user_message=user_message,
+            created_at=created_at,
+        )
+
     def test_due_review_replaces_memory_and_returns_changes_after_write(self) -> None:
         user_key = "memory-due"
         session_id, turn = self.session_and_turn(
@@ -203,21 +221,174 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
             reviewer.force_review(
                 user_key=user_key,
                 session_id=session_id,
-                allow_clear=False,
                 now=self.now + timedelta(minutes=1),
             )
         self.assertEqual("remembered", self.store.get_memory(user_key).memory_text)
         self.assertEqual(first.turn_id, self.store.get_memory(user_key).last_reviewed_turn_id)
 
-        result = reviewer.force_review(
+        result = reviewer.review_explicit_input(
             user_key=user_key,
             session_id=session_id,
+            current_input=CurrentMemoryInput(
+                user_key=user_key,
+                session_id=session_id,
+                turn_id=second.turn_id,
+                user_message=second.user_message,
+                created_at=second.created_at,
+            ),
             allow_clear=True,
             now=self.now + timedelta(minutes=1),
         )
         self.assertEqual(MemoryReviewStatus.CLEARED, result.status)
         self.assertEqual("", result.memory.memory_text)
         self.assertEqual(second.turn_id, result.memory.last_reviewed_turn_id)
+
+    def test_explicit_current_input_creates_memory_before_turn_persistence(self) -> None:
+        user_key = "memory-current-first"
+        session = self.store.get_or_create_active_session(user_key, now=self.now)
+        current = self.current_input(user_key, session.session_id)
+        requests = []
+
+        def review(request):
+            requests.append(request)
+            return MemoryReviewOutput(
+                MemoryReviewAction.REPLACE,
+                "장기투자를 선호한다.",
+                ("장기투자 선호를 기억했어요.",),
+            )
+
+        reviewer = AutomaticMemoryReviewer(self.store, review)
+        result = reviewer.review_explicit_input(
+            user_key=user_key,
+            session_id=session.session_id,
+            current_input=current,
+            now=self.now,
+        )
+        self.assertEqual(MemoryReviewStatus.REPLACED, result.status)
+        self.assertEqual(current.turn_id, result.memory.last_reviewed_turn_id)
+        self.assertEqual((), requests[0].turns)
+        self.assertEqual(current, requests[0].current_input)
+        self.assertFalse(requests[0].allow_clear)
+
+        persisted = self.store.append_completed_turn(
+            user_key=user_key,
+            session_id=session.session_id,
+            turn_id=current.turn_id,
+            user_message=current.user_message,
+            assistant_message="기억했어요.",
+            created_at=current.created_at,
+        )
+        self.assertEqual(current.turn_id, persisted.turn_id)
+        self.assertIsNone(
+            reviewer.force_review(
+                user_key=user_key, session_id=session.session_id, now=self.now
+            )
+        )
+        self.assertEqual(1, len(requests))
+
+    def test_explicit_input_includes_prior_turns_and_detects_a_late_append(self) -> None:
+        user_key = "memory-current-race"
+        session = self.store.get_or_create_active_session(user_key, now=self.now)
+        first = self.append(
+            user_key,
+            session.session_id,
+            created_at=self.now,
+        )
+        current_at = self.now + timedelta(seconds=2)
+        current = self.current_input(
+            user_key,
+            session.session_id,
+            created_at=current_at,
+        )
+        requests = []
+
+        def review(request):
+            requests.append(request)
+            self.append(
+                user_key,
+                session.session_id,
+                created_at=self.now + timedelta(seconds=1),
+            )
+            return MemoryReviewOutput(MemoryReviewAction.REPLACE, "new memory")
+
+        result = AutomaticMemoryReviewer(self.store, review).review_explicit_input(
+            user_key=user_key,
+            session_id=session.session_id,
+            current_input=current,
+            now=current_at,
+        )
+        self.assertEqual((first,), requests[0].turns)
+        self.assertEqual(current, requests[0].current_input)
+        self.assertEqual(MemoryReviewStatus.STALE, result.status)
+        self.assertIsNone(self.store.get_memory(user_key))
+
+    def test_explicit_input_replay_stale_and_invalid_values_skip_the_reviewer(self) -> None:
+        user_key = "memory-current-validation"
+        session = self.store.get_or_create_active_session(user_key, now=self.now)
+        current = self.current_input(user_key, session.session_id)
+        calls = []
+
+        def review(request):
+            calls.append(request)
+            return MemoryReviewOutput(MemoryReviewAction.REPLACE, "memory")
+
+        reviewer = AutomaticMemoryReviewer(self.store, review)
+        result = reviewer.review_explicit_input(
+            user_key=user_key,
+            session_id=session.session_id,
+            current_input=current,
+            now=self.now,
+        )
+        self.assertEqual(MemoryReviewStatus.REPLACED, result.status)
+        self.assertIsNone(
+            reviewer.review_explicit_input(
+                user_key=user_key,
+                session_id=session.session_id,
+                current_input=current,
+                now=self.now,
+            )
+        )
+        self.assertEqual(1, len(calls))
+
+        stale = self.current_input(
+            user_key,
+            session.session_id,
+            created_at=self.now - timedelta(seconds=1),
+        )
+        invalid_cases = (
+            stale,
+            CurrentMemoryInput(
+                "another-user",
+                session.session_id,
+                new_turn_id(self.now + timedelta(seconds=1)),
+                "remember",
+                self.now + timedelta(seconds=1),
+            ),
+            CurrentMemoryInput(
+                user_key,
+                session.session_id,
+                "invalid",
+                "remember",
+                self.now + timedelta(seconds=1),
+            ),
+            CurrentMemoryInput(
+                user_key,
+                session.session_id,
+                new_turn_id(self.now + timedelta(seconds=1)),
+                "remember",
+                self.now + timedelta(seconds=2),
+            ),
+        )
+        for invalid in invalid_cases:
+            with self.subTest(current_input=invalid):
+                with self.assertRaises(MemoryReviewValidationError):
+                    reviewer.review_explicit_input(
+                        user_key=user_key,
+                        session_id=session.session_id,
+                        current_input=invalid,
+                        now=self.now + timedelta(seconds=2),
+                    )
+        self.assertEqual(1, len(calls))
 
     def test_invalid_or_failed_review_preserves_memory_and_boundary(self) -> None:
         user_key = "memory-invalid"

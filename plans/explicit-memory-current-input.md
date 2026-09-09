@@ -7,9 +7,8 @@ to review that current user input before it becomes a persisted completed Turn. 
 between the existing promise of immediate explicit Memory updates and the current reviewer, which can
 read only previously persisted completed Turns.
 
-This branch is plan-only until independent review. The current handoff assigns plan authorship to
-Codex and plan review to Claude. Implementation continues on this same branch after review; later role
-assignments may change by explicit user instruction.
+This plan was independently reviewed before implementation. Implementation continues on this same
+branch; later role assignments may change by explicit user instruction.
 
 ## Existing baseline
 
@@ -60,6 +59,11 @@ successful delivery.
 Turn-ID format and timestamp matching are the same invariant for current and completed inputs. Extract
 the existing validation into one small session-level helper used by both paths rather than maintaining
 two regular expressions or allowing an invalid boundary to reach the reviewer.
+
+`created_at` remains on `CurrentMemoryInput`. The Memory write happens before completed-Turn append, so
+waiting for append to detect a timestamp mismatch is too late: a malformed future boundary could
+already skip later valid Turns. The explicit path therefore validates the same accepted ID/time pair
+before invoking the reviewer or writing Memory.
 
 ## Reviewer input
 
@@ -115,8 +119,13 @@ Before calling the injected reviewer:
 2. load the current Memory and its boundary;
 3. load non-expired persisted Turns after that boundary from the same user/session;
 4. reject a current input whose identity differs from the method's user/session value;
-5. require `current_input.turn_id` to be greater than every included persisted Turn ID;
+5. require that no included persisted Turn ID is greater than `current_input.turn_id`;
 6. if a Memory boundary exists, require the current turn ID to be greater than it.
+
+If a persisted Turn has the same ID as the current input, require its user message and created_at to
+match exactly. The explicit path may then review it as the structurally separate current input and
+exclude it from the prior-Turn tuple. This is the recovery path for a process that appended the
+completed Turn before explicit Review, and it preserves targeted-forget CLEAR permission.
 
 If the current turn ID equals the Memory boundary, return `None` without calling the reviewer: the
 same accepted input was already processed. If it is lower than the boundary, reject it as stale rather
@@ -125,6 +134,12 @@ than applying an older request to newer Memory.
 The successful replacement boundary is always `current_input.turn_id`, including UNCHANGED and CLEAR.
 The existing conditional Memory write still requires the previously observed boundary or item
 absence, so a concurrent winner cannot be overwritten.
+
+After the reviewer returns and before the conditional Memory write, reload persisted Turns after the
+same prior boundary. If their ID tuple differs from the tuple loaded before review, return STALE without
+writing. This detects a Turn committed while the reviewer was running. It is defense in depth, not the
+sole concurrency boundary: a later Orchestrator must serialize same-user/session state commits so no
+Turn append can occur between this reload and the Memory write.
 
 ## Lifecycle and delivery semantics
 
@@ -136,6 +151,11 @@ The later caller's intended order is:
     -> create the final answer and append any successful change summary
     -> deliver the final answer
     -> append the completed Turn with the same turn_id after delivery succeeds
+
+The later Orchestrator must run completed-Turn append, explicit Memory boundary commit, Compaction
+commit, and reset through one user/session state-commit coordinator. Model generation and read-only
+work may be interrupted, but these durable state transitions are serialized. Without that caller
+contract no finite reload can prevent a Turn from appearing between the final read and Memory write.
 
 The Memory write intentionally precedes answer delivery. An explicit Memory request is a user-directed
 state change, so a delivery failure does not roll it back. Rolling it back could also overwrite a
@@ -167,15 +187,18 @@ Review.
 - Reviewer failure or invalid output leaves Memory and boundary unchanged.
 - Lost CAS returns STALE with no change summary; the caller may reload and retry at most through its
   own request lifecycle.
+- A changed persisted-Turn ID tuple between reviewer input and commit returns STALE without writing.
 - Equal-boundary replay returns `None` without another reviewer call.
 - Stale or out-of-order current input is rejected before reviewer invocation.
+- If the matching completed Turn already exists, the explicit path validates it and remains available;
+  it does not fall back to generic force Review, because targeted forget may require CLEAR.
 - Completed-Turn delivery and append failures do not roll Memory back.
 - Account closure and direct complete Memory deletion remain unchanged.
 
 ## Minimal API surface
 
 - `CurrentMemoryInput`;
-- one shared accepted-turn-ID validation helper;
+- shared session-level turn-ID format and timestamp validation helpers;
 - optional `current_input` on `MemoryReviewRequest`;
 - `AutomaticMemoryReviewer.review_explicit_input`;
 - removal of `allow_clear` from generic `force_review`.
@@ -213,8 +236,12 @@ outbox, rollback record, Memory history, or Orchestrator base class is added.
 5. Equal-boundary replay skips the reviewer; lower-boundary input is rejected before the reviewer.
 6. Invalid current identity, ID format, timestamp, or ordering is rejected before the reviewer.
 7. Reviewer failure, invalid output, and lost CAS preserve Memory and boundary.
-8. Successful change summary is returned only after the conditional Memory write succeeds.
-9. Existing automatic revisit, forced persisted Review, reset, deletion, and full Harness tests remain
+8. A Turn appended during the reviewer call changes the reloaded ID tuple, returns STALE, and leaves
+   Memory and boundary unchanged.
+9. A matching already-persisted current Turn remains reviewable through the explicit path, including
+   targeted-forget CLEAR.
+10. Successful change summary is returned only after the conditional Memory write succeeds.
+11. Existing automatic revisit, forced persisted Review, reset, deletion, and full Harness tests remain
    green.
 
 ## Questions for independent review
@@ -338,3 +365,15 @@ Close the blocker with the reload-and-compare check, drop `created_at` and scope
 the ID format, and add the recovery sentence. Add one verification item for the blocker: a Turn that
 appears between load and write leaves Memory and the boundary unchanged and returns `STALE`. Nothing
 else in the plan needs to change.
+
+## Resolution record: 2026-09-09, after Claude plan review
+
+The reload-and-compare check is adopted as defense in depth, and the blocker is closed by also requiring
+the future Orchestrator to serialize every same-user/session durable state commit. A reload alone has a
+remaining read-to-write race and is not described as sufficient. `created_at` is retained because the
+Memory write precedes completed-Turn append; validating the accepted ID/time pair only during append
+would detect a poisoned future boundary too late. The recovery path is strengthened: when the matching
+completed Turn already exists, the explicit method validates it and reviews its user input itself, so
+targeted forget retains access to CLEAR rather than falling back to generic force Review. Per the
+user's instruction, implementation proceeds on this branch and final review will verify these choices
+alongside the future Orchestrator serialization contract.

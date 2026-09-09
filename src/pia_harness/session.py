@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
 
 MEMORY_MAX_CHARS = 4_000
+TURN_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{12}Z_[0-9a-f]{32}$")
 
 
 def as_utc(value: datetime) -> datetime:
@@ -21,6 +23,17 @@ def utc_text(value: datetime) -> str:
 def new_turn_id(created_at: datetime) -> str:
     prefix = as_utc(created_at).strftime("%Y%m%dT%H%M%S%fZ")
     return f"{prefix}_{uuid4().hex}"
+
+
+def is_valid_turn_id(value: str) -> bool:
+    return isinstance(value, str) and TURN_ID_PATTERN.fullmatch(value) is not None
+
+
+def turn_id_matches_created_at(turn_id: str, created_at: datetime) -> bool:
+    if not is_valid_turn_id(turn_id):
+        return False
+    expected_prefix = as_utc(created_at).strftime("%Y%m%dT%H%M%S%fZ_")
+    return turn_id.startswith(expected_prefix)
 
 
 @dataclass(frozen=True, slots=True)
