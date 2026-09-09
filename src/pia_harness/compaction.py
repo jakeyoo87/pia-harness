@@ -115,21 +115,6 @@ class TokenCompactor:
             usage=usage,
         )
 
-    def should_compact(
-        self,
-        *,
-        context_limit: int,
-        model_id: str,
-        estimated_context_tokens: int,
-        usage: ContextUsage | None = None,
-    ) -> bool:
-        return self._policy.should_compact(
-            context_limit=context_limit,
-            model_id=model_id,
-            estimated_context_tokens=estimated_context_tokens,
-            usage=usage,
-        )
-
     def compact_after_response(
         self,
         *,

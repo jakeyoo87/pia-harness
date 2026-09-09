@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from .compaction import ContextUsage, TokenCompactor
+from .compaction import DEFAULT_MAX_RESPONSE_TOKENS, ContextUsage, TokenCompactor
 from .context import (
     AssembledPromptContext,
     ContextBudgetExceeded,
@@ -110,7 +110,7 @@ class ConversationOrchestrator:
         system_prompt: str,
         context_limit: int,
         model_id: str,
-        reserved_response_tokens: int = 4096,
+        reserved_response_tokens: int = DEFAULT_MAX_RESPONSE_TOKENS,
     ) -> None:
         if not callable(generate_answer):
             raise ValueError("generate_answer must be callable")
@@ -287,7 +287,7 @@ class ConversationOrchestrator:
                     generation_id,
                     batch,
                     overflow_result,
-                    delivery_succeeded=False,
+                    clear_pending=True,
                 )
                 return
             answer = await self._generate_answer(assembled)
@@ -309,7 +309,7 @@ class ConversationOrchestrator:
                 generation_id,
                 batch,
                 result,
-                delivery_succeeded=delivery_succeeded,
+                clear_pending=delivery_succeeded,
             )
         except asyncio.CancelledError:
             return
@@ -324,7 +324,7 @@ class ConversationOrchestrator:
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
                 ),
-                delivery_succeeded=False,
+                clear_pending=False,
             )
 
     async def _assemble_with_overflow(
@@ -357,7 +357,7 @@ class ConversationOrchestrator:
             memory_failed = False
             async with state.commit_lock:
                 if not await self._is_current(state, generation_id):
-                    raise asyncio.CancelledError
+                    raise asyncio.CancelledError from None
                 try:
                     await _durable_call(
                         self._memory_reviewer.force_review,
@@ -574,13 +574,13 @@ class ConversationOrchestrator:
         batch: tuple[_Submission, ...],
         result: ConversationResult,
         *,
-        delivery_succeeded: bool,
+        clear_pending: bool,
     ) -> None:
         start_next = False
         async with state.state_lock:
             if state.generation_id != generation_id:
                 return
-            if delivery_succeeded:
+            if clear_pending:
                 del state.pending[: len(batch)]
             owner = batch[-1]
             if not owner.future.done():
@@ -588,7 +588,7 @@ class ConversationOrchestrator:
             state.phase = _Phase.IDLE
             state.active_task = None
             state.committing_count = 0
-            queued_new_input = len(state.pending) > (0 if delivery_succeeded else len(batch))
+            queued_new_input = len(state.pending) > (0 if clear_pending else len(batch))
             if queued_new_input and not state.reset_requested:
                 self._start_generation_locked(user_key, state)
                 start_next = True

@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from pia_harness import (
     MESSAGE_SEPARATOR,
     ActiveSession,
-    ContextBudgetExceeded,
     ConversationContext,
     ConversationOrchestrator,
     ExplicitMemoryMode,
@@ -188,8 +187,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
     async def test_late_cancelled_result_cannot_deliver(self) -> None:
         first_started = asyncio.Event()
         allow_late = asyncio.Event()
+        generation_tasks = []
 
         async def generate(context):
+            generation_tasks.append(asyncio.current_task())
             current = context.parts[-1].content
             if current == "A":
                 first_started.set()
@@ -210,11 +211,15 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             orchestrator.submit(user_key="user", message="B", accepted_at=self.now)
         )
         first_result, second_result = await asyncio.gather(first, second)
-        await asyncio.sleep(0)
+        # Join the superseded generation itself rather than yielding once, so the
+        # provider that ignored cancellation runs all the way to its commit
+        # attempt and generation ownership is what stops it.
+        await asyncio.gather(*generation_tasks, return_exceptions=True)
 
         self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
         self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
         self.assertEqual([("user", "current")], self.delivered)
+        self.assertEqual(1, len(self.store.turns))
         self.assertEqual("current", self.store.turns[0].assistant_message)
 
     async def test_message_during_delivery_waits_for_a_new_generation(self) -> None:
@@ -313,6 +318,30 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.CONTEXT_OVERFLOW, result.status)
         self.assertEqual(1, len([c for c in self.compactor.calls if c[0] == "compact"]))
+
+    async def test_overflow_does_not_strand_later_messages(self) -> None:
+        # The overflowing batch is deterministically unassemblable, so keeping it
+        # pending would make every later message for that user fail the same way.
+        async def generate(assembled):
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(generate)
+        self.compactor.progress = False
+        overflowed = await orchestrator.submit(
+            user_key="member",
+            message="x" * 2_000,
+            accepted_at=self.now,
+        )
+        self.assertEqual(OrchestratorStatus.CONTEXT_OVERFLOW, overflowed.status)
+
+        followed = await orchestrator.submit(
+            user_key="member",
+            message="짧은 질문",
+            accepted_at=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, followed.status)
+        self.assertEqual(1, len(self.store.turns))
+        self.assertEqual("짧은 질문", self.store.turns[0].user_message)
 
     async def test_delivery_and_persistence_failures_have_simple_boundaries(self) -> None:
         attempts = []

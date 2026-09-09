@@ -478,3 +478,72 @@ submits as SUPERSEDED. The owner chose the simpler Beta failure boundary: Memory
 commit-local and discarded after delivery failure, and a completed-Turn append failure returns
 PERSISTENCE_FAILED without an automatic retry, retry payload, outbox, or cross-response notification.
 Implementation proceeds on this branch with those limits.
+
+## Review record: 2026-09-09, Claude, implementation commit da423ee
+
+Implementation review against this plan and the merged Session, Memory, Compaction and Assembler
+contracts. Verdict: no blocker remains. Four defects were found and fixed on this branch; the branch
+may be merged to main once the assigned agent confirms main CI succeeds.
+
+Verified by running. The full suite is 42 tests green against DynamoDB Local, and ruff reports no
+unused imports, no undefined names and no bugbear findings after the fixes below. Before them ruff
+reported three errors, so the branch was not lint-clean as merged features have been.
+
+Concurrency was checked by stress, not only by reading. Twenty-five concurrent submissions for one user
+produced twenty-four `SUPERSEDED` results and one `DELIVERED`, with zero overlapping deliveries, exactly
+one stored Turn, and every one of the twenty-five message texts present in that Turn's combined text.
+A separate watcher observed exactly one coordinator object for that user across the run and confirmed
+the state is removed once idle, so the per-user coordinator is neither duplicated nor leaked.
+
+Lock ordering is sound. Two nestings exist — `commit_lock` then `state_lock` in the overflow path's
+currency check, and `_states_lock` then `state_lock` in idle cleanup — and no path ever takes them in
+the opposite order, because `_finish_generation` and `reset` both leave their `state_lock` block before
+calling cleanup, and `submit` never reaches for the commit lock. There is therefore no cycle and no
+deadlock.
+
+The plan's own correctness claims hold in the code. Cancellation is requested only while the phase is
+`GENERATING`, and once `_claim_commit` flips the phase under the state lock no caller cancels the task,
+so the commit sequence cannot be interrupted halfway. A message arriving during `COMMITTING` appends to
+pending without incrementing the generation counter, so `_finish_generation` still matches its own
+generation and starts the queued work afterwards. Explicit Memory Review, Compaction, delivery and the
+completed-Turn append all run inside one `commit_lock` acquisition, which is exactly the serialization
+the explicit Memory feature asked for: no Turn append can interleave between that feature's final
+reload and its Memory write. The blocker from the plan review is implemented correctly — the newest
+input's explicit Review receives the combined text while earlier explicit inputs keep their own — and
+removing that rule fails the suite.
+
+## Defects found and fixed
+
+1. A context overflow stranded the user permanently. Pending inputs were retained on
+   `CONTEXT_OVERFLOW`, but an overflowing batch is deterministically unassemblable, so every later
+   message inherited it and failed the same way. A probe confirmed it: after one overflow the pending
+   list grew from one to two and a subsequent short message also returned `CONTEXT_OVERFLOW`, with no
+   delivery ever occurring. Only `reset` or a process restart could clear it. Fixed by clearing the
+   covered inputs on overflow, the same way a delivered response clears them, and the parameter that
+   drives it is renamed from `delivery_succeeded` to `clear_pending` so the two remaining retention
+   cases, generation failure and delivery failure, still read as deliberate. A new test pins it: an
+   overflow followed by a short message now delivers that message and stores exactly one Turn holding
+   only its text.
+
+2. `TokenCompactor.should_compact` was defined twice, identically, so the second silently shadowed the
+   first. Removed the duplicate.
+
+3. The Orchestrator repeated the literal `4096` for its response reserve instead of importing
+   `DEFAULT_MAX_RESPONSE_TOKENS`, which the assembler already shares with `CompactionPolicy`. That is
+   the drift this project pinned a test for one feature ago; the constant is now imported.
+
+4. The late-result test did not exercise the guarantee it names. It yielded once after both
+   submissions resolved, which is not enough for a provider that ignored cancellation to reach its
+   commit attempt, so deleting the generation-ownership check in `_claim_commit` left the whole suite
+   green. The test now records the generation tasks themselves and joins them before asserting, so the
+   ignoring provider runs all the way to the commit attempt and ownership is what stops it. Deleting
+   the check now fails the suite.
+
+Three other guarantees were confirmed by mutation: the combined-text rule for the newest explicit
+input, clearing pending on delivery, and the overflow clearing added above.
+
+## Instructions for Codex
+
+Nothing further to fix. Confirm main CI succeeds after merge. When this Orchestrator is wired into
+`pia-agent`, `CONTEXT_OVERFLOW` is the status that must reach the user as a message, since the harness
+now drops that batch rather than retrying it.
