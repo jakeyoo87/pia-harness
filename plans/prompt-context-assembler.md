@@ -6,9 +6,8 @@ Add one provider-independent, side-effect-free component that turns the conversa
 produced by `pia-harness` into an ordered, budget-checked model context. It defines what the later model
 adapter receives, but does not call a model, read DynamoDB, compact data, retry, or talk to a user.
 
-This branch is plan-only until independent review. The current handoff assigns plan authorship to
-Codex and plan review to Claude. Later role assignments may change by explicit user instruction, while
-the same feature branch remains in use.
+This plan was independently reviewed before implementation. Implementation continues on the same
+feature branch; later role assignments may change by explicit user instruction.
 
 ## Existing baseline
 
@@ -32,7 +31,8 @@ The assembler owns only:
 2. producing context parts in one deterministic order;
 3. marking the system prompt as trusted and all stored or current conversation content as untrusted;
 4. calculating the available input budget from caller-supplied limits and reserves;
-5. asking one injected counter for the complete assembled input size;
+5. asking one adapter-supplied counter for the complete request input size, including provider framing
+   and tool schemas captured by that callable;
 6. returning the assembled context when it fits or a structured overflow error when it does not.
 
 The assembler does not:
@@ -48,7 +48,8 @@ The assembler does not:
 
 If assembly overflows, the later Conversation Orchestrator may ask the Compactor to reduce stored
 conversation context and then call the assembler again. That trigger and retry belong to the later
-Compaction/Orchestrator integration, not this feature.
+Compaction/Orchestrator integration, not this feature. If Compaction reports no progress, the
+Orchestrator must stop rather than reassemble in a loop.
 
 ## Input contract
 
@@ -62,8 +63,6 @@ Compaction/Orchestrator integration, not this feature.
 - `current_user_message`: the non-empty current request, not yet stored as a completed Turn;
 - `context_limit`: the model's total context window in tokens;
 - `reserved_response_tokens`: caller-configurable, defaulting to 4,096;
-- `reserved_input_tokens`: non-negative space reserved by the later adapter for tool schemas or
-  provider framing that is not represented as a context part;
 - one injected `count_input_tokens` callable.
 
 The assembler is deliberately pure. Loading `memory` and `conversation` together, choosing the active
@@ -75,9 +74,7 @@ The assembler returns an `AssembledPromptContext` containing:
 
 - an ordered tuple of `PromptContextPart` values;
 - `estimated_input_tokens` returned by the injected counter;
-- `input_budget` after all reserves;
-- the original `context_limit`, `reserved_response_tokens`, and `reserved_input_tokens` for later
-  diagnostics.
+- `input_budget` after the response reserve.
 
 Each `PromptContextPart` contains:
 
@@ -87,6 +84,9 @@ Each `PromptContextPart` contains:
 
 This is not yet a provider message list. A later adapter maps these typed parts to the provider's
 supported roles and wire format without promoting an untrusted part to trusted instructions.
+No `UNTRUSTED_DATA` part may be rendered into a provider system or developer role. Render-time labels
+may tell the model that Memory or Summary is data, but labels are only hints; the enforceable boundary
+is provider role separation plus the guarantee that the system part never contains stored content.
 
 ## Assembly order
 
@@ -123,15 +123,17 @@ repeat storage filtering or mutate the supplied context.
 
 The available input budget is:
 
-    input_budget = context_limit - reserved_response_tokens - reserved_input_tokens
+    input_budget = context_limit - reserved_response_tokens
 
-All values are token counts. `context_limit` and `reserved_response_tokens` must be positive;
-`reserved_input_tokens` must be non-negative; and the resulting `input_budget` must be positive.
+Both values are token counts, must be positive, and must leave a positive `input_budget`.
+`reserved_response_tokens` defaults to the same shared 4,096-token value used by
+`CompactionPolicy.max_response_tokens`.
 
 The injected counter receives the complete ordered tuple of parts, including the system prompt and all
-untrusted content, and returns the input token count including any canonical per-part overhead it owns.
-The later provider adapter can inject an exact model-aware counter. Tests use a deterministic counter;
-the assembler does not guess a provider tokenizer.
+untrusted content. It must be supplied by the same adapter that will render the provider request and
+must count that actual request's full input, including provider framing and tool schemas captured by
+the callable. The later Orchestrator must use this same total when it asks Compaction to respond to an
+overflow. Tests use a deterministic counter; the assembler does not guess a provider tokenizer.
 
 If the counter returns a negative or non-integer value, assembly fails validation. If the returned
 count is equal to the input budget, assembly succeeds. If it is greater, the assembler raises
@@ -140,7 +142,7 @@ count is equal to the input budget, assembly succeeds. If it is greater, the ass
 - `required_input_tokens`;
 - `input_budget`;
 - `context_limit`;
-- both reserve values.
+- `reserved_response_tokens`.
 
 The overflow error does not contain or log prompt text. No part is removed and no Compaction or retry
 is attempted.
@@ -192,11 +194,12 @@ later layers.
 2. Missing or empty optional Memory, Summary, and recent Turns are omitted correctly.
 3. System is the only trusted part; every stored and current conversation part is untrusted.
 4. User/session mismatch, unsorted Turn IDs, and Summary-boundary overlap are rejected.
-5. Token budget arithmetic validates limits and both reserves.
+5. Token budget arithmetic validates the context limit and shared response reserve.
 6. Exact-budget input succeeds; one-token overflow raises counts-only `ContextBudgetExceeded` without
    truncating parts.
 7. Invalid counter results and counter exceptions fail without an assembled result.
-8. Existing Session, Compaction, and Memory tests remain unchanged and pass in the full suite.
+8. The Assembler and default Compaction policy use the same 4,096-token response reserve.
+9. Existing Session, Compaction, and Memory tests remain unchanged and pass in the full suite.
 
 ## Questions for independent review
 
@@ -208,8 +211,8 @@ Please identify only concrete blockers, material omissions, or unnecessary scope
    from becoming instructions when the provider adapter is added?
 3. Should the assembler validate identity, ordering, and Summary boundaries defensively, or trust only
    `load_context` output?
-4. Does the injected whole-context token counter plus `reserved_input_tokens` account cleanly for
-   later provider and tool-schema overhead without binding this feature to a model?
+4. Does requiring the rendering adapter's whole-request token counter account cleanly for provider
+   framing and tool-schema overhead without binding this feature to a model?
 5. Is returning overflow without Compaction, retry, or user messaging the correct responsibility
    boundary?
 6. Is any proposed type, field, validation, or test unnecessary for this first assembler?
@@ -319,3 +322,14 @@ Add the budget invariant and its verification item, the two rendering rules, the
 termination sentence, and the counter-sourcing sentence; drop the three echoed fields. All five are
 plan text plus one test. With them in place the plan is ready to implement as written, and no provider
 adapter, Compaction trigger, retry loop, or tool schema should appear in this branch.
+
+## Resolution record: 2026-09-09, after Claude plan review
+
+The rendering rules, no-progress termination rule, adapter-owned counter, and success-result field
+removal are adopted in the normative plan above. The budget blocker is resolved more simply than the
+review's proposed headroom invariant: `reserved_input_tokens` is removed. The adapter-owned counter
+must include provider framing and tool schemas in the actual request total, so Assembler overflow and
+Compaction use the same measured input. The response reserve remains shared with Compaction at 4,096
+tokens. This removes the mismatched-budget band without adding a configuration ceiling or importing
+Compaction into the Assembler. Per the user's instruction, implementation proceeds on this branch and
+the final implementation review will verify the resolution.

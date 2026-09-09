@@ -1,11 +1,21 @@
 from .compaction import (
     CompactionPolicy,
     ContextUsage,
+    DEFAULT_MAX_RESPONSE_TOKENS,
     SummaryOutput,
     SummaryRequest,
     SummaryValidationError,
     TokenCompactor,
     conservative_token_estimate,
+)
+from .context import (
+    AssembledPromptContext,
+    ContextBudgetExceeded,
+    PromptContextAssembler,
+    PromptContextKind,
+    PromptContextPart,
+    PromptContextValidationError,
+    PromptTrust,
 )
 from .dynamodb import (
     DynamoDBConversationStore,
@@ -40,11 +50,14 @@ from .session import (
 __all__ = [
     "ActiveSession",
     "AutomaticMemoryReviewer",
+    "AssembledPromptContext",
     "CompletedTurn",
     "CompactionPolicy",
     "ContextUsage",
+    "ContextBudgetExceeded",
     "ConversationContext",
     "DynamoDBConversationStore",
+    "DEFAULT_MAX_RESPONSE_TOKENS",
     "MAX_CHANGE_SUMMARY_CHARS",
     "MAX_CHANGE_SUMMARY_ITEMS",
     "MEMORY_MAX_CHARS",
@@ -57,6 +70,11 @@ __all__ = [
     "MemoryReviewResult",
     "MemoryReviewStatus",
     "MemoryReviewValidationError",
+    "PromptContextAssembler",
+    "PromptContextKind",
+    "PromptContextPart",
+    "PromptContextValidationError",
+    "PromptTrust",
     "RollingSummary",
     "SessionConflictError",
     "SessionStoreError",

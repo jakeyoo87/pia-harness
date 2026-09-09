@@ -45,6 +45,21 @@ and `pia-agent` integration remain separate.
 
 See [the automatic Memory plan](plans/automatic-long-term-memory.md) for the exact contracts.
 
+## Prompt and Context assembly
+
+- Produces an ordered, provider-independent list of typed Context parts
+- Keeps the system prompt as the only trusted instruction
+- Marks Memory, Summary, historical messages, and the current request as untrusted data
+- Validates user, session, Turn order, and Summary boundaries before model input is built
+- Uses one adapter-supplied counter for the complete rendered request, including tools and framing
+- Reserves the same configurable response budget used by Compaction
+- Returns a counts-only `ContextBudgetExceeded` instead of truncating or compacting content
+
+Model rendering, Compaction retry, provider calls, and user-facing overflow behavior remain later
+adapter and Orchestrator responsibilities.
+
+See [the Context Assembler plan](plans/prompt-context-assembler.md) for the exact contracts.
+
 ## Local verification
 
 Start DynamoDB Local, install the package, and run:
