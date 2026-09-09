@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import unittest
 from datetime import UTC, datetime, timedelta
+from math import floor
 from uuid import uuid4
 
 import boto3
@@ -121,6 +122,40 @@ class TokenCompactionTest(unittest.TestCase):
                 usage=ContextUsage("another-model", 999999),
             )
         )
+
+    def test_budget_derived_limits_keep_their_own_bases(self) -> None:
+        policy = CompactionPolicy()
+        token_budget = ModelTokenBudget(262_144)
+        # The tail is a share of the whole window; the trigger is a share of the
+        # input budget. Reading both from the same base would change behavior
+        # without changing any ratio.
+        self.assertEqual(32_768, policy.tail_budget(token_budget))
+        self.assertEqual(232_243, policy.trigger_tokens(token_budget))
+        self.assertNotEqual(
+            policy.tail_budget(token_budget),
+            floor(token_budget.input_tokens * policy.protected_tail_ratio),
+        )
+
+    def test_reported_summary_over_the_response_reserve_is_rejected(self) -> None:
+        user_key = "compact-output-limit"
+        session = self.store.get_or_create_active_session(user_key, now=self.now)
+        turns = self.append_turns(user_key, session.session_id, 4)
+
+        with self.assertRaisesRegex(
+            SummaryValidationError, "exceeds the output token limit"
+        ):
+            self.compact(
+                user_key,
+                session.session_id,
+                lambda request: SummaryOutput(
+                    "short", "nemotron", self.token_budget.response_tokens + 1
+                ),
+            )
+        context = self.store.load_context(
+            user_key=user_key, session_id=session.session_id, now=self.now
+        )
+        self.assertIsNone(context.summary)
+        self.assertEqual(tuple(turns), context.turns)
 
     def test_success_replaces_old_turns_with_summary_and_keeps_tail(self) -> None:
         user_key = "compact-success"

@@ -566,3 +566,64 @@ response_tokens=4096)` is now the sole input-budget configuration. The Assembler
 object to both. `CompactionPolicy.max_response_tokens`, Assembler's separate context/reserve arguments,
 and Orchestrator's duplicate context/reserve fields are removed. This is a configuration refactor only;
 trigger ratio, protected-tail ratio, overflow behavior, and user-visible policy do not change.
+
+## Review record: 2026-09-09, Claude, shared budget refactor commit a953578
+
+Review of the token-budget consolidation against the previous implementation. Verdict: no blocker. The
+refactor is behavior-preserving and structurally better than what it replaced; two coverage gaps it
+exposed are fixed on this branch. The branch may be merged to main once the assigned agent confirms
+main CI succeeds.
+
+Verified by running. The suite is 44 tests green against DynamoDB Local, including the two added
+below, and ruff reports no unused imports, no undefined names and no bugbear findings.
+
+One budget owns both numbers and every stage reads that one object. `ModelTokenBudget` is frozen,
+validates both counts and their relationship at construction, and exposes `input_tokens` as the single
+derived value. `CompactionPolicy` now holds only ratios, the Assembler takes no reserve of its own, and
+the Orchestrator keeps one budget and hands the same instance to both the Assembler and the Compactor;
+an orchestrator test asserts that identity on the compaction call. A search for a surviving
+`reserved_response_tokens` or `max_response_tokens` setting finds none, and `context_limit` now exists
+only as a field of the budget and in the one place that legitimately reads the whole window.
+
+The arithmetic is unchanged. The trigger is still ninety percent of context minus response tokens, the
+protected tail is still one eighth of the whole context window, and the summary output limit is still
+the response reserve; the production trigger value of 232,243 for a 262,144-token model is asserted as
+before. Validation moved from the call sites into the budget's constructor, which is stricter and
+earlier: what used to be a per-call check is now impossible to construct.
+
+This also turns a documented invariant into a structural one. The Assembler review had to record that
+the compaction trigger must sit below the assembly budget, which previously depended on two separately
+configured numbers agreeing. Both now derive from one field, so the trigger is exactly ninety percent of
+the assembly budget by construction and the two cannot drift apart at all. That is the real gain here,
+beyond removing duplicate parameters.
+
+Interruption, Memory, and overflow behavior are untouched. Only parameter plumbing changed in the
+Orchestrator: the phase and ownership logic, commit ordering, explicit Memory handling, pending-input
+clearing and the single-Compaction overflow path are byte-identical apart from the argument name.
+
+## Coverage gaps found and fixed
+
+The refactor moved three derived numbers onto one object, and two of them turned out to be unpinned, so
+a later edit could have changed behavior silently.
+
+1. The protected tail reads the whole context window while the trigger reads the input budget. Changing
+   the tail to read `input_tokens` instead left all 42 tests green, because the compaction tests use a
+   budget where both bases put the same number of turns in the tail. At production values the two
+   differ by 512 tokens. A new test asserts both derived numbers for a 262,144-token budget and states
+   that they deliberately use different bases.
+
+2. The summary output limit is the response reserve. Changing it to read `context_limit` also left the
+   suite green, because every test summary is far below both limits, so the check never fired either
+   way. A new test now reports a summary one token over the reserve and asserts it is rejected with the
+   raw turns left intact.
+
+Three related mutations already failed before these additions and still do: reading the trigger from
+the context window, letting the budget accept a response reserve equal to the context limit, and having
+the Assembler treat the whole context window as its input budget.
+
+Also restored one blank line before the first class in `compaction.py`, which the constant's removal
+took with it; ruff's default rules do not flag it and the rest of the file uses two.
+
+## Instructions for Codex
+
+Nothing further to fix. Confirm main CI succeeds after merge.
