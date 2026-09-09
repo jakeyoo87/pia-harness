@@ -133,7 +133,10 @@ The injected counter receives the complete ordered tuple of parts, including the
 untrusted content. It must be supplied by the same adapter that will render the provider request and
 must count that actual request's full input, including provider framing and tool schemas captured by
 the callable. The later Orchestrator must use this same total when it asks Compaction to respond to an
-overflow. Tests use a deterministic counter; the assembler does not guess a provider tokenizer.
+overflow, and must pass it as `estimated_context_tokens` with no `usage`, because
+`CompactionPolicy.should_compact` prefers provider usage whenever the model matches and would
+otherwise decide the overflow on the previous response's smaller count. Tests use a deterministic
+counter; the assembler does not guess a provider tokenizer.
 
 If the counter returns a negative or non-integer value, assembly fails validation. If the returned
 count is equal to the input budget, assembly succeeds. If it is greater, the assembler raises
@@ -333,3 +336,70 @@ Compaction use the same measured input. The response reserve remains shared with
 tokens. This removes the mismatched-budget band without adding a configuration ceiling or importing
 Compaction into the Assembler. Per the user's instruction, implementation proceeds on this branch and
 the final implementation review will verify the resolution.
+
+## Review record: 2026-09-09, Claude, implementation commit a547e47
+
+Implementation review against this plan. Verdict: no blocker. One coverage defect was found and fixed
+on this branch; the branch may be merged to main once the assigned agent confirms main CI succeeds.
+
+Verified by running. All 28 tests pass against DynamoDB Local (21 from the earlier features plus 7 new
+assembler tests), and ruff reports no unused imports, no undefined names, and no bugbear findings.
+
+The budget resolution is better than the correction the plan review proposed. Removing
+`reserved_input_tokens` and requiring the adapter's counter to measure the whole request closes the
+mismatched-budget band by construction rather than by a configuration ceiling: the assembler's budget is
+now `context_limit - 4096` and Compaction's trigger is ninety percent of the same quantity, so the
+trigger is always reached first and no invariant has to be asserted at startup. `DEFAULT_MAX_RESPONSE_TOKENS`
+is a real single source of truth, imported by `context.py` and used as `CompactionPolicy.max_response_tokens`'s
+default, so the two cannot drift apart in a later edit.
+
+Contracts were checked by mutation, not only by reading. Deleting the Summary-boundary check, deleting
+the strictly-increasing Turn check, marking the Memory part `TRUSTED_INSTRUCTION`, and changing the
+overflow comparison from `>` to `>=` so an exact-budget input is refused each fail the suite. The
+identity test also asserts the counter was never called, which pins the ordering that validation
+happens before any content reaches the counter.
+
+Ordering, trust, and omission match the plan exactly: system, Memory, Summary, each Turn expanded as a
+user part followed by an assistant part, then the current message. Only the system part is trusted. An
+empty Memory document is omitted while a Summary is always emitted, which reads as an asymmetry but is
+correct: the Memory feature deliberately allows an empty document with an advanced review boundary,
+whereas both `replace_summary` and the compactor reject an empty summary, so a stored Summary always
+has text.
+
+The overflow path carries counts only. `ContextBudgetExceeded` holds four integers and its message is
+built from two of them, and a test asserts that neither the system prompt nor the current user message
+appears in the rendered string. Nothing in `assemble` removes, shortens, or reorders a part, calls the
+compactor, retries, or produces user-facing text; the only two outcomes are an assembled context or a
+raised error.
+
+## Defect found and fixed: the shared response reserve was only half pinned
+
+The suite asserted that `CompactionPolicy().max_response_tokens` equals `DEFAULT_MAX_RESPONSE_TOKENS`,
+but every call in the test file supplied `reserved_response_tokens` explicitly through the shared
+helper, so `assemble`'s own default parameter was never exercised. Changing that default from the
+shared constant to 2048 left all 28 tests green, which means verification item 8 did not actually hold
+the two halves of the contract together.
+
+Fixed in this branch by calling the assembler once without `reserved_response_tokens` and asserting the
+resulting budget equals `context_limit - DEFAULT_MAX_RESPONSE_TOKENS`. The same mutation now fails, and
+the full suite still passes.
+
+## Smaller correction applied
+
+The token budget contract now names the precedence rule the Orchestrator has to respect.
+`should_compact` prefers `usage.total_tokens` over `estimated_context_tokens` whenever the model
+matches, so an Orchestrator that answers an overflow by passing both would let the previous response's
+smaller count decide and would see Compaction decline while assembly keeps failing. The contract now
+says to pass the assembler's total as `estimated_context_tokens` with no `usage`.
+
+## Nothing else to change
+
+The API is the six types the plan listed and no more. Validation is five identity and ordering rules
+plus limit and counter checks, all of which are reachable and tested; the only asymmetry, checking
+`isinstance` on Memory and the conversation but duck-typing individual Turns, is the right trade
+because the container is already type-checked and per-Turn checks would be the unnecessary validation
+this review was asked to watch for.
+
+## Instructions for Codex
+
+Nothing to fix. Confirm main CI succeeds after merge.

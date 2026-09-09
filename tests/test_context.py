@@ -297,12 +297,21 @@ class PromptContextAssemblerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "counter unavailable"):
             self.assemble(fail)
 
-        result = self.assemble(
-            lambda parts: 1,
+        # Omit reserved_response_tokens so the assembler's own default is the
+        # value under test, not a reserve the caller supplied.
+        default_reserve = PromptContextAssembler(lambda parts: 1).assemble(
+            user_key=self.user_key,
+            session_id=self.session_id,
+            system_prompt="PIA system policy",
+            memory=None,
+            conversation=ConversationContext(summary=None, turns=()),
+            current_user_message="현재 질문",
             context_limit=5_000,
-            reserved_response_tokens=DEFAULT_MAX_RESPONSE_TOKENS,
         )
-        self.assertEqual(904, result.input_budget)
+        self.assertEqual(
+            5_000 - DEFAULT_MAX_RESPONSE_TOKENS, default_reserve.input_budget
+        )
+        self.assertEqual(904, default_reserve.input_budget)
 
 
 if __name__ == "__main__":
