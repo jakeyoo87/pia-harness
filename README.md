@@ -18,7 +18,8 @@ See [the feature plan](plans/conversation-session-core.md) for the exact contrac
 ## Token-based compaction
 
 - Triggers after a response at 90% of the model's usable input budget
-- Reserves the configured 4,096-token response limit before calculating the trigger
+- Uses one shared model token budget and reserves its default 4,096-token response limit before the
+  trigger
 - Prefers provider total-token usage and uses conservative estimation as a fallback
 - Keeps the newest turn and a token-budgeted recent tail verbatim
 - Stores one rolling summary per session before deleting covered raw turns
@@ -59,7 +60,7 @@ See [the explicit current-input plan](plans/explicit-memory-current-input.md) fo
 - Marks Memory, Summary, historical messages, and the current request as untrusted data
 - Validates user, session, Turn order, and Summary boundaries before model input is built
 - Uses one adapter-supplied counter for the complete rendered request, including tools and framing
-- Reserves the same configurable response budget used by Compaction
+- Uses the same immutable model token budget as Compaction
 - Returns a counts-only `ContextBudgetExceeded` instead of truncating or compacting content
 
 Model rendering, Compaction retry, provider calls, and user-facing overflow behavior remain later
@@ -76,6 +77,7 @@ See [the Context Assembler plan](plans/prompt-context-assembler.md) for the exac
 - Different users continue independently
 - Explicit Memory updates run only for the winning response and their changes appear in that response
 - Context overflow permits one Compaction and one reassembly attempt without truncation
+- One model token budget supplies both context limit and response reserve to every stage
 - Delivery success clears covered pending input even if completed-Turn persistence later fails
 
 The implementation is single-process and provider/channel independent. Model adapters, natural-language

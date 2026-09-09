@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .compaction import DEFAULT_MAX_RESPONSE_TOKENS
+from .budget import ModelTokenBudget
 from .session import ConversationContext, MemoryDocument
 
 
@@ -46,16 +46,14 @@ class ContextBudgetExceeded(RuntimeError):
         *,
         required_input_tokens: int,
         input_budget: int,
-        context_limit: int,
-        reserved_response_tokens: int,
+        token_budget: ModelTokenBudget,
     ) -> None:
         super().__init__(
             f"input requires {required_input_tokens} tokens but budget is {input_budget}"
         )
         self.required_input_tokens = required_input_tokens
         self.input_budget = input_budget
-        self.context_limit = context_limit
-        self.reserved_response_tokens = reserved_response_tokens
+        self.token_budget = token_budget
 
 
 class PromptContextAssembler:
@@ -76,22 +74,17 @@ class PromptContextAssembler:
         memory: MemoryDocument | None,
         conversation: ConversationContext,
         current_user_message: str,
-        context_limit: int,
-        reserved_response_tokens: int = DEFAULT_MAX_RESPONSE_TOKENS,
+        token_budget: ModelTokenBudget,
     ) -> AssembledPromptContext:
         user_key = _required_text("user_key", user_key)
         session_id = _required_text("session_id", session_id)
         _required_text("system_prompt", system_prompt)
         _required_text("current_user_message", current_user_message)
-        context_limit = _positive_int("context_limit", context_limit)
-        reserved_response_tokens = _positive_int(
-            "reserved_response_tokens", reserved_response_tokens
-        )
-        input_budget = context_limit - reserved_response_tokens
-        if input_budget <= 0:
+        if not isinstance(token_budget, ModelTokenBudget):
             raise PromptContextValidationError(
-                "context_limit must exceed reserved_response_tokens"
+                "token_budget must be a ModelTokenBudget"
             )
+        input_budget = token_budget.input_tokens
         if not isinstance(conversation, ConversationContext):
             raise PromptContextValidationError(
                 "conversation must be a ConversationContext"
@@ -122,8 +115,7 @@ class PromptContextAssembler:
             raise ContextBudgetExceeded(
                 required_input_tokens=estimated_input_tokens,
                 input_budget=input_budget,
-                context_limit=context_limit,
-                reserved_response_tokens=reserved_response_tokens,
+                token_budget=token_budget,
             )
         return AssembledPromptContext(parts, estimated_input_tokens, input_budget)
 
@@ -216,10 +208,4 @@ def _validate_identities_and_boundaries(
 def _required_text(name: str, value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise PromptContextValidationError(f"{name} is required")
-    return value
-
-
-def _positive_int(name: str, value: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise PromptContextValidationError(f"{name} must be a positive integer")
     return value

@@ -7,10 +7,10 @@ from pia_harness import (
     DEFAULT_MAX_RESPONSE_TOKENS,
     AssembledPromptContext,
     CompletedTurn,
-    CompactionPolicy,
     ContextBudgetExceeded,
     ConversationContext,
     MemoryDocument,
+    ModelTokenBudget,
     PromptContextAssembler,
     PromptContextKind,
     PromptContextValidationError,
@@ -68,8 +68,7 @@ class PromptContextAssemblerTest(unittest.TestCase):
                 turns=(self.first, self.second),
             ),
             "current_user_message": "현재 질문",
-            "context_limit": 10_000,
-            "reserved_response_tokens": 1_000,
+            "token_budget": ModelTokenBudget(10_000, 1_000),
         }
         values.update(overrides)
         return PromptContextAssembler(counter).assemble(**values)
@@ -241,8 +240,7 @@ class PromptContextAssemblerTest(unittest.TestCase):
     def test_exact_budget_succeeds_and_overflow_contains_counts_only(self) -> None:
         exact = self.assemble(
             lambda parts: 90,
-            context_limit=100,
-            reserved_response_tokens=10,
+            token_budget=ModelTokenBudget(100, 10),
         )
         self.assertEqual(90, exact.estimated_input_tokens)
         self.assertEqual(90, exact.input_budget)
@@ -250,14 +248,12 @@ class PromptContextAssemblerTest(unittest.TestCase):
         with self.assertRaises(ContextBudgetExceeded) as raised:
             self.assemble(
                 lambda parts: 91,
-                context_limit=100,
-                reserved_response_tokens=10,
+                token_budget=ModelTokenBudget(100, 10),
             )
         error = raised.exception
         self.assertEqual(91, error.required_input_tokens)
         self.assertEqual(90, error.input_budget)
-        self.assertEqual(100, error.context_limit)
-        self.assertEqual(10, error.reserved_response_tokens)
+        self.assertEqual(ModelTokenBudget(100, 10), error.token_budget)
         self.assertNotIn("PIA system policy", str(error))
         self.assertNotIn("현재 질문", str(error))
 
@@ -265,10 +261,7 @@ class PromptContextAssemblerTest(unittest.TestCase):
         invalid_calls = (
             {"system_prompt": ""},
             {"current_user_message": "  "},
-            {"context_limit": 0},
-            {"context_limit": True},
-            {"reserved_response_tokens": 0},
-            {"context_limit": 100, "reserved_response_tokens": 100},
+            {"token_budget": None},
         )
         for overrides in invalid_calls:
             with self.subTest(overrides=overrides):
@@ -285,11 +278,12 @@ class PromptContextAssemblerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be callable"):
             PromptContextAssembler(None)
 
-    def test_counter_failure_propagates_and_response_default_is_shared(self) -> None:
-        self.assertEqual(
-            CompactionPolicy().max_response_tokens,
-            DEFAULT_MAX_RESPONSE_TOKENS,
-        )
+        for values in ((0, 1), (100, 0), (100, 100), (True, 1), (100, True)):
+            with self.subTest(token_budget=values):
+                with self.assertRaises(ValueError):
+                    ModelTokenBudget(*values)
+
+    def test_counter_failure_propagates_and_budget_default_is_shared(self) -> None:
 
         def fail(parts):
             raise RuntimeError("counter unavailable")
@@ -297,8 +291,8 @@ class PromptContextAssemblerTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "counter unavailable"):
             self.assemble(fail)
 
-        # Omit reserved_response_tokens so the assembler's own default is the
-        # value under test, not a reserve the caller supplied.
+        token_budget = ModelTokenBudget(5_000)
+        self.assertEqual(DEFAULT_MAX_RESPONSE_TOKENS, token_budget.response_tokens)
         default_reserve = PromptContextAssembler(lambda parts: 1).assemble(
             user_key=self.user_key,
             session_id=self.session_id,
@@ -306,7 +300,7 @@ class PromptContextAssemblerTest(unittest.TestCase):
             memory=None,
             conversation=ConversationContext(summary=None, turns=()),
             current_user_message="현재 질문",
-            context_limit=5_000,
+            token_budget=token_budget,
         )
         self.assertEqual(
             5_000 - DEFAULT_MAX_RESPONSE_TOKENS, default_reserve.input_budget

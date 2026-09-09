@@ -403,3 +403,11 @@ this review was asked to watch for.
 ## Instructions for Codex
 
 Nothing to fix. Confirm main CI succeeds after merge.
+
+## Current contract update: 2026-09-09, shared model token budget
+
+The later Conversation Orchestrator removed duplicate token-budget variables before its main merge.
+`PromptContextAssembler.assemble` now receives one `ModelTokenBudget` instead of separate
+`context_limit` and `reserved_response_tokens` arguments. `ContextBudgetExceeded` carries that same
+budget object with the required and available input counts. Ordering, trust, identity, boundary,
+adapter-owned counting, and no-truncation behavior are unchanged.

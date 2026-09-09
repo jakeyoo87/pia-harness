@@ -7,7 +7,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from .compaction import DEFAULT_MAX_RESPONSE_TOKENS, ContextUsage, TokenCompactor
+from .budget import ModelTokenBudget
+from .compaction import ContextUsage, TokenCompactor
 from .context import (
     AssembledPromptContext,
     ContextBudgetExceeded,
@@ -108,9 +109,8 @@ class ConversationOrchestrator:
         generate_answer: Callable[[AssembledPromptContext], Awaitable[GeneratedAnswer]],
         deliver: Callable[[str, str], Awaitable[None]],
         system_prompt: str,
-        context_limit: int,
+        token_budget: ModelTokenBudget,
         model_id: str,
-        reserved_response_tokens: int = DEFAULT_MAX_RESPONSE_TOKENS,
     ) -> None:
         if not callable(generate_answer):
             raise ValueError("generate_answer must be callable")
@@ -120,16 +120,8 @@ class ConversationOrchestrator:
             raise ValueError("system_prompt is required")
         if not isinstance(model_id, str) or not model_id:
             raise ValueError("model_id is required")
-        if isinstance(context_limit, bool) or not isinstance(context_limit, int):
-            raise ValueError("context_limit must be an integer")
-        if (
-            isinstance(reserved_response_tokens, bool)
-            or not isinstance(reserved_response_tokens, int)
-            or reserved_response_tokens <= 0
-        ):
-            raise ValueError("reserved_response_tokens must be a positive integer")
-        if context_limit <= reserved_response_tokens:
-            raise ValueError("context_limit must exceed reserved_response_tokens")
+        if not isinstance(token_budget, ModelTokenBudget):
+            raise ValueError("token_budget must be a ModelTokenBudget")
         self._store = store
         self._assembler = assembler
         self._memory_reviewer = memory_reviewer
@@ -137,9 +129,8 @@ class ConversationOrchestrator:
         self._generate_answer = generate_answer
         self._deliver = deliver
         self._system_prompt = system_prompt
-        self._context_limit = context_limit
+        self._token_budget = token_budget
         self._model_id = model_id
-        self._reserved_response_tokens = reserved_response_tokens
         self._states: dict[str, _UserState] = {}
         self._states_lock = asyncio.Lock()
 
@@ -372,7 +363,7 @@ class ConversationOrchestrator:
                         self._compactor.compact_after_response,
                         user_key=user_key,
                         session_id=session.session_id,
-                        context_limit=self._context_limit,
+                        token_budget=self._token_budget,
                         model_id=self._model_id,
                         estimated_context_tokens=overflow.required_input_tokens,
                         usage=None,
@@ -425,8 +416,7 @@ class ConversationOrchestrator:
             memory=memory,
             conversation=conversation,
             current_user_message=current_user_message,
-            context_limit=self._context_limit,
-            reserved_response_tokens=self._reserved_response_tokens,
+            token_budget=self._token_budget,
         )
 
     async def _claim_commit(
@@ -498,7 +488,7 @@ class ConversationOrchestrator:
                     memory_failed = True
 
             if self._compactor.should_compact(
-                context_limit=self._context_limit,
+                token_budget=self._token_budget,
                 model_id=answer.model_id,
                 estimated_context_tokens=answer.estimated_total_tokens,
                 usage=answer.usage,
@@ -518,7 +508,7 @@ class ConversationOrchestrator:
                         self._compactor.compact_after_response,
                         user_key=user_key,
                         session_id=session.session_id,
-                        context_limit=self._context_limit,
+                        token_budget=self._token_budget,
                         model_id=answer.model_id,
                         estimated_context_tokens=answer.estimated_total_tokens,
                         usage=answer.usage,

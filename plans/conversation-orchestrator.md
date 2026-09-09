@@ -21,7 +21,8 @@ later role assignments may change by explicit user instruction.
 - a requirement that explicit Memory commits and completed-Turn appends be serialized by this
   Orchestrator;
 - a typed Prompt Context Assembler with trust classification and counts-only overflow;
-- shared 4,096 response-token reservation between assembly and Compaction.
+- one immutable `ModelTokenBudget` carrying context limit and the default 4,096 response-token reserve
+  for assembly, Compaction, and Orchestration.
 
 All current model-facing components use injected callables. This feature preserves that boundary and
 does not add OpenRouter, Nemotron, Telegram, AWS, or secrets.
@@ -111,6 +112,10 @@ The Orchestrator receives existing store, assembler, Memory reviewer, and Compac
   returning `GeneratedAnswer`;
 - `deliver`, one async callable that delivers the final text and returns successfully only when the
   user received it.
+
+It receives one `ModelTokenBudget` and passes that same object to the Assembler and Compactor. There
+are no separate Orchestrator, Assembler, or Compaction response-budget variables to compare or keep in
+sync. `CompactionPolicy` retains only ratios.
 
 `GeneratedAnswer` contains:
 
@@ -291,6 +296,7 @@ contains hidden reasoning, partial output, Memory text, credentials, or raw prov
 ## Minimal API surface
 
 - `ConversationInput` and explicit Memory mode;
+- shared `ModelTokenBudget` with context and response token counts;
 - `GeneratedAnswer`;
 - Orchestrator status and result;
 - `ConversationOrchestrator.submit` and `reset` async methods;
@@ -312,6 +318,7 @@ executor, workflow framework, or generalized event bus is added.
 7. Orchestrated reset.
 8. Deterministic async tests with fake answer, review, summary, token, and delivery callables.
 9. README and this plan update.
+10. Replacement of separate context/response arguments with one shared immutable token budget.
 
 ## Non-goals
 
@@ -345,6 +352,8 @@ executor, workflow framework, or generalized event bus is added.
     switches the Session; discarded submits resolve as `SUPERSEDED`.
 11. Idle coordinator state is removed and pending data never crosses users.
 12. Existing Session, Compaction, Memory, and Assembler tests remain green.
+13. Assembler, Compactor, and Orchestrator receive the same `ModelTokenBudget`; no independent response
+    reserve remains in their APIs or policy.
 
 ## Questions for independent review
 
@@ -547,3 +556,13 @@ input, clearing pending on delivery, and the overflow clearing added above.
 Nothing further to fix. Confirm main CI succeeds after merge. When this Orchestrator is wired into
 `pia-agent`, `CONTEXT_OVERFLOW` is the status that must reach the user as a message, since the harness
 now drops that batch rather than retrying it.
+
+## Resolution record: 2026-09-09, shared model token budget
+
+Before main merge, the owner chose to remove the remaining duplicated token-budget configuration
+rather than compare three values at runtime. One immutable `ModelTokenBudget(context_limit,
+response_tokens=4096)` is now the sole input-budget configuration. The Assembler uses its
+`input_tokens`, Compaction uses its context and response counts, and the Orchestrator passes the same
+object to both. `CompactionPolicy.max_response_tokens`, Assembler's separate context/reserve arguments,
+and Orchestrator's duplicate context/reserve fields are removed. This is a configuration refactor only;
+trigger ratio, protected-tail ratio, overflow behavior, and user-visible policy do not change.

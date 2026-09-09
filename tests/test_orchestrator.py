@@ -12,6 +12,7 @@ from pia_harness import (
     ExplicitMemoryMode,
     GeneratedAnswer,
     MemoryDocument,
+    ModelTokenBudget,
     MemoryReviewResult,
     MemoryReviewStatus,
     OrchestratorStatus,
@@ -129,6 +130,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.memory = FakeMemoryReviewer()
         self.compactor = FakeCompactor()
         self.delivered = []
+        self.token_budget = ModelTokenBudget(1_000, 100)
 
     def orchestrator(self, generate, *, counter=None, deliver=None):
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
@@ -144,9 +146,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             generate_answer=generate,
             deliver=deliver or default_deliver,
             system_prompt="system",
-            context_limit=1_000,
+            token_budget=self.token_budget,
             model_id="model",
-            reserved_response_tokens=100,
         )
 
     async def test_new_message_interrupts_and_only_combined_answer_commits(self) -> None:
@@ -308,6 +309,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(compact_calls))
         self.assertEqual(901, compact_calls[0][1]["estimated_context_tokens"])
         self.assertIsNone(compact_calls[0][1]["usage"])
+        self.assertIs(self.token_budget, compact_calls[0][1]["token_budget"])
         self.assertEqual(1, len(generated))
 
         self.compactor = FakeCompactor()

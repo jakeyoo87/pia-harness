@@ -408,3 +408,11 @@ fudge factor.
 Change the one line above, add the repeated-compaction test from note 2, and add the sentence from note
 1 to the plan. Then the branch can merge. Nothing else needs to change; the API surface, the failure
 paths and the test set are the right size, and no speculative structure was added.
+
+## Current contract update: 2026-09-09, shared model token budget
+
+The later Conversation Orchestrator removed duplicate token-budget variables before its main merge.
+`ModelTokenBudget` now owns `context_limit` and `response_tokens`. `CompactionPolicy` retains only
+trigger and protected-tail ratios, and its calculations plus `TokenCompactor.should_compact` and
+`compact_after_response` receive the shared budget object. Trigger arithmetic, tail selection,
+Summary validation, persistence order, and Compaction behavior are unchanged.

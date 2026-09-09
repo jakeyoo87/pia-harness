@@ -11,6 +11,7 @@ from pia_harness import (
     CompactionPolicy,
     ContextUsage,
     DynamoDBConversationStore,
+    ModelTokenBudget,
     RollingSummary,
     SummaryOutput,
     SummaryValidationError,
@@ -56,9 +57,9 @@ class TokenCompactionTest(unittest.TestCase):
         self.now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
         self.policy = CompactionPolicy(
             trigger_ratio=0.90,
-            max_response_tokens=10,
             protected_tail_ratio=0.20,
         )
+        self.token_budget = ModelTokenBudget(100, 10)
 
     def append_turns(
         self,
@@ -84,7 +85,7 @@ class TokenCompactionTest(unittest.TestCase):
             )
         return turns
 
-    def compact(self, user_key, session_id, summarize, *, context_limit=100):
+    def compact(self, user_key, session_id, summarize, *, token_budget=None):
         return TokenCompactor(
             self.store,
             summarize,
@@ -93,7 +94,7 @@ class TokenCompactionTest(unittest.TestCase):
         ).compact_after_response(
             user_key=user_key,
             session_id=session_id,
-            context_limit=context_limit,
+            token_budget=token_budget or self.token_budget,
             model_id="nemotron",
             estimated_context_tokens=0,
             usage=ContextUsage("nemotron", 90),
@@ -102,10 +103,11 @@ class TokenCompactionTest(unittest.TestCase):
 
     def test_policy_uses_usable_budget_and_matching_provider_usage(self) -> None:
         policy = CompactionPolicy()
-        self.assertEqual(232243, policy.trigger_tokens(262144))
+        token_budget = ModelTokenBudget(262144)
+        self.assertEqual(232243, policy.trigger_tokens(token_budget))
         self.assertTrue(
             policy.should_compact(
-                context_limit=262144,
+                token_budget=token_budget,
                 model_id="nemotron",
                 estimated_context_tokens=1,
                 usage=ContextUsage("nemotron", 232243),
@@ -113,7 +115,7 @@ class TokenCompactionTest(unittest.TestCase):
         )
         self.assertFalse(
             policy.should_compact(
-                context_limit=262144,
+                token_budget=token_budget,
                 model_id="nemotron",
                 estimated_context_tokens=1,
                 usage=ContextUsage("another-model", 999999),
