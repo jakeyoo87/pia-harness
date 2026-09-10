@@ -1,8 +1,8 @@
-# OpenRouter/Nemotron Model Adapter Plan
+# OpenRouter Model Adapter Plan
 
 ## Goal
 
-Complete the reusable `pia-harness` model boundary so the library can call a configured Nemotron model
+Complete the reusable `pia-harness` model boundary so the library can call a configured model
 through OpenRouter for normal answers, automatic and explicit long-term Memory Review, and rolling
 Conversation Summary generation.
 
