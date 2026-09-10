@@ -79,6 +79,8 @@ See [the Context Assembler plan](plans/prompt-context-assembler.md) for the exac
 - Explicit Memory updates run only for the winning response and their changes appear in that response
 - Generated `UPDATE` and `FORGET` actions reuse the existing explicit-input reviewer; the caller no
   longer classifies inputs before answer generation
+- The caller supplies one required, bounded failure notice so a failed explicit update cannot be
+  delivered as an apparent success
 - Complete Memory clearing requires a preceding delivered confirmation request and writes an empty
   document at the newest boundary so retained Turns cannot rebuild deleted Memory
 - Context overflow permits one Compaction and one reassembly attempt without truncation

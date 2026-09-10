@@ -115,7 +115,7 @@ class ConversationOrchestrator:
         system_prompt: str,
         token_budget: ModelTokenBudget,
         model_id: str,
-        explicit_memory_failure_notice: str | None = None,
+        explicit_memory_failure_notice: str,
     ) -> None:
         if not callable(generate_answer):
             raise ValueError("generate_answer must be callable")
@@ -127,7 +127,7 @@ class ConversationOrchestrator:
             raise ValueError("model_id is required")
         if not isinstance(token_budget, ModelTokenBudget):
             raise ValueError("token_budget must be a ModelTokenBudget")
-        if explicit_memory_failure_notice is not None and (
+        if (
             not isinstance(explicit_memory_failure_notice, str)
             or not explicit_memory_failure_notice.strip()
             or len(explicit_memory_failure_notice.strip())
@@ -143,7 +143,7 @@ class ConversationOrchestrator:
         self._system_prompt = system_prompt
         self._token_budget = token_budget
         self._model_id = model_id
-        self._explicit_memory_failure_notice = explicit_memory_failure_notice
+        self._explicit_memory_failure_notice = explicit_memory_failure_notice.strip()
         self._states: dict[str, _UserState] = {}
         self._states_lock = asyncio.Lock()
 
@@ -726,9 +726,9 @@ def _add_changes(changes: list[str], result: MemoryReviewResult | None) -> None:
             changes.append(item)
 
 
-def _add_notice(changes: list[str], notice: str | None) -> None:
-    if notice is not None and notice not in changes and len(changes) < 3:
-        changes.append(notice.strip())
+def _add_notice(changes: list[str], notice: str) -> None:
+    if notice not in changes and len(changes) < 3:
+        changes.append(notice)
 
 
 def _final_text(answer: str, changes: list[str]) -> str:

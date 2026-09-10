@@ -108,7 +108,7 @@ loses it and safely requires confirmation again.
 - Remove `ExplicitMemoryMode`.
 - Validate `GeneratedAnswer.memory_action` after the winning answer returns.
 - A superseded or late generation cannot perform its generated Memory action.
-- Add one optional caller-supplied explicit-Memory failure notice. It uses the existing response
+- Add one required caller-supplied explicit-Memory failure notice. It uses the existing response
   composition path and keeps wording outside this provider- and channel-independent harness.
 
 ### Commit routing
@@ -137,8 +137,8 @@ The initial unconfirmed `DELETE_ALL` action does not mutate Memory. After its an
 the per-user coordination state as awaiting confirmation and keep that state from idle cleanup. Any
 other delivered action clears the marker. A confirmed clear produces no reviewer change summary; the
 answer itself may acknowledge deletion after the conditional empty write succeeds. If that write or an
-explicit UPDATE/FORGET Review fails or returns stale, set `memory_failed=True` and append the optional
-failure notice when configured. Never report a successful Memory change notice for a failed write.
+explicit UPDATE/FORGET Review fails or returns stale, set `memory_failed=True` and append the required
+failure notice. Never report a successful Memory change notice for a failed write.
 
 The existing order for ordinary automatic Review, pre-Compaction Review, Compaction, delivery, and Turn
 persistence otherwise remains unchanged.
@@ -199,7 +199,7 @@ does not add `httpx` or duplicate the existing `pia-agent/app/openrouter.py` cli
   Memory from older retained Turns.
 - A confirmation without the preceding delivered unconfirmed-delete marker is not honored.
 - Explicit Review or confirmed-clear failure preserves the item, sets `memory_failed=True`, and appends
-  the optional failure notice when configured.
+  the required caller-supplied failure notice.
 - Delivery failure does not roll back a successful explicit Memory update or confirmed deletion, matching
   the existing commit-local failure boundary; no retry, outbox, or cross-response notice is added.
 - Completed-Turn persistence failure does not roll back earlier Memory work.
@@ -291,7 +291,7 @@ The owner accepted the minimal corrections. Drop `SHOW`. Confirmed `DELETE_ALL` 
 the same user's existing Orchestrator state records that the immediately preceding delivered generation
 produced an unconfirmed `DELETE_ALL`; the state remains in-process and is discarded on restart. Clearing
 Memory conditionally writes an empty document at the newest input boundary instead of deleting the item,
-so retained raw Turns cannot repopulate it. Add one optional caller-owned explicit-Memory failure notice
+so retained raw Turns cannot repopulate it. Add one required caller-owned explicit-Memory failure notice
 and append it through the existing response composition when an explicit Review or confirmed clear
 fails or is stale. The common reviewer pipeline, automatic schedule, storage schema, interruption model,
 and simple no-worker/no-parser boundary otherwise remain unchanged. Implementation proceeds on this
@@ -478,3 +478,12 @@ Nothing further to fix. Confirm main CI succeeds after merge. The later model ad
 instruction that `delete_all_confirmed` may only be set for an affirmative to the immediately preceding
 deletion question; the Orchestrator now checks its own state independently, so a model that sets it
 wrongly costs the user a repeated question rather than their Memory.
+
+## Post-review correction: required explicit failure notice
+
+After independently rechecking the final tree, the owner accepted one small contract correction. The
+explicit-Memory failure notice is required rather than optional. Without it, a caller that omitted the
+configuration could receive `memory_failed=True` only after the Orchestrator had already delivered an
+answer claiming the update succeeded. Requiring one non-empty, bounded caller-owned string closes that
+normal failure path without a second model call, provider-specific wording, retry, or new state.
+Automatic Review failures remain silent as designed.

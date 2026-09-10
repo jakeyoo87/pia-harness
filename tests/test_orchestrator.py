@@ -162,7 +162,12 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.token_budget = ModelTokenBudget(1_000, 100)
 
     def orchestrator(
-        self, generate, *, counter=None, deliver=None, failure_notice=None
+        self,
+        generate,
+        *,
+        counter=None,
+        deliver=None,
+        failure_notice="memory update failed",
     ):
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
@@ -181,6 +186,15 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             model_id="model",
             explicit_memory_failure_notice=failure_notice,
         )
+
+    async def test_explicit_memory_failure_notice_is_required_and_validated(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        with self.assertRaises(ValueError):
+            self.orchestrator(generate, failure_notice=None)
+        with self.assertRaises(ValueError):
+            self.orchestrator(generate, failure_notice="   ")
 
     async def test_new_message_interrupts_and_only_combined_answer_commits(self) -> None:
         first_started = asyncio.Event()
