@@ -48,6 +48,10 @@ from .orchestrator import (
     MemoryAction,
     OrchestratorStatus,
 )
+from .openrouter import (
+    OpenRouterModelAdapter,
+    OpenRouterModelError,
+)
 from .session import (
     ActiveSession,
     CompletedTurn,
@@ -91,6 +95,8 @@ __all__ = [
     "GeneratedAnswer",
     "MemoryAction",
     "OrchestratorStatus",
+    "OpenRouterModelAdapter",
+    "OpenRouterModelError",
     "PromptContextAssembler",
     "PromptContextKind",
     "PromptContextPart",

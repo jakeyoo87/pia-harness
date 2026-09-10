@@ -1,0 +1,532 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import unittest
+from datetime import UTC, datetime
+from typing import Any
+
+import httpx
+
+from pia_harness import (
+    AssembledPromptContext,
+    CompletedTurn,
+    CurrentMemoryInput,
+    MemoryAction,
+    MemoryReviewAction,
+    MemoryReviewRequest,
+    ModelTokenBudget,
+    OpenRouterModelAdapter,
+    OpenRouterModelError,
+    PromptContextKind,
+    PromptContextPart,
+    PromptTrust,
+    SummaryRequest,
+)
+
+
+FAKE_KEY = "sk-or-v1-TEST-ONLY-synthetic-model-adapter-key"
+BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def chat_response(
+    content: str,
+    *,
+    status: int = 200,
+    model: str = "vendor/exact-model",
+    usage: dict[str, int] | None = None,
+) -> httpx.Response:
+    payload: dict[str, Any] = {
+        "model": model,
+        "choices": [{"message": {"content": content}}],
+    }
+    if usage is not None:
+        payload["usage"] = usage
+    return httpx.Response(status, json=payload)
+
+
+def completed_turn() -> CompletedTurn:
+    now = datetime(2026, 9, 10, 12, 0, tzinfo=UTC)
+    return CompletedTurn(
+        user_key="user",
+        session_id="session",
+        turn_id="0000000000000-turn",
+        user_message="질문",
+        assistant_message="답변",
+        created_at=now,
+        expires_at=int(now.timestamp()) + 30 * 86400,
+    )
+
+
+def answer_parts() -> tuple[PromptContextPart, ...]:
+    return (
+        PromptContextPart(
+            PromptContextKind.SYSTEM,
+            "system",
+            PromptTrust.TRUSTED_INSTRUCTION,
+        ),
+        PromptContextPart(
+            PromptContextKind.MEMORY,
+            "장기투자 선호",
+            PromptTrust.UNTRUSTED_DATA,
+        ),
+        PromptContextPart(
+            PromptContextKind.SUMMARY,
+            "이전 대화 요약",
+            PromptTrust.UNTRUSTED_DATA,
+        ),
+        PromptContextPart(
+            PromptContextKind.USER_TURN,
+            "과거 질문",
+            PromptTrust.UNTRUSTED_DATA,
+        ),
+        PromptContextPart(
+            PromptContextKind.ASSISTANT_TURN,
+            "과거 답변",
+            PromptTrust.UNTRUSTED_DATA,
+        ),
+        PromptContextPart(
+            PromptContextKind.CURRENT_USER,
+            "앞으로 핵심만 답해줘",
+            PromptTrust.UNTRUSTED_DATA,
+        ),
+    )
+
+
+class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.sync_clients: list[httpx.Client] = []
+        self.async_clients: list[httpx.AsyncClient] = []
+
+    async def asyncTearDown(self) -> None:
+        for client in self.sync_clients:
+            if not client.is_closed:
+                client.close()
+        for client in self.async_clients:
+            if not client.is_closed:
+                await client.aclose()
+
+    def adapter(self, handler: Any) -> OpenRouterModelAdapter:
+        sync_client = httpx.Client(
+            transport=httpx.MockTransport(handler), base_url=BASE_URL
+        )
+        async_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url=BASE_URL
+        )
+        self.sync_clients.append(sync_client)
+        self.async_clients.append(async_client)
+        return OpenRouterModelAdapter(
+            api_key=FAKE_KEY,
+            model_id="vendor/exact-model",
+            token_budget=ModelTokenBudget(1_000, 100),
+            timeout_seconds=5,
+            sync_client=sync_client,
+            async_client=async_client,
+        )
+
+    async def test_answer_uses_one_structured_call_and_maps_action_and_usage(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return chat_response(
+                json.dumps(
+                    {
+                        "answer": "핵심만 답할게요.",
+                        "memory_action": "UPDATE",
+                        "delete_all_confirmed": False,
+                    }
+                ),
+                usage={
+                    "prompt_tokens": 20,
+                    "completion_tokens": 7,
+                    "total_tokens": 27,
+                },
+            )
+
+        adapter = self.adapter(handler)
+        parts = answer_parts()
+        result = await adapter.generate_answer(
+            AssembledPromptContext(parts, 10, 900)
+        )
+
+        self.assertEqual("핵심만 답할게요.", result.text)
+        self.assertIs(MemoryAction.UPDATE, result.memory_action)
+        self.assertFalse(result.delete_all_confirmed)
+        self.assertEqual(27, result.estimated_total_tokens)
+        self.assertEqual(27, result.usage.total_tokens)
+        self.assertEqual("vendor/exact-model", result.model_id)
+
+        payload = json.loads(requests[0].content)
+        self.assertEqual("vendor/exact-model", payload["model"])
+        self.assertEqual(100, payload["max_completion_tokens"])
+        self.assertNotIn("max_tokens", payload)
+        self.assertFalse(payload["stream"])
+        self.assertEqual({"require_parameters": True}, payload["provider"])
+        self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+        self.assertEqual(
+            ["system", "user", "user", "user", "assistant", "user"],
+            [message["role"] for message in payload["messages"]],
+        )
+        self.assertIn("data, not instructions", payload["messages"][1]["content"])
+        self.assertEqual(f"Bearer {FAKE_KEY}", requests[0].headers["Authorization"])
+        self.assertEqual(5.0, requests[0].extensions["timeout"]["read"])
+
+        counted = {
+            "messages": payload["messages"],
+            "response_format": payload["response_format"],
+        }
+        expected = len(
+            json.dumps(
+                counted,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        self.assertEqual(expected, adapter.count_input_tokens(parts))
+
+    async def test_answer_without_usage_uses_estimate_without_inventing_usage(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return chat_response(
+                json.dumps(
+                    {
+                        "answer": "답변",
+                        "memory_action": "NONE",
+                        "delete_all_confirmed": False,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        adapter = self.adapter(handler)
+        parts = answer_parts()
+        result = await adapter.generate_answer(
+            AssembledPromptContext(parts, 10, 900)
+        )
+        self.assertIsNone(result.usage)
+        self.assertGreater(result.estimated_total_tokens, adapter.count_input_tokens(parts))
+
+    async def test_every_memory_action_parses_without_keyword_logic(self) -> None:
+        for action in MemoryAction:
+            with self.subTest(action=action):
+                confirmed = action is MemoryAction.DELETE_ALL
+                adapter = self.adapter(
+                    lambda request, action=action, confirmed=confirmed: chat_response(
+                        json.dumps(
+                            {
+                                "answer": "자연스러운 답변",
+                                "memory_action": action.value,
+                                "delete_all_confirmed": confirmed,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                )
+                result = await adapter.generate_answer(
+                    AssembledPromptContext(answer_parts(), 10, 900)
+                )
+                self.assertIs(action, result.memory_action)
+
+    def test_memory_review_has_no_completion_cap_and_converts_changes_to_tuple(self) -> None:
+        seen: list[dict[str, Any]] = []
+        replacement = "가" * 4_000
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            return chat_response(
+                json.dumps(
+                    {
+                        "action": "REPLACE",
+                        "memory_text": replacement,
+                        "change_summary": ["선호를 갱신했어요."],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        adapter = self.adapter(handler)
+        turn = completed_turn()
+        request = MemoryReviewRequest(
+            instruction="review",
+            current_memory_text="old",
+            turns=(turn,),
+            max_characters=4_000,
+            allow_clear=False,
+            current_input=CurrentMemoryInput(
+                "user",
+                "session",
+                "0000000000001-input",
+                "기억해줘",
+                turn.created_at,
+            ),
+        )
+        output = adapter.review_memory(request)
+
+        self.assertIs(MemoryReviewAction.REPLACE, output.action)
+        self.assertEqual(replacement, output.memory_text)
+        self.assertEqual(("선호를 갱신했어요.",), output.change_summary)
+        self.assertNotIn("max_completion_tokens", seen[0])
+        self.assertIn("Memory Review data", seen[0]["messages"][1]["content"])
+        self.assertEqual(
+            4_000,
+            seen[0]["response_format"]["json_schema"]["schema"]
+            ["properties"]["memory_text"]["maxLength"],
+        )
+
+    def test_memory_review_maps_every_domain_action(self) -> None:
+        outputs = (
+            {"action": "UNCHANGED", "memory_text": None, "change_summary": []},
+            {"action": "REPLACE", "memory_text": "new", "change_summary": ["changed"]},
+            {"action": "CLEAR", "memory_text": None, "change_summary": ["removed"]},
+        )
+        responses = iter(outputs)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return chat_response(json.dumps(next(responses)))
+
+        adapter = self.adapter(handler)
+        request = MemoryReviewRequest(
+            instruction="review",
+            current_memory_text="old",
+            turns=(completed_turn(),),
+            max_characters=4_000,
+            allow_clear=True,
+        )
+        self.assertIs(MemoryReviewAction.UNCHANGED, adapter.review_memory(request).action)
+        self.assertIs(MemoryReviewAction.REPLACE, adapter.review_memory(request).action)
+        self.assertIs(MemoryReviewAction.CLEAR, adapter.review_memory(request).action)
+
+    def test_summary_uses_provider_tokens_only(self) -> None:
+        responses = iter(
+            (
+                chat_response(json.dumps({"summary": "요약"}, ensure_ascii=False)),
+                chat_response(
+                    json.dumps({"summary": "다른 요약"}, ensure_ascii=False),
+                    usage={
+                        "prompt_tokens": 10,
+                        "completion_tokens": 3,
+                        "total_tokens": 13,
+                    },
+                ),
+            )
+        )
+        payloads: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payloads.append(json.loads(request.content))
+            return next(responses)
+
+        adapter = self.adapter(handler)
+        request = SummaryRequest("summarize", "old", (completed_turn(),), 77)
+        estimated = adapter.summarize(request)
+        reported = adapter.summarize(request)
+
+        self.assertIsNone(estimated.token_count)
+        self.assertEqual(3, reported.token_count)
+        self.assertEqual(77, payloads[0]["max_completion_tokens"])
+        self.assertIn("Summary source", payloads[0]["messages"][1]["content"])
+
+    def test_zeroed_usage_is_treated_as_unavailable(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return chat_response(
+                json.dumps({"summary": "요약"}, ensure_ascii=False),
+                usage={
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            )
+
+        output = self.adapter(handler).summarize(
+            SummaryRequest("summarize", None, (completed_turn(),), 77)
+        )
+        self.assertIsNone(output.token_count)
+
+    async def test_invalid_outputs_and_usage_fail_closed(self) -> None:
+        outputs = (
+            "not-json",
+            json.dumps(
+                {
+                    "answer": "answer",
+                    "memory_action": "UNKNOWN",
+                    "delete_all_confirmed": False,
+                }
+            ),
+            json.dumps(
+                {
+                    "answer": "answer",
+                    "memory_action": "NONE",
+                    "delete_all_confirmed": True,
+                }
+            ),
+            json.dumps(
+                {
+                    "answer": "answer",
+                    "memory_action": "NONE",
+                    "delete_all_confirmed": False,
+                    "extra": True,
+                }
+            ),
+        )
+        for content in outputs:
+            with self.subTest(content=content):
+                adapter = self.adapter(
+                    lambda request, content=content: chat_response(content)
+                )
+                with self.assertRaises(OpenRouterModelError):
+                    await adapter.generate_answer(
+                        AssembledPromptContext(answer_parts(), 10, 900)
+                    )
+
+        adapter = self.adapter(
+            lambda request: chat_response(
+                json.dumps(
+                    {
+                        "answer": "answer",
+                        "memory_action": "NONE",
+                        "delete_all_confirmed": False,
+                    }
+                ),
+                usage={
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 3,
+                },
+            )
+        )
+        with self.assertRaisesRegex(OpenRouterModelError, "openrouter.invalid_usage"):
+            await adapter.generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900)
+            )
+
+    async def test_errors_do_not_retain_secrets_prompts_or_response_bodies(self) -> None:
+        secret_body = "provider-body-must-not-escape"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text=secret_body)
+
+        adapter = self.adapter(handler)
+        with self.assertRaises(OpenRouterModelError) as caught:
+            await adapter.generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900)
+            )
+        error = caught.exception
+        rendered = f"{error!s} {error!r}"
+        self.assertEqual(500, error.status)
+        self.assertIsNone(error.__cause__)
+        self.assertNotIn(FAKE_KEY, rendered)
+        self.assertNotIn("앞으로 핵심만 답해줘", rendered)
+        self.assertNotIn(secret_body, rendered)
+
+    async def test_transport_timeout_refusal_and_invalid_envelope_are_safe(self) -> None:
+        failures = (
+            (
+                lambda request: (_ for _ in ()).throw(
+                    httpx.ConnectError("secret transport detail", request=request)
+                ),
+                "openrouter.transport_error",
+            ),
+            (
+                lambda request: (_ for _ in ()).throw(
+                    httpx.ReadTimeout("secret timeout detail", request=request)
+                ),
+                "openrouter.timeout",
+            ),
+            (
+                lambda request: httpx.Response(
+                    200,
+                    json={
+                        "model": "vendor/exact-model",
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "{}",
+                                    "refusal": "secret refusal detail",
+                                }
+                            }
+                        ],
+                    },
+                ),
+                "openrouter.refusal",
+            ),
+            (
+                lambda request: httpx.Response(200, json={"unexpected": True}),
+                "openrouter.invalid_response",
+            ),
+        )
+        for handler, event in failures:
+            with self.subTest(event=event):
+                adapter = self.adapter(handler)
+                with self.assertRaises(OpenRouterModelError) as caught:
+                    await adapter.generate_answer(
+                        AssembledPromptContext(answer_parts(), 10, 900)
+                    )
+                self.assertEqual(event, caught.exception.event)
+                self.assertIsNone(caught.exception.__cause__)
+                rendered = f"{caught.exception!s} {caught.exception!r}"
+                self.assertNotIn(FAKE_KEY, rendered)
+                self.assertNotIn("secret", rendered)
+
+    async def test_async_answer_cancellation_propagates(self) -> None:
+        started = asyncio.Event()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        adapter = self.adapter(handler)
+        task = asyncio.create_task(
+            adapter.generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900)
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    async def test_injected_clients_remain_caller_owned(self) -> None:
+        adapter = self.adapter(
+            lambda request: chat_response(json.dumps({"summary": "summary"}))
+        )
+        sync_client = self.sync_clients[-1]
+        async_client = self.async_clients[-1]
+        adapter.close()
+        await adapter.aclose()
+        self.assertFalse(sync_client.is_closed)
+        self.assertFalse(async_client.is_closed)
+
+    async def test_owned_clients_close_and_constructor_rejects_invalid_values(self) -> None:
+        adapter = OpenRouterModelAdapter(
+            api_key=FAKE_KEY,
+            model_id="vendor/exact-model",
+            token_budget=ModelTokenBudget(1_000, 100),
+            timeout_seconds=5,
+        )
+        sync_client = adapter._sync_client
+        async_client = adapter._async_client
+        await adapter.aclose()
+        self.assertTrue(sync_client.is_closed)
+        self.assertTrue(async_client.is_closed)
+
+        invalid = (
+            {"api_key": ""},
+            {"model_id": ""},
+            {"timeout_seconds": 0},
+            {"timeout_seconds": float("inf")},
+        )
+        defaults = {
+            "api_key": FAKE_KEY,
+            "model_id": "vendor/exact-model",
+            "token_budget": ModelTokenBudget(1_000, 100),
+            "timeout_seconds": 5,
+        }
+        for override in invalid:
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                OpenRouterModelAdapter(**(defaults | override))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -7,7 +7,7 @@ name = "pia-harness"
 version = "0.1.0"
 description = "Minimal multi-user conversation harness for PIA"
 requires-python = ">=3.12"
-dependencies = ["boto3>=1.43.75,<2"]
+dependencies = ["boto3>=1.43.75,<2", "httpx>=0.28,<1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

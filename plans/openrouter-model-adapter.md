@@ -104,6 +104,10 @@ OpenRouter currently documents structured output only for compatible model endpo
 vary. OpenRouter response usage includes native `prompt_tokens`, `completion_tokens`, and
 `total_tokens`; no separate usage lookup is needed.
 
+If all three usage counts are zero despite a non-empty completion, treat usage as unavailable and use
+the existing fallback paths. A zeroed accounting response must not suppress Compaction or make a valid
+Summary look like a zero-token output.
+
 Primary references:
 
 - https://openrouter.ai/docs/guides/features/structured-outputs

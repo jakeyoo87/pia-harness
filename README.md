@@ -26,8 +26,8 @@ See [the feature plan](plans/conversation-session-core.md) for the exact contrac
 - Loads context through one boundary-aware path to prevent summary/turn duplication
 - Removes the session summary on reset and all data on account closure
 
-Model network integration is intentionally separate. The compactor accepts one summary callable;
-OpenRouter and Nemotron will be connected in a later feature.
+The compactor accepts one summary callable; the OpenRouter adapter now supplies it for any compatible,
+caller-selected exact model.
 
 See [the compaction plan](plans/token-compaction.md) for the exact contracts.
 
@@ -42,8 +42,8 @@ See [the compaction plan](plans/token-compaction.md) for the exact contracts.
 - Returns up to three short change-summary items only after a successful write
 - Preserves Memory on reset and deletes it with the user's partition on account closure
 
-The reviewer is one injected callable shared by automatic and explicit Review. OpenRouter/Nemotron and
-`pia-agent` integration remain separate.
+The reviewer is one injected callable shared by automatic and explicit Review. The OpenRouter adapter
+now supplies it; `pia-agent` integration remains separate.
 
 Explicit remember, correction, and targeted-forget callers may also pass the accepted current user
 input before its completed Turn exists. The Memory boundary advances to the input's preassigned turn
@@ -92,6 +92,29 @@ Memory intent detection, Telegram, state-changing tools, distributed coordinatio
 recovery remain separate.
 
 See [the Orchestrator plan](plans/conversation-orchestrator.md) for the exact lifecycle.
+
+## OpenRouter model adapter
+
+- Calls one caller-selected exact OpenRouter model for normal answers, Memory Review, and Summary
+- Returns `answer` and the hidden `MemoryAction` from the same structured answer call
+- Provides the one Memory reviewer callable shared by automatic and explicit Review
+- Uses strict JSON Schema, required-parameter routing, and local fail-closed validation
+- Preserves the Assembler trust boundary when rendering Memory, Summary, and conversation data
+- Uses provider token usage when available and conservative preflight estimates otherwise
+- Keeps answer generation async and cancellable while Review and Summary match their synchronous durable
+  callable contracts
+- Never performs a separate intent call, keyword parse, retry, model fallback, or live capability probe
+
+Construct `OpenRouterModelAdapter` with an injected API key, exact model ID, shared `ModelTokenBudget`,
+timeout, and optional test clients. Wire `count_input_tokens`, `generate_answer`, `review_memory`, and
+`summarize` directly into the existing Harness components. Call `aclose()` to close all adapter-owned
+clients; injected clients remain caller-owned.
+
+Use an exact deployed model ID whose context window matches the supplied budget. Do not use a routing
+alias whose effective model and context limit can change. The consuming `pia` application owns Secret
+Manager access, runtime configuration, DynamoDB/IAM, Telegram delivery, deployment, and live E2E tests.
+
+See [the Model Adapter plan](plans/openrouter-model-adapter.md) for request and validation contracts.
 
 ## Local verification
 
