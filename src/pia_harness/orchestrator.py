@@ -17,6 +17,7 @@ from .context import (
 from .dynamodb import DynamoDBConversationStore
 from .memory import (
     MAX_CHANGE_SUMMARY_CHARS,
+    MAX_CHANGE_SUMMARY_ITEMS,
     AutomaticMemoryReviewer,
     CurrentMemoryInput,
     MemoryReviewResult,
@@ -722,13 +723,17 @@ def _add_changes(changes: list[str], result: MemoryReviewResult | None) -> None:
     if result is None or result.status is MemoryReviewStatus.STALE:
         return
     for item in result.change_summary:
-        if item not in changes and len(changes) < 3:
+        if item not in changes and len(changes) < MAX_CHANGE_SUMMARY_ITEMS:
             changes.append(item)
 
 
 def _add_notice(changes: list[str], notice: str) -> None:
-    if notice not in changes and len(changes) < 3:
-        changes.append(notice)
+    # The user's own failed request outranks an incidental automatic summary, so
+    # the notice takes a slot instead of being dropped when the budget is full.
+    if notice in changes:
+        return
+    del changes[MAX_CHANGE_SUMMARY_ITEMS - 1 :]
+    changes.append(notice)
 
 
 def _final_text(answer: str, changes: list[str]) -> str:

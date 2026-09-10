@@ -487,3 +487,32 @@ configuration could receive `memory_failed=True` only after the Orchestrator had
 answer claiming the update succeeded. Requiring one non-empty, bounded caller-owned string closes that
 normal failure path without a second model call, provider-specific wording, retry, or new state.
 Automatic Review failures remain silent as designed.
+
+## Review record: 2026-09-10, Claude, delta review of commit c0e6e40
+
+Delta review of making `explicit_memory_failure_notice` required. No blocker; one gap fixed on this
+branch. 53 tests green against DynamoDB Local, ruff clean. Nothing merged.
+
+The requirement holds from every direction. The parameter is keyword-only with no default, and the
+validation runs unconditionally on whatever arrives, so a missing argument, `None`, an empty string,
+whitespace only, or text over the change-summary character bound all fail at construction. Because the
+check is unconditional rather than guarded by a default, re-adding a default later would still fail
+construction, so the property survives that edit too. Storing the stripped text at construction also
+removed the earlier mismatch where the notice was compared unstripped and appended stripped.
+
+Automatic Memory failures stay silent. Only the explicit branches set the flag that appends the notice;
+`review_if_due` failing or returning stale sets `memory_failed` alone, exactly as before.
+
+## Gap fixed: the notice could still be dropped
+
+`_add_notice` refused to append once the three-item change budget was full. A rejected full-deletion
+confirmation reaches the ordinary revisit Review, which can fill all three slots by itself, so the user
+would have seen three unrelated Memory notices and nothing about the deletion they just asked for and
+did not get. Reverting the fix fails the new test, so the path was real rather than theoretical.
+
+The notice now takes a slot instead of deferring to automatic summaries, keeping the same three-item
+bound: the user's own failed request outranks an incidental automatic change. Both helpers now use
+`MAX_CHANGE_SUMMARY_ITEMS` rather than a repeated literal.
+
+Nothing else in the delta surprises. The test helper's new default keeps every existing construction
+valid, and there is no caller outside the tests, so requiring the notice breaks nothing.

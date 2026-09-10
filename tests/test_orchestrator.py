@@ -472,6 +472,43 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             "answer\n\n- 기억에 반영하지 못했어요.", result.final_text
         )
 
+    async def test_failure_notice_is_never_dropped_for_a_full_change_budget(self) -> None:
+        # A rejected confirmation runs the ordinary revisit Review, which can fill
+        # the three-item budget on its own and would otherwise hide the failure of
+        # the deletion the user just asked for.
+        class BusyRevisit(FakeMemoryReviewer):
+            def review_if_due(self, **values):
+                self.calls.append("revisit")
+                return MemoryReviewResult(
+                    MemoryReviewStatus.REPLACED,
+                    MemoryDocument("user", "memory", "0000000000000-old", values["request_at"]),
+                    ("첫째", "둘째", "셋째"),
+                )
+
+        self.memory = BusyRevisit()
+        self.store.memories["user"] = MemoryDocument(
+            "user", "remembered", "0000000000000-old", self.now
+        )
+
+        async def generate(context):
+            return GeneratedAnswer(
+                "cleared",
+                "model",
+                10,
+                memory_action=MemoryAction.DELETE_ALL,
+                delete_all_confirmed=True,
+            )
+
+        result = await self.orchestrator(
+            generate, failure_notice="삭제를 확인하지 못했어요."
+        ).submit(user_key="user", message="yes", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertTrue(result.memory_failed)
+        self.assertEqual("remembered", self.store.memories["user"].memory_text)
+        self.assertIn("삭제를 확인하지 못했어요.", result.final_text)
+        self.assertEqual(3, result.final_text.count("\n- "))
+
     async def test_stale_explicit_review_reports_failure_like_an_exception(self) -> None:
         # A lost compare-and-set writes nothing, so it must reach the caller and the
         # user exactly as a raised reviewer failure does.
