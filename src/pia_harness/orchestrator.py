@@ -16,21 +16,23 @@ from .context import (
 )
 from .dynamodb import DynamoDBConversationStore
 from .memory import (
+    MAX_CHANGE_SUMMARY_CHARS,
     AutomaticMemoryReviewer,
     CurrentMemoryInput,
     MemoryReviewResult,
     MemoryReviewStatus,
 )
-from .session import ActiveSession, as_utc, new_turn_id
+from .session import ActiveSession, MemoryDocument, as_utc, new_turn_id
 
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
 
 
-class ExplicitMemoryMode(StrEnum):
+class MemoryAction(StrEnum):
     NONE = "NONE"
-    REMEMBER_OR_CORRECT = "REMEMBER_OR_CORRECT"
-    TARGETED_FORGET = "TARGETED_FORGET"
+    UPDATE = "UPDATE"
+    FORGET = "FORGET"
+    DELETE_ALL = "DELETE_ALL"
 
 
 class OrchestratorStatus(StrEnum):
@@ -48,7 +50,6 @@ class ConversationInput:
     message: str
     accepted_at: datetime
     turn_id: str
-    memory_mode: ExplicitMemoryMode = ExplicitMemoryMode.NONE
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,8 @@ class GeneratedAnswer:
     model_id: str
     estimated_total_tokens: int
     usage: ContextUsage | None = None
+    memory_action: MemoryAction = MemoryAction.NONE
+    delete_all_confirmed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +99,7 @@ class _UserState:
     active_task: asyncio.Task[None] | None = None
     committing_count: int = 0
     reset_requested: bool = False
+    delete_all_confirmation_pending: bool = False
 
 
 class ConversationOrchestrator:
@@ -111,6 +115,7 @@ class ConversationOrchestrator:
         system_prompt: str,
         token_budget: ModelTokenBudget,
         model_id: str,
+        explicit_memory_failure_notice: str | None = None,
     ) -> None:
         if not callable(generate_answer):
             raise ValueError("generate_answer must be callable")
@@ -122,6 +127,13 @@ class ConversationOrchestrator:
             raise ValueError("model_id is required")
         if not isinstance(token_budget, ModelTokenBudget):
             raise ValueError("token_budget must be a ModelTokenBudget")
+        if explicit_memory_failure_notice is not None and (
+            not isinstance(explicit_memory_failure_notice, str)
+            or not explicit_memory_failure_notice.strip()
+            or len(explicit_memory_failure_notice.strip())
+            > MAX_CHANGE_SUMMARY_CHARS
+        ):
+            raise ValueError("explicit_memory_failure_notice is invalid")
         self._store = store
         self._assembler = assembler
         self._memory_reviewer = memory_reviewer
@@ -131,6 +143,7 @@ class ConversationOrchestrator:
         self._system_prompt = system_prompt
         self._token_budget = token_budget
         self._model_id = model_id
+        self._explicit_memory_failure_notice = explicit_memory_failure_notice
         self._states: dict[str, _UserState] = {}
         self._states_lock = asyncio.Lock()
 
@@ -140,13 +153,11 @@ class ConversationOrchestrator:
         user_key: str,
         message: str,
         accepted_at: datetime | None = None,
-        memory_mode: ExplicitMemoryMode | str = ExplicitMemoryMode.NONE,
     ) -> ConversationResult:
         value = _conversation_input(
             user_key=user_key,
             message=message,
             accepted_at=accepted_at or datetime.now(UTC),
-            memory_mode=memory_mode,
         )
         state = await self._state_for(user_key)
         future: asyncio.Future[ConversationResult] = (
@@ -225,6 +236,7 @@ class ConversationOrchestrator:
             state.active_task = None
             state.committing_count = 0
             state.reset_requested = False
+            state.delete_all_confirmation_pending = False
         await self._remove_if_idle(user_key, state)
         return ConversationResetResult(replacement, memory_failed)
 
@@ -445,27 +457,12 @@ class ConversationOrchestrator:
         compaction_failed: bool,
     ) -> tuple[ConversationResult, bool]:
         changes: list[str] = []
+        explicit_memory_failed = False
         now = batch[-1].value.accepted_at
         combined = _combined_message(batch)
         async with state.commit_lock:
-            try:
-                review = await _durable_call(
-                    self._memory_reviewer.review_if_due,
-                    user_key=user_key,
-                    session_id=session.session_id,
-                    request_at=now,
-                )
-                _add_changes(changes, review)
-            except Exception:
-                memory_failed = True
-
-            for submission in batch:
-                value = submission.value
-                if value.memory_mode is ExplicitMemoryMode.NONE:
-                    continue
-                explicit_text = (
-                    combined if value.turn_id == batch[-1].value.turn_id else value.message
-                )
+            action = answer.memory_action
+            if action in (MemoryAction.UPDATE, MemoryAction.FORGET):
                 try:
                     review = await _durable_call(
                         self._memory_reviewer.review_explicit_input,
@@ -474,14 +471,55 @@ class ConversationOrchestrator:
                         current_input=CurrentMemoryInput(
                             user_key=user_key,
                             session_id=session.session_id,
-                            turn_id=value.turn_id,
-                            user_message=explicit_text,
-                            created_at=value.accepted_at,
+                            turn_id=batch[-1].value.turn_id,
+                            user_message=combined,
+                            created_at=batch[-1].value.accepted_at,
                         ),
-                        allow_clear=(
-                            value.memory_mode is ExplicitMemoryMode.TARGETED_FORGET
-                        ),
+                        allow_clear=(action is MemoryAction.FORGET),
                         now=now,
+                    )
+                    if review is not None and review.status is MemoryReviewStatus.STALE:
+                        memory_failed = True
+                        explicit_memory_failed = True
+                    else:
+                        _add_changes(changes, review)
+                except Exception:
+                    memory_failed = True
+                    explicit_memory_failed = True
+            elif (
+                action is MemoryAction.DELETE_ALL
+                and answer.delete_all_confirmed
+                and state.delete_all_confirmation_pending
+            ):
+                try:
+                    current = await _durable_call(self._store.get_memory, user_key)
+                    expected = (
+                        None if current is None else current.last_reviewed_turn_id
+                    )
+                    replacement = MemoryDocument(
+                        user_key=user_key,
+                        memory_text="",
+                        last_reviewed_turn_id=batch[-1].value.turn_id,
+                        updated_at=now,
+                    )
+                    replaced = await _durable_call(
+                        self._store.replace_memory,
+                        replacement,
+                        expected_last_reviewed_turn_id=expected,
+                    )
+                    if not replaced:
+                        memory_failed = True
+                        explicit_memory_failed = True
+                except Exception:
+                    memory_failed = True
+                    explicit_memory_failed = True
+            else:
+                try:
+                    review = await _durable_call(
+                        self._memory_reviewer.review_if_due,
+                        user_key=user_key,
+                        session_id=session.session_id,
+                        request_at=now,
                     )
                     _add_changes(changes, review)
                 except Exception:
@@ -517,6 +555,8 @@ class ConversationOrchestrator:
                 except Exception:
                     compaction_failed = True
 
+            if explicit_memory_failed:
+                _add_notice(changes, self._explicit_memory_failure_notice)
             final_text = _final_text(answer.text, changes)
             try:
                 await self._deliver(user_key, final_text)
@@ -528,6 +568,16 @@ class ConversationOrchestrator:
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
                 ), False
+
+            async with state.state_lock:
+                state.delete_all_confirmation_pending = (
+                    action is MemoryAction.DELETE_ALL
+                    and not (
+                        answer.delete_all_confirmed
+                        and state.delete_all_confirmation_pending
+                        and not explicit_memory_failed
+                    )
+                )
 
             try:
                 await _durable_call(
@@ -601,6 +651,7 @@ class ConversationOrchestrator:
                     and state.phase is _Phase.IDLE
                     and not state.pending
                     and not state.reset_requested
+                    and not state.delete_all_confirmation_pending
                 ):
                     del self._states[user_key]
 
@@ -610,23 +661,17 @@ def _conversation_input(
     user_key: str,
     message: str,
     accepted_at: datetime,
-    memory_mode: ExplicitMemoryMode | str,
 ) -> ConversationInput:
     if not isinstance(user_key, str) or not user_key:
         raise ValueError("user_key is required")
     if not isinstance(message, str) or not message:
         raise ValueError("message is required")
     accepted_at = as_utc(accepted_at)
-    try:
-        mode = ExplicitMemoryMode(memory_mode)
-    except (TypeError, ValueError) as error:
-        raise ValueError("memory_mode is invalid") from error
     return ConversationInput(
         user_key=user_key,
         message=message,
         accepted_at=accepted_at,
         turn_id=new_turn_id(accepted_at),
-        memory_mode=mode,
     )
 
 
@@ -641,6 +686,14 @@ def _validate_generated_answer(answer: GeneratedAnswer) -> None:
         raise ValueError("generated answer text is required")
     if not isinstance(answer.model_id, str) or not answer.model_id:
         raise ValueError("generated answer model_id is required")
+    if not isinstance(answer.memory_action, MemoryAction):
+        raise ValueError("generated answer memory_action is invalid")
+    if not isinstance(answer.delete_all_confirmed, bool):
+        raise ValueError("generated answer delete_all_confirmed is invalid")
+    if answer.delete_all_confirmed and answer.memory_action is not MemoryAction.DELETE_ALL:
+        raise ValueError(
+            "delete_all_confirmed requires the DELETE_ALL memory action"
+        )
     if (
         isinstance(answer.estimated_total_tokens, bool)
         or not isinstance(answer.estimated_total_tokens, int)
@@ -664,6 +717,11 @@ def _add_changes(changes: list[str], result: MemoryReviewResult | None) -> None:
     for item in result.change_summary:
         if item not in changes and len(changes) < 3:
             changes.append(item)
+
+
+def _add_notice(changes: list[str], notice: str | None) -> None:
+    if notice is not None and notice not in changes and len(changes) < 3:
+        changes.append(notice.strip())
 
 
 def _final_text(answer: str, changes: list[str]) -> str:

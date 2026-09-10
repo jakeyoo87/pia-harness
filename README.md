@@ -35,14 +35,15 @@ See [the compaction plan](plans/token-compaction.md) for the exact contracts.
 
 - One free-form Memory document of at most 4,000 characters per opaque user key
 - Reviews earlier unreviewed Turns when the user returns after a one-hour gap
-- Supports forced remember, correction, and forget Review without parsing commands in the harness
+- Supports natural-language remember, correction, and forget actions returned with the normal generated
+  answer, without parsing commands or making a separate intent-model call in the harness
 - Allows CLEAR only when the caller explicitly marks a forced Review as a forget operation
 - Uses a conditional review boundary so stale results cannot overwrite newer Memory
 - Returns up to three short change-summary items only after a successful write
 - Preserves Memory on reset and deletes it with the user's partition on account closure
 
-The reviewer is one injected callable. Response generation, user-facing notices, OpenRouter/Nemotron,
-and `pia-agent` integration remain separate.
+The reviewer is one injected callable shared by automatic and explicit Review. OpenRouter/Nemotron and
+`pia-agent` integration remain separate.
 
 Explicit remember, correction, and targeted-forget callers may also pass the accepted current user
 input before its completed Turn exists. The Memory boundary advances to the input's preassigned turn
@@ -76,6 +77,10 @@ See [the Context Assembler plan](plans/prompt-context-assembler.md) for the exac
 - Session, Memory, Compaction, delivery, and completed-Turn commits are serialized per user
 - Different users continue independently
 - Explicit Memory updates run only for the winning response and their changes appear in that response
+- Generated `UPDATE` and `FORGET` actions reuse the existing explicit-input reviewer; the caller no
+  longer classifies inputs before answer generation
+- Complete Memory clearing requires a preceding delivered confirmation request and writes an empty
+  document at the newest boundary so retained Turns cannot rebuild deleted Memory
 - Context overflow permits one Compaction and one reassembly attempt without truncation
 - One model token budget supplies both context limit and response reserve to every stage
 - Delivery success clears covered pending input even if completed-Turn persistence later fails

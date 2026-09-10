@@ -56,7 +56,6 @@ Replace the caller-supplied `ExplicitMemoryMode` with a generated `MemoryAction`
     NONE
     UPDATE
     FORGET
-    SHOW
     DELETE_ALL
 
 Semantics:
@@ -67,8 +66,6 @@ Semantics:
 - `FORGET`: the current user text explicitly asks PIA to forget targeted content. Run
   `review_explicit_input(..., allow_clear=True)`. The reviewer may rewrite the remaining Memory or use
   `CLEAR` if the targeted deletion legitimately removes the final remaining content.
-- `SHOW`: no Memory write. The generated answer describes the Memory snapshot already loaded by the
-  Assembler for this generation.
 - `DELETE_ALL`: a request concerning the entire Memory document. It bypasses the reviewer, but the
   document is deleted only after explicit confirmation as described below.
 
@@ -93,13 +90,15 @@ Validation rejects an unknown action, a non-boolean confirmation flag, or
 request from the user's affirmative answer to the immediately preceding confirmation question:
 
 - initial request: `DELETE_ALL`, `delete_all_confirmed=False`; do not delete;
-- confirmed follow-up: `DELETE_ALL`, `delete_all_confirmed=True`; delete directly before delivery.
+- confirmed follow-up: `DELETE_ALL`, `delete_all_confirmed=True`; conditionally write an empty Memory
+  document at the newest input boundary before delivery.
 
 The later model adapter must instruct the model to set the flag only when the current user explicitly
 confirms a complete-Memory deletion requested in the immediately preceding conversation. The harness
-does not add keyword heuristics. A false or ambiguous confirmation must remain false. Claude should
-review whether this is a sufficient first-version confirmation boundary or whether the harness needs a
-small explicit pending-confirmation contract before implementation.
+does not add keyword heuristics. The Orchestrator independently requires its existing per-user state to
+show that the immediately preceding delivered generation produced an unconfirmed `DELETE_ALL`.
+Otherwise it treats the action as unconfirmed and asks again. This state is in-process only: a restart
+loses it and safely requires confirmation again.
 
 ## Orchestrator changes
 
@@ -109,6 +108,8 @@ small explicit pending-confirmation contract before implementation.
 - Remove `ExplicitMemoryMode`.
 - Validate `GeneratedAnswer.memory_action` after the winning answer returns.
 - A superseded or late generation cannot perform its generated Memory action.
+- Add one optional caller-supplied explicit-Memory failure notice. It uses the existing response
+  composition path and keeps wording outside this provider- and channel-independent harness.
 
 ### Commit routing
 
@@ -121,18 +122,23 @@ The winning generation claims `COMMITTING` exactly as it does now. Inside the ex
 3. Do not first call `review_if_due` for `UPDATE` or `FORGET`: `review_explicit_input` already loads all
    earlier unreviewed Turns and the current input, so one Review covers both the automatic backlog and
    the explicit request through the same `_apply` path.
-4. For `NONE`, `SHOW`, and an unconfirmed `DELETE_ALL`, keep the ordinary `review_if_due` behavior.
-5. For confirmed `DELETE_ALL`, skip Review and call the existing idempotent `delete_memory` directly.
-   Do not append an automatic change summary from content that was just deleted.
+4. For `NONE` and an unconfirmed `DELETE_ALL`, keep the ordinary `review_if_due` behavior.
+5. Honor confirmed `DELETE_ALL` only when the same user's immediately preceding delivered generation
+   produced an unconfirmed `DELETE_ALL`. Skip Review and conditionally write an empty Memory document
+   with `last_reviewed_turn_id` set to the newest pending input's Turn ID. Use the observed Memory
+   boundary as the `replace_memory` CAS expectation. Do not remove the item or append an automatic
+   change summary from content that was just cleared.
 6. Continue with the existing Compaction decision, delivery, and completed-Turn append order.
 
-`SHOW` does not need a second DynamoDB read: the answer model received the same user-isolated Memory
-snapshot loaded immediately before assembly. It is read-only and never advances the Memory boundary.
+Memory-description questions remain `NONE`: the answer model received the same user-isolated Memory
+snapshot loaded immediately before assembly, so no `SHOW` action or second read is necessary.
 
-The initial unconfirmed `DELETE_ALL` action does not mutate Memory. The answer is expected to ask for
-confirmation naturally. A confirmed deletion produces no reviewer change summary; the answer itself
-may acknowledge deletion after the direct delete succeeds. If direct deletion fails, set
-`memory_failed=True` and do not claim durable success through a harness-generated change notice.
+The initial unconfirmed `DELETE_ALL` action does not mutate Memory. After its answer is delivered, mark
+the per-user coordination state as awaiting confirmation and keep that state from idle cleanup. Any
+other delivered action clears the marker. A confirmed clear produces no reviewer change summary; the
+answer itself may acknowledge deletion after the conditional empty write succeeds. If that write or an
+explicit UPDATE/FORGET Review fails or returns stale, set `memory_failed=True` and append the optional
+failure notice when configured. Never report a successful Memory change notice for a failed write.
 
 The existing order for ordinary automatic Review, pre-Compaction Review, Compaction, delivery, and Turn
 persistence otherwise remains unchanged.
@@ -158,7 +164,8 @@ No storage or reviewer fork is added:
                       bounded change summary
 
 The sources differ only in trigger provenance, inclusion of the accepted current input, and CLEAR
-permission. `SHOW` and confirmed `DELETE_ALL` are deliberately outside document rewriting.
+permission. Confirmed `DELETE_ALL` bypasses the LLM reviewer but preserves the same bounded-document
+and CAS model by writing an empty document at the newest boundary.
 
 ## Model adapter boundary
 
@@ -187,9 +194,12 @@ does not add `httpx` or duplicate the existing `pia-agent/app/openrouter.py` cli
 - Explicit Review failure or stale CAS: preserve current Memory and boundary, set `memory_failed=True`,
   and continue the answer path without a successful change notice.
 - Automatic Review failure remains non-blocking as today.
-- `SHOW` never mutates Memory even if the answer model describes it incorrectly.
 - Unconfirmed or ambiguous full deletion never calls `delete_memory`.
-- Confirmed direct deletion failure preserves the item and sets `memory_failed=True`.
+- Confirmed clear writes an empty document at the newest boundary, so later Review cannot rebuild
+  Memory from older retained Turns.
+- A confirmation without the preceding delivered unconfirmed-delete marker is not honored.
+- Explicit Review or confirmed-clear failure preserves the item, sets `memory_failed=True`, and appends
+  the optional failure notice when configured.
 - Delivery failure does not roll back a successful explicit Memory update or confirmed deletion, matching
   the existing commit-local failure boundary; no retry, outbox, or cross-response notice is added.
 - Completed-Turn persistence failure does not roll back earlier Memory work.
@@ -205,17 +215,23 @@ Required cases:
 3. `FORGET` reviews the exact combined winning input once with `allow_clear=True`;
 4. a due backlog plus `UPDATE` or `FORGET` is passed through one explicit Review, not an automatic
    Review followed by a duplicate explicit Review;
-5. `SHOW` performs no explicit write and ordinary due Review behavior remains intact;
-6. unconfirmed `DELETE_ALL` does not delete Memory;
-7. confirmed `DELETE_ALL` directly and idempotently deletes Memory without reviewer invocation;
-8. an unknown action or invalid confirmation combination fails before commit;
-9. a superseded answer's action never runs, including when provider cancellation is ignored;
-10. a message arriving during `COMMITTING` queues and cannot interleave with Memory work;
-11. change summaries remain unique, bounded to three, and attached only after a successful write;
-12. explicit Review, delete, delivery, and Turn-persistence failures retain the existing documented
+5. a Memory-description question uses `NONE`, performs no explicit write, and ordinary due Review
+   behavior remains intact;
+6. unconfirmed `DELETE_ALL` does not clear Memory and retains its per-user state after delivery;
+7. confirmed `DELETE_ALL` is honored only after the preceding delivered unconfirmed action and writes
+   an empty Memory document at the newest boundary without reviewer invocation;
+8. a restart-equivalent missing confirmation marker safely asks again rather than clearing;
+9. the next automatic or forced Review cannot rebuild cleared Memory from Turns below the new boundary;
+10. an unknown action or invalid confirmation combination fails before commit;
+11. a superseded answer's action never runs, including when provider cancellation is ignored;
+12. a message arriving during `COMMITTING` queues and cannot interleave with Memory work;
+13. change summaries remain unique, bounded to three, and attached only after a successful write;
+14. explicit Review, clear, delivery, and Turn-persistence failures retain the existing documented
     result boundaries;
-13. different users still proceed independently;
-14. `ConversationInput.memory_mode` and `ExplicitMemoryMode` no longer remain in the public API.
+15. an explicit stale/failure appends the configured failure notice, while an automatic failure remains
+    silent;
+16. different users still proceed independently;
+17. `ConversationInput.memory_mode`, `ExplicitMemoryMode`, and `SHOW` no longer remain in the public API.
 
 No live model call, credential, AWS mutation, deployment, or Bot restart is part of verification.
 
@@ -235,14 +251,15 @@ features update `/opt/pia/docs/02-ai-conversation.md` when runtime behavior actu
 - provider client, fallback hierarchy, retry framework, tool calling, or Agent SDK;
 - Telegram or `pia-agent` integration;
 - AWS table, IAM, Secrets Manager, deployment, or operating Bot changes;
-- durable confirmation state, queue, worker, outbox, or distributed coordination.
+- durable confirmation state, queue, worker, outbox, or distributed coordination. The one in-process
+  confirmation marker lives only in the existing per-user Orchestrator state.
 
 ## Implementation order after review
 
 1. Add and export `MemoryAction`; extend and validate `GeneratedAnswer`.
 2. Remove caller-supplied `ExplicitMemoryMode` from input and submission APIs.
-3. Route winning batch-level actions in `_commit_response` through the existing reviewer or direct
-   confirmed deletion path.
+3. Route winning batch-level actions in `_commit_response` through the existing reviewer or conditional
+   confirmed-clear path, with the in-process preceding-response check.
 4. Update focused concurrency, Memory, failure, and public-contract tests.
 5. Update `README.md` and run the full suite once.
 6. Commit and push implementation on this same branch for Claude's final review.
@@ -267,6 +284,18 @@ features update `/opt/pia/docs/02-ai-conversation.md` when runtime behavior actu
 If a blocker exists, propose the smallest correction. Do not add an intent-only LLM call, command
 parser, Memory store, approval queue, provider hierarchy, worker, queue, outbox, vector database,
 distributed lock, AWS change, or deployment work.
+
+## Resolution record: 2026-09-10, after Claude plan review
+
+The owner accepted the minimal corrections. Drop `SHOW`. Confirmed `DELETE_ALL` is honored only when
+the same user's existing Orchestrator state records that the immediately preceding delivered generation
+produced an unconfirmed `DELETE_ALL`; the state remains in-process and is discarded on restart. Clearing
+Memory conditionally writes an empty document at the newest input boundary instead of deleting the item,
+so retained raw Turns cannot repopulate it. Add one optional caller-owned explicit-Memory failure notice
+and append it through the existing response composition when an explicit Review or confirmed clear
+fails or is stale. The common reviewer pipeline, automatic schedule, storage schema, interruption model,
+and simple no-worker/no-parser boundary otherwise remain unchanged. Implementation proceeds on this
+branch.
 
 ## Review record: 2026-09-10, Claude, plan commit c11dd0c
 

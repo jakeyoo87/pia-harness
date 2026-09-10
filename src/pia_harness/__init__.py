@@ -44,8 +44,8 @@ from .orchestrator import (
     ConversationOrchestrator,
     ConversationResetResult,
     ConversationResult,
-    ExplicitMemoryMode,
     GeneratedAnswer,
+    MemoryAction,
     OrchestratorStatus,
 )
 from .session import (
@@ -88,8 +88,8 @@ __all__ = [
     "MemoryReviewValidationError",
     "MESSAGE_SEPARATOR",
     "ModelTokenBudget",
-    "ExplicitMemoryMode",
     "GeneratedAnswer",
+    "MemoryAction",
     "OrchestratorStatus",
     "PromptContextAssembler",
     "PromptContextKind",

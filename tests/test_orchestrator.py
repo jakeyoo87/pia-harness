@@ -9,8 +9,8 @@ from pia_harness import (
     ActiveSession,
     ConversationContext,
     ConversationOrchestrator,
-    ExplicitMemoryMode,
     GeneratedAnswer,
+    MemoryAction,
     MemoryDocument,
     ModelTokenBudget,
     MemoryReviewResult,
@@ -26,6 +26,7 @@ class FakeStore:
         self.turns = []
         self.memories = {}
         self.fail_append = False
+        self.fail_replace = False
         self.reset_count = 0
 
     def get_or_create_active_session(self, user_key, *, now=None):
@@ -38,6 +39,16 @@ class FakeStore:
     def get_memory(self, user_key):
         return self.memories.get(user_key)
 
+    def replace_memory(self, memory, *, expected_last_reviewed_turn_id):
+        if self.fail_replace:
+            return False
+        current = self.memories.get(memory.user_key)
+        current_boundary = None if current is None else current.last_reviewed_turn_id
+        if current_boundary != expected_last_reviewed_turn_id:
+            return False
+        self.memories[memory.user_key] = memory
+        return True
+
     def load_context(self, *, user_key, session_id, now=None):
         return ConversationContext(
             summary=None,
@@ -46,6 +57,17 @@ class FakeStore:
                 for turn in self.turns
                 if turn.user_key == user_key and turn.session_id == session_id
             ),
+        )
+
+    def load_unreviewed_turns(
+        self, *, user_key, session_id, after_turn_id, now=None
+    ):
+        return tuple(
+            turn
+            for turn in self.turns
+            if turn.user_key == user_key
+            and turn.session_id == session_id
+            and (after_turn_id is None or turn.turn_id > after_turn_id)
         )
 
     def append_completed_turn(self, **values):
@@ -132,7 +154,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.delivered = []
         self.token_budget = ModelTokenBudget(1_000, 100)
 
-    def orchestrator(self, generate, *, counter=None, deliver=None):
+    def orchestrator(
+        self, generate, *, counter=None, deliver=None, failure_notice=None
+    ):
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
         async def default_deliver(user_key, text):
@@ -148,6 +172,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             system_prompt="system",
             token_budget=self.token_budget,
             model_id="model",
+            explicit_memory_failure_notice=failure_notice,
         )
 
     async def test_new_message_interrupts_and_only_combined_answer_commits(self) -> None:
@@ -265,7 +290,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             if current == "A":
                 first_started.set()
                 await asyncio.Event().wait()
-            return GeneratedAnswer("answer", "model", 10)
+            return GeneratedAnswer(
+                "answer", "model", 10, memory_action=MemoryAction.UPDATE
+            )
 
         orchestrator = self.orchestrator(generate)
         first = asyncio.create_task(
@@ -277,7 +304,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 user_key="user",
                 message="B",
                 accepted_at=self.now,
-                memory_mode=ExplicitMemoryMode.REMEMBER_OR_CORRECT,
             )
         )
         first_result, second_result = await asyncio.gather(first, second)
@@ -287,8 +313,122 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
         self.assertEqual(combined, self.memory.explicit_inputs[0][0].user_message)
         self.assertFalse(self.memory.explicit_inputs[0][1])
+        self.assertEqual(["explicit"], self.memory.calls)
         self.assertEqual(combined, self.store.turns[0].user_message)
         self.assertIn(f"- remembered:{combined}", second_result.final_text)
+
+    async def test_generated_forget_allows_clear_without_duplicate_revisit(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer(
+                "answer", "model", 10, memory_action=MemoryAction.FORGET
+            )
+
+        result = await self.orchestrator(generate).submit(
+            user_key="user", message="forget this", accepted_at=self.now
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(["explicit"], self.memory.calls)
+        self.assertTrue(self.memory.explicit_inputs[0][1])
+
+    async def test_delete_all_requires_preceding_delivered_request(self) -> None:
+        self.store.memories["user"] = MemoryDocument(
+            "user", "remembered", "0000000000000-old", self.now
+        )
+
+        async def generate(context):
+            confirmed = context.parts[-1].content == "yes"
+            return GeneratedAnswer(
+                "confirm" if not confirmed else "cleared",
+                "model",
+                10,
+                memory_action=MemoryAction.DELETE_ALL,
+                delete_all_confirmed=confirmed,
+            )
+
+        orchestrator = self.orchestrator(generate)
+        requested = await orchestrator.submit(
+            user_key="user", message="delete everything", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, requested.status)
+        self.assertEqual("remembered", self.store.memories["user"].memory_text)
+        self.assertTrue(
+            orchestrator._states["user"].delete_all_confirmation_pending
+        )
+
+        confirmed = await orchestrator.submit(
+            user_key="user",
+            message="yes",
+            accepted_at=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, confirmed.status)
+        cleared = self.store.memories["user"]
+        self.assertEqual("", cleared.memory_text)
+        self.assertEqual(confirmed.turn_id, cleared.last_reviewed_turn_id)
+        self.assertEqual(
+            (),
+            self.store.load_unreviewed_turns(
+                user_key="user",
+                session_id="session-user-0",
+                after_turn_id=cleared.last_reviewed_turn_id,
+            ),
+        )
+        self.assertNotIn("user", orchestrator._states)
+
+    async def test_delete_all_confirmation_without_pending_marker_is_not_honored(self) -> None:
+        self.store.memories["user"] = MemoryDocument(
+            "user", "remembered", "0000000000000-old", self.now
+        )
+
+        async def generate(context):
+            return GeneratedAnswer(
+                "cleared",
+                "model",
+                10,
+                memory_action=MemoryAction.DELETE_ALL,
+                delete_all_confirmed=True,
+            )
+
+        orchestrator = self.orchestrator(generate)
+        result = await orchestrator.submit(
+            user_key="user", message="yes", accepted_at=self.now
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual("remembered", self.store.memories["user"].memory_text)
+        self.assertTrue(
+            orchestrator._states["user"].delete_all_confirmation_pending
+        )
+
+    async def test_explicit_memory_failure_appends_caller_notice(self) -> None:
+        self.memory.fail = True
+
+        async def generate(context):
+            return GeneratedAnswer(
+                "answer", "model", 10, memory_action=MemoryAction.UPDATE
+            )
+
+        result = await self.orchestrator(
+            generate, failure_notice="기억에 반영하지 못했어요."
+        ).submit(user_key="user", message="remember", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertTrue(result.memory_failed)
+        self.assertEqual(
+            "answer\n\n- 기억에 반영하지 못했어요.", result.final_text
+        )
+
+    async def test_invalid_generated_memory_action_fails_before_commit(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10, memory_action="UPDATE")
+
+        result = await self.orchestrator(generate).submit(
+            user_key="user", message="remember", accepted_at=self.now
+        )
+
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual([], self.memory.calls)
+        self.assertEqual([], self.store.turns)
 
     async def test_overflow_compacts_once_and_stops_without_progress(self) -> None:
         generated = []
