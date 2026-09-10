@@ -69,9 +69,10 @@ It exposes the existing callable shapes directly:
     summarize(request) -> SummaryOutput
 
 Use one configured `model_id` and one immutable `ModelTokenBudget` for every operation. Do not introduce
-separate answer, Memory, Summary, context-limit, or output-reserve settings in this version. Summary
-still honors `SummaryRequest.max_output_tokens`; answers and Memory Review use the shared response
-reserve.
+separate answer, Memory, Summary, context-limit, or output-reserve settings in this version. Answers use
+the shared response reserve and Summary honors `SummaryRequest.max_output_tokens`. Memory Review sends
+no completion cap because its authoritative output bound is 4,000 Unicode characters plus the JSON
+envelope and change summary, which cannot be safely represented by the shared token reserve.
 
 Add a safe `OpenRouterModelError` containing only a stable event, optional HTTP status, and optional
 exception type. It must never retain or chain a request, headers, API key, prompt, response body, or
@@ -188,9 +189,10 @@ Use a strict one-field schema:
 
     { "summary": string }
 
-Return `SummaryOutput` with the response model ID and `usage.completion_tokens` when present. Otherwise
-use the existing conservative estimator for `token_count`. `TokenCompactor` remains authoritative for
-non-empty output, size reduction, output reserve, summary CAS, and raw-Turn deletion.
+Return `SummaryOutput` with the response model ID and `usage.completion_tokens` when present. Leave
+`token_count=None` when provider usage is absent; do not place a UTF-8-byte estimate in a field that the
+Compactor treats as provider-reported tokens. `TokenCompactor` remains authoritative for non-empty
+output, conservative size-reduction estimation, output reserve, summary CAS, and raw-Turn deletion.
 
 ## Token counting
 
@@ -265,13 +267,16 @@ Required focused coverage:
    maps all three review actions;
 8. Memory Review uses the same callable for automatic and explicit caller tests without branching by
    trigger source;
-9. Summary renders previous Summary and Turns and maps completion token count;
-10. empty, malformed, extra-field, wrong-type, refusal, invalid enum, and invalid usage responses fail
+9. a Memory Review near the 4,000-character bound sends no completion cap and can return a complete
+   structured document;
+10. Summary renders previous Summary and Turns, maps provider completion tokens when present, and leaves
+    `token_count=None` when usage is absent;
+11. empty, malformed, extra-field, wrong-type, refusal, invalid enum, and invalid usage responses fail
     closed;
-11. transport, timeout, HTTP status, and cancellation behavior;
-12. synthetic API key, prompts, headers, and response bodies never appear in safe errors;
-13. injected clients are not closed by the adapter; owned sync and async clients are closed once;
-14. the existing Orchestrator, Memory, Compaction, Context, and DynamoDB suites remain green.
+12. transport, timeout, HTTP status, and cancellation behavior;
+13. synthetic API key, prompts, headers, and response bodies never appear in safe errors;
+14. injected clients are not closed by the adapter; owned sync and async clients are closed once;
+15. the existing Orchestrator, Memory, Compaction, Context, and DynamoDB suites remain green.
 
 Run focused adapter tests first, then the complete Python suite against DynamoDB Local once. Run the
 existing Ruff checks. Do not make a live model call as part of automated verification.
@@ -426,3 +431,13 @@ Apply the two corrections to the plan text before implementing, and add the two 
 named above. Nothing else needs to change: no intent-only call, keyword parser, extra model
 configuration, tokenizer dependency, provider hierarchy, retry framework, or live credential belongs in
 this feature.
+
+## Resolution record: 2026-09-10, after Claude plan review
+
+Both blockers are accepted. Memory Review sends no completion cap and relies on the strict 4,000-character
+schema plus the existing authoritative `_apply` validation. Answers retain the shared response reserve,
+and Summary retains its request token cap. `SummaryOutput.token_count` is populated only from valid
+provider `completion_tokens`; absent usage leaves it `None` so the Compactor performs conservative size
+comparison without mistaking UTF-8 bytes for provider tokens. JSON change-summary arrays are converted
+to tuples, exact deployed model IDs are documented for callers, and no extra configuration type is added
+unless implementation demonstrates a concrete need. Implementation proceeds on this branch.
