@@ -267,3 +267,123 @@ features update `/opt/pia/docs/02-ai-conversation.md` when runtime behavior actu
 If a blocker exists, propose the smallest correction. Do not add an intent-only LLM call, command
 parser, Memory store, approval queue, provider hierarchy, worker, queue, outbox, vector database,
 distributed lock, AWS change, or deployment work.
+
+## Review record: 2026-09-10, Claude, plan commit c11dd0c
+
+Plan-only review against merged `main` at `7bde6af`. Nothing was implemented and nothing was merged.
+Two blockers, one material correction, and one removal follow. The routing design is otherwise right:
+taking the action from the winning generation, reusing one reviewer pipeline, and passing the exact
+combined text under the newest Turn ID are all correct and need no change.
+
+What holds, checked against the code rather than the prose. Moving classification into
+`GeneratedAnswer` strengthens interruption rather than weakening it: a superseded generation never
+reaches `_claim_commit`, so its action cannot run, and the action is derived from exactly the text the
+model was shown. Skipping `review_if_due` for `UPDATE` and `FORGET` is correct — `review_explicit_input`
+already loads every unreviewed Turn after the boundary, passes them as prior turns, and advances the
+boundary past all of them, so a second automatic Review would only duplicate work. `SHOW` needs no
+store read: `_assemble_with_overflow` loads Memory immediately before assembly and the assembler emits
+it as an untrusted part, so the model already has the snapshot.
+
+## Blocker 1: a confirmed full deletion is undone by the next Review
+
+`delete_memory` removes the whole item, including `last_reviewed_turn_id`. `AutomaticMemoryReviewer._load`
+then reads `boundary = None`, and `load_unreviewed_turns` treats a `None` boundary as "everything",
+returning every non-expired Turn in the session. Raw Turns live for thirty days.
+
+So a user who says "forget everything", confirms, and comes back an hour later hits the ordinary
+one-hour revisit Review, which now re-reads up to thirty days of raw conversation with no boundary and
+rebuilds a Memory document from exactly the content the deletion was meant to erase. A pre-Compaction
+`force_review` can do it even sooner, since it has no timing gate at all. The user is told the Memory is
+gone, and it comes back.
+
+The existing design already solved this for the reviewer's own `CLEAR`: that path writes an empty
+document and advances the boundary, which is why an emptied Memory stays empty. Confirmed `DELETE_ALL`
+as planned regresses that.
+
+Smallest correction: make confirmed deletion write rather than delete.
+
+    Confirmed DELETE_ALL writes an empty Memory document through the existing conditional
+    `replace_memory`, with `memory_text=""` and `last_reviewed_turn_id` set to the newest pending
+    input's Turn ID, using the observed boundary as the compare-and-set expectation. `delete_memory`
+    remains for account closure through `delete_all_for_user`.
+
+This reuses the CAS path the feature already shares, needs no new storage, and keeps the documented and
+tested state of an empty document with an advanced boundary. It also makes the deletion concurrency-safe
+for free, which a bare delete is not.
+
+## Blocker 2: `delete_all_confirmed` alone is not a confirmation boundary
+
+The flag asks one model call to bind an affirmative like "yes" to a deletion question asked in a
+previous turn, and nothing else checks that binding. Two ways it fails. The user may be answering a
+different question the assistant asked, and the harness cannot tell. Worse, the question itself may no
+longer be in the raw context: if Compaction ran in between, the confirmation prompt survives only inside
+the rolling Summary, which is lossy and need not preserve that PIA offered to erase Memory. The model
+then sees an affirmative with no antecedent and one wrong classification erases the whole curated
+document, with no history and no backup by deliberate design.
+
+Smallest correction, using state the Orchestrator already keeps and adding nothing durable:
+
+    A confirmed DELETE_ALL is honored only when the same user's immediately preceding delivered
+    generation produced an unconfirmed DELETE_ALL. Record that on the existing per-user coordination
+    state, and keep that state from being reclaimed while a confirmation is outstanding. Otherwise treat
+    the confirmation as unconfirmed and ask again.
+
+One field plus one condition in idle cleanup. It is in-process, so a restart loses the pending
+confirmation and the user is asked again, which is the safe direction, and it is not the durable
+confirmation state this plan's own scope excludes. It also gives unconfirmed `DELETE_ALL` a purpose:
+without it, an unconfirmed deletion request behaves exactly like `NONE`.
+
+Deferring complete deletion to the `pia-agent` integration is an equally acceptable answer to review
+question 5. Shipping the flag with no second check is not.
+
+## Material correction: an answer can claim a save that failed
+
+The answer text is produced before the Memory write. When `review_explicit_input` raises or loses its
+compare-and-set, the plan sets `memory_failed=True` and delivers the generated answer unchanged, so a
+reply that says the request was remembered is delivered even though nothing was stored. The caller
+cannot repair this after the fact, because the harness owns `deliver` and the answer has already been
+sent by the time the result carries `memory_failed`.
+
+Smallest provider-independent correction, with no second model call and no harness-authored wording:
+
+    The Orchestrator accepts one optional caller-supplied failure notice string. When an explicit
+    UPDATE or FORGET Review fails, that string is appended to the answer through the existing change
+    summary composition. Unset means today's behavior.
+
+The wording stays with the caller that owns the user's language, and it reuses the append path that
+already exists for success notices.
+
+## Removal: `SHOW` is indistinguishable from `NONE`
+
+The action is a model output, not an input, and the plan routes `SHOW` exactly as it routes `NONE`: no
+write, no boundary change, ordinary due Review. The model can already describe Memory because the
+assembler put it in the prompt, whatever value it returns. Nothing in the harness ever branches on
+`SHOW`, so it is an enum member that changes no behavior. Drop it and let a description request be
+`NONE`.
+
+## Answers to the review questions
+
+1. Yes, and it is stronger than the caller-supplied mode, because only the winning generation can act
+   and it acted on exactly the text it saw.
+2. Yes, one batch-level action is the smallest correct contract; per-message classification would need a
+   second call or a parser, both excluded. One consequence worth writing down: a batch mixing a remember
+   and a forget collapses to one action, so choosing `FORGET` grants CLEAR permission over text that also
+   asks to remember something. The reviewer's own rule that CLEAR only applies when the targeted removal
+   empties the document bounds it, so this is acceptable, not a defect.
+3. Yes. `review_explicit_input` consumes the backlog and the current input in one `_apply`, and running
+   `review_if_due` first would review the same Turns twice.
+4. `NONE`, `UPDATE`, `FORGET` and `DELETE_ALL` cover it; `SHOW` does not earn its place. No `AMBIGUOUS`
+   state is needed, since ambiguity is `NONE` plus a clarifying answer.
+5. Not sufficient as written; see blocker 2. Either add the preceding-turn check or defer deletion.
+6. Yes, and no extra read or boundary advance is needed.
+7. Yes, it can; see the material correction above.
+8. The validation set is right, and the test list covers the invariants including superseded actions and
+   commit-phase queuing. Add one case for blocker 1: after a confirmed deletion, the next Review must not
+   rebuild Memory from Turns below the new boundary.
+
+## Instructions for Codex
+
+Apply blocker 1's write-empty-with-boundary rule and blocker 2's preceding-turn check, or defer
+`DELETE_ALL` entirely and say so in the plan. Add the optional failure notice, drop `SHOW`, and add the
+verification case named above. Nothing else needs to change; no intent-only call, parser, second store,
+history, queue, worker, outbox, or provider work should appear during implementation.
