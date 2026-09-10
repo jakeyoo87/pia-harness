@@ -99,6 +99,7 @@ class FakeMemoryReviewer:
         self.explicit_inputs = []
         self.calls = []
         self.fail = False
+        self.force_changes = ()
 
     def review_if_due(self, **values):
         self.calls.append("revisit")
@@ -110,6 +111,12 @@ class FakeMemoryReviewer:
         self.calls.append("force")
         if self.fail:
             raise RuntimeError("memory failed")
+        if self.force_changes:
+            return MemoryReviewResult(
+                MemoryReviewStatus.REPLACED,
+                MemoryDocument("user", "memory", "0000000000000-old", values["now"]),
+                self.force_changes,
+            )
         return None
 
     def review_explicit_input(self, **values):
@@ -389,7 +396,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 delete_all_confirmed=True,
             )
 
-        orchestrator = self.orchestrator(generate)
+        orchestrator = self.orchestrator(
+            generate, failure_notice="삭제를 확인하지 못했어요."
+        )
         result = await orchestrator.submit(
             user_key="user", message="yes", accepted_at=self.now
         )
@@ -399,6 +408,37 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             orchestrator._states["user"].delete_all_confirmation_pending
         )
+        # The answer said "cleared", so a silent no-op would leave the user
+        # believing Memory was deleted.
+        self.assertTrue(result.memory_failed)
+        self.assertEqual("cleared\n\n- 삭제를 확인하지 못했어요.", result.final_text)
+
+    async def test_failure_notice_survives_automatic_change_summaries(self) -> None:
+        self.memory.fail = False
+        self.compactor.due = True
+        self.memory.force_changes = ("첫째", "둘째", "셋째")
+
+        async def generate(context):
+            return GeneratedAnswer(
+                "answer", "model", 10, memory_action=MemoryAction.UPDATE
+            )
+
+        class FailingExplicit(FakeMemoryReviewer):
+            def review_explicit_input(self, **values):
+                self.calls.append("explicit")
+                raise RuntimeError("memory failed")
+
+        self.memory = FailingExplicit()
+        self.memory.force_changes = ("첫째", "둘째", "셋째")
+        result = await self.orchestrator(
+            generate, failure_notice="기억에 반영하지 못했어요."
+        ).submit(user_key="user", message="remember", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertTrue(result.memory_failed)
+        # The explicit failure must not be pushed out of the three-item budget by
+        # summaries an automatic pre-Compaction Review added afterwards.
+        self.assertIn("기억에 반영하지 못했어요.", result.final_text)
 
     async def test_explicit_memory_failure_appends_caller_notice(self) -> None:
         self.memory.fail = True
@@ -417,6 +457,32 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             "answer\n\n- 기억에 반영하지 못했어요.", result.final_text
         )
+
+    async def test_stale_explicit_review_reports_failure_like_an_exception(self) -> None:
+        # A lost compare-and-set writes nothing, so it must reach the caller and the
+        # user exactly as a raised reviewer failure does.
+        class StaleExplicit(FakeMemoryReviewer):
+            def review_explicit_input(self, **values):
+                self.calls.append("explicit")
+                return MemoryReviewResult(MemoryReviewStatus.STALE, None)
+
+        self.memory = StaleExplicit()
+
+        async def generate(context):
+            return GeneratedAnswer(
+                "answer", "model", 10, memory_action=MemoryAction.UPDATE
+            )
+
+        result = await self.orchestrator(
+            generate, failure_notice="기억에 반영하지 못했어요."
+        ).submit(user_key="user", message="remember", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertTrue(result.memory_failed)
+        self.assertEqual(
+            "answer\n\n- 기억에 반영하지 못했어요.", result.final_text
+        )
+        self.assertEqual(["explicit"], self.memory.calls)
 
     async def test_invalid_generated_memory_action_fails_before_commit(self) -> None:
         async def generate(context):

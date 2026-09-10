@@ -514,6 +514,12 @@ class ConversationOrchestrator:
                     memory_failed = True
                     explicit_memory_failed = True
             else:
+                if action is MemoryAction.DELETE_ALL and answer.delete_all_confirmed:
+                    # The answer already believes it confirmed a deletion that this
+                    # Orchestrator will not perform, so report it rather than
+                    # delivering a silent no-op.
+                    memory_failed = True
+                    explicit_memory_failed = True
                 try:
                     review = await _durable_call(
                         self._memory_reviewer.review_if_due,
@@ -524,6 +530,9 @@ class ConversationOrchestrator:
                     _add_changes(changes, review)
                 except Exception:
                     memory_failed = True
+
+            if explicit_memory_failed:
+                _add_notice(changes, self._explicit_memory_failure_notice)
 
             if self._compactor.should_compact(
                 token_budget=self._token_budget,
@@ -555,8 +564,6 @@ class ConversationOrchestrator:
                 except Exception:
                     compaction_failed = True
 
-            if explicit_memory_failed:
-                _add_notice(changes, self._explicit_memory_failure_notice)
             final_text = _final_text(answer.text, changes)
             try:
                 await self._deliver(user_key, final_text)
