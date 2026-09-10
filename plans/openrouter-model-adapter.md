@@ -319,3 +319,110 @@ existing Ruff checks. Do not make a live model call as part of automated verific
 If a blocker exists, propose the smallest correction. Do not add an intent-only LLM call, keyword
 parser, extra model configuration, tokenizer dependency, provider hierarchy, retry framework, queue,
 worker, outbox, vector database, `pia-agent` change, AWS work, deployment, or live credential use.
+
+## Review record: 2026-09-10, Claude, plan commits d7f7c05 and 98a957f
+
+Plan-only review against merged `main` at `c4005ce`. Nothing was implemented and nothing was merged.
+Two blockers, both where this plan meets an existing contract rather than in its own design. The
+boundary, the shared configuration, the trust rendering and the structured-output policy are all right
+and need no change.
+
+What holds. Putting the adapter in the Harness is the correct split: the Harness owns the four callable
+shapes and the rendering that makes them true, while secrets, the deployed model choice, the table and
+delivery stay in `pia`, which is the same line every earlier feature drew. Nothing binds to a model
+name: the ID, the context limit and the timeout all arrive from the caller, there is no tokenizer
+package, no per-model branch, and no Models API call at startup. One model ID and one
+`ModelTokenBudget` are enough for all three operations, and requiring the same renderer for
+`count_input_tokens` and `generate_answer` — with a test comparing the exact payloads — is what makes
+the assembler's budget mean anything, since that budget stopped reserving separate input space on the
+condition that the counter measures the whole real request. Async answer with synchronous Review and
+Summary matches the existing seams exactly: the answer must be cancellable for interruption, while
+Review and Summary already run in the durable executor path after commit ownership, where cancellation
+is deliberately not wanted. The trust rendering keeps `SYSTEM` plus a fixed adapter instruction as the
+only trusted content and puts Memory, Summary and conversation in labelled user data, which is the rule
+the Assembler review asked the adapter to honor.
+
+## Blocker 1: the Memory Review output cap contradicts the Memory bound
+
+The plan caps answers and Memory Review at the shared response reserve, currently 4,096 tokens. Memory's
+authoritative bound is 4,000 *characters*, and those two units do not convert in the safe direction for
+this product's language. A 4,000-character Korean document needs at least that many tokens in any
+common tokenizer, plus the JSON envelope, escaping and up to three 200-character change-summary items.
+So a Memory document near its allowed size cannot fit in the allowed completion.
+
+The failure is not a truncated document; it is a truncated JSON body, which fails schema validation and
+fails closed. That is the correct behavior for one bad response but the wrong outcome here, because it
+is deterministic: once a user's Memory approaches the bound, every automatic revisit, every
+pre-Compaction flush and every explicit remember or forget fails, Memory freezes at whatever size it
+reached, and each explicit request returns the required failure notice. The user's Memory silently stops
+working the more the product has learned about them.
+
+Smallest correction, and it removes a setting rather than adding one:
+
+    Memory Review does not send a completion cap. Its output is bounded by the strict schema and by the
+    existing local 4,000-character validation in `AutomaticMemoryReviewer._apply`, which is already
+    authoritative and rejects an oversized document without storing it.
+
+The shared reserve still governs the answer, and Summary keeps honoring `SummaryRequest.max_output_tokens`,
+whose bound and validation are both already in tokens and therefore consistent. Do not solve this by
+adding a second output-reserve setting; that is the duplicated configuration the previous refactor
+deliberately removed.
+
+## Blocker 2: estimating `SummaryOutput.token_count` re-opens a fixed defect
+
+The plan says to fill `token_count` from `usage.completion_tokens` when present and otherwise from the
+conservative estimator. That second half reintroduces a bug already fixed on `main`.
+
+`TokenCompactor` treats a present `token_count` as a provider-reported token count and compares it with
+the response reserve. The conservative estimator counts UTF-8 bytes, and Korean is three bytes per
+character, so a normal 1,500-character Korean summary estimates about 4,500 against a 4,096 limit and is
+rejected. That is exactly the failure the compaction review found and closed by keying the check on
+`output.token_count is not None`, so that an estimated summary skips a check it cannot satisfy. Filling
+the field with an estimate defeats that fix and returns compaction to failing on every attempt for
+Korean conversations until a provider reports usage.
+
+Smallest correction:
+
+    Set `SummaryOutput.token_count` only from provider usage. Leave it `None` when usage is absent;
+    `TokenCompactor` then computes its own estimate for the size-reduction check and correctly skips the
+    token-based output check.
+
+The answer path is different and the plan is right there: `GeneratedAnswer.estimated_total_tokens` is
+required, a conservative byte estimate only makes Compaction trigger early, and early is the safe
+direction.
+
+## Smaller notes, no plan change required
+
+`MemoryReviewOutput.change_summary` must be a tuple; `_validated_output` rejects a list outright, and a
+JSON array parses to a list, so the mapping has to convert. The shared `ModelTokenBudget` is only true
+for one model, so the caller must configure an exact model ID rather than a routing alias whose
+effective model, and therefore context window, can change between requests; that belongs in the README
+note the plan already promises. And the "small immutable configuration type that earns its use" should
+stay unwritten unless something needs it, since the model ID, budget and timeout are already
+constructor arguments.
+
+## Answers to the review questions
+
+1. Correct boundary, and consistent with where every earlier feature drew it.
+2. Yes, and sharing them is what keeps the assembler budget and the compaction trigger derived from one
+   number.
+3. Yes. Async answer and synchronous Review and Summary match the existing seams; the only lifecycle
+   cost is two owned clients, which explicit cleanup covers.
+4. Yes, with the trust rule stated the way the Assembler review asked.
+5. Yes. Strict schema, required parameters and local validation are enough precisely because local
+   validation is not skipped when the endpoint claims strictness.
+6. Yes. The instruction is explicit-only, tells the model to decide from meaning rather than keywords,
+   and forbids claiming a persisted change, which is what leaves automatic learning to the reviewer
+   schedule and the change notice to the Orchestrator.
+7. Yes for the answer, once blocker 2 keeps the same estimator out of the Summary token field.
+8. Nothing is excessive; the validation list is all fail-closed checks on untrusted provider output. The
+   two missing contracts are the blockers above; add one test each: a Memory Review whose document sits
+   near the character bound completes rather than truncating, and a Summary without provider usage
+   leaves `token_count` unset.
+
+## Instructions for Codex
+
+Apply the two corrections to the plan text before implementing, and add the two verification cases
+named above. Nothing else needs to change: no intent-only call, keyword parser, extra model
+configuration, tokenizer dependency, provider hierarchy, retry framework, or live credential belongs in
+this feature.
