@@ -445,3 +445,63 @@ provider `completion_tokens`; absent usage leaves it `None` so the Compactor per
 comparison without mistaking UTF-8 bytes for provider tokens. JSON change-summary arrays are converted
 to tuples, exact deployed model IDs are documented for callers, and no extra configuration type is added
 unless implementation demonstrates a concrete need. Implementation proceeds on this branch.
+
+## Review record: 2026-09-10, Claude, implementation commit 67e66e5
+
+Implementation review against this plan and merged `main` at `c4005ce`. Verdict: no blocker. One
+coverage gap was found and fixed on this branch. Nothing was merged, and no secret, AWS, Bot, provider
+hierarchy, or live request was added.
+
+Verified by running. The suite is 66 tests green against DynamoDB Local, ruff reports no unused imports,
+no undefined names and no bugbear findings, and a search for any model family name in `src/` returns
+nothing, so the adapter is model-agnostic in fact and not only in prose.
+
+Both plan-review blockers are implemented and pinned. Memory Review passes
+`max_completion_tokens=None`, which the payload builder omits entirely, so the 4,000-character document
+bound is enforced by the strict schema and by the authoritative `_apply` validation rather than by a
+token cap that cannot express it; adding the shared reserve back fails the suite. `SummaryOutput.token_count`
+is taken only from provider `completion_tokens` and left `None` otherwise, so the Compactor keeps using
+its own estimate for the size comparison and keeps skipping the token-based output check; filling that
+field with the byte estimator fails two tests.
+
+Eight further guarantees were checked by mutation and each fails the suite: rendering `MEMORY` into the
+system role, dropping `provider.require_parameters`, letting `count_input_tokens` measure a different
+payload than the request sends, turning off `strict`, accepting extra keys in structured output, and
+accepting `delete_all_confirmed` without the `DELETE_ALL` action.
+
+The remaining checks hold on inspection. The exact model ID, budget and timeout are all constructor
+arguments with no defaults and no per-model branching. One structured answer call returns the answer and
+the action together; the action is read only from the parsed enum, and there is no keyword matching
+anywhere in the module. `review_memory` is one method with no branch on trigger source, so automatic
+revisit, pre-Compaction, pre-reset, `UPDATE` and `FORGET` all share it. Rendering enforces the trust
+boundary strictly rather than politely: a `SYSTEM` part must be first and trusted, every other part must
+be untrusted, Memory and Summary become labelled user data, and turns keep user and assistant roles.
+Usage validation rejects non-integers, booleans, negatives and inconsistent totals, treats all-zero usage
+as absent, and rejects a completion that claims zero completion tokens while returning content. The async
+answer path lets cancellation propagate because `httpx.HTTPError` cannot swallow `CancelledError`, while
+Review and Summary use the thread-safe sync client that the durable executor path deliberately does not
+interrupt. Owned clients are closed once and injected clients are never closed. Errors carry only a
+stable event, an optional status and an exception type name; `raise ... from None` is the same pattern the
+agent project already adopted for httpx exceptions whose request URL carries a credential, and the tests
+assert the absent cause.
+
+## Coverage gap found and fixed: which model ID the answer reports
+
+Every test used one string for both the configured model and the mocked response model, so nothing could
+distinguish them, and sourcing `ContextUsage.model_id` from the configured ID instead of the response left
+the whole suite green. That matters beyond tidiness: `CompactionPolicy.should_compact` prefers provider
+usage only while `usage.model_id` equals the answer's `model_id`, and the Orchestrator passes both from
+the same answer. If the two ever came from different sources and OpenRouter returned a routed or resolved
+model string, provider usage would be silently ignored and the trigger would fall back to the conservative
+byte estimate, losing the exactness the usage pipeline exists for, with no error anywhere.
+
+Fixed by having the mocked response return a routed variant of the requested model and asserting that the
+request still carries the configured ID while both the answer and its usage report the response value.
+That mutation now fails.
+
+## Instructions for Codex
+
+Nothing further to fix. Confirm main CI succeeds after merge. The consuming application still owns the
+API key, the deployed model ID and its approved context limit, the timeout, the failure notice, and every
+live verification; configure an exact model slug rather than a routing alias, since one
+`ModelTokenBudget` is only true for one model.

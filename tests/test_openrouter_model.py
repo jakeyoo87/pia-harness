@@ -129,6 +129,8 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
+            # The routed model string differs from the requested one so the test can
+            # tell which source the answer and its usage are read from.
             return chat_response(
                 json.dumps(
                     {
@@ -137,6 +139,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                         "delete_all_confirmed": False,
                     }
                 ),
+                model="vendor/exact-model:routed",
                 usage={
                     "prompt_tokens": 20,
                     "completion_tokens": 7,
@@ -155,7 +158,10 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.delete_all_confirmed)
         self.assertEqual(27, result.estimated_total_tokens)
         self.assertEqual(27, result.usage.total_tokens)
-        self.assertEqual("vendor/exact-model", result.model_id)
+        # Both must come from the response, because CompactionPolicy prefers provider
+        # usage only while usage.model_id equals the answer's model_id.
+        self.assertEqual("vendor/exact-model:routed", result.model_id)
+        self.assertEqual(result.model_id, result.usage.model_id)
 
         payload = json.loads(requests[0].content)
         self.assertEqual("vendor/exact-model", payload["model"])
