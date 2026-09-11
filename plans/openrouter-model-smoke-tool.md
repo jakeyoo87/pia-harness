@@ -117,7 +117,13 @@ Aggregate fields:
 - total, passed, and failed counts;
 - total elapsed milliseconds;
 - overall `PASS` only when all scenarios pass and they report exactly one response model ID. More than
-  one observed model fails the aggregate even when every individual scenario otherwise passes.
+one observed model fails the aggregate even when every individual scenario otherwise passes.
+
+`MemoryReviewOutput` intentionally has no response model field. Report null for the two Memory Review
+scenarios and compute observed-model consistency from the five Answer results and the Summary result,
+which expose model IDs through their public domain contracts. Do not change the Adapter contract or read
+private client state solely for this diagnostic. The early moving/router alias rejection remains the
+guard against intentionally variable routing.
 
 Never print or serialize:
 

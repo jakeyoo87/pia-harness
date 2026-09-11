@@ -116,6 +116,31 @@ Manager access, runtime configuration, DynamoDB/IAM, Telegram delivery, deployme
 
 See [the Model Adapter plan](plans/openrouter-model-adapter.md) for request and validation contracts.
 
+## Live model smoke tool
+
+Before selecting an exact OpenRouter model for `pia`, run the repository-local smoke tool against the
+public Adapter. It sends eight fixed synthetic Korean requests covering every `MemoryAction`, complete
+deletion confirmation, `REPLACE` and null-valued `UNCHANGED` Memory Review, and rolling Summary.
+
+From a protected source checkout where the key is already present in the process environment:
+
+    PYTHONPATH=src python scripts/smoke_openrouter_model.py \
+      --model vendor/exact-model-id \
+      --context-limit 262144
+
+The tool reads only `OPENROUTER_API_KEY`; never pass a key as an argument, paste it into documentation,
+or commit it in `.env`. On AWS, use an external owner-controlled wrapper to load Secrets Manager data
+and invoke the tool in the same process. The Harness script itself contains no AWS integration.
+
+Each scenario emits one JSON line with status, elapsed time, safe model/usage metadata, and synthetic
+output text, followed by an aggregate line. Exit `0` means all eight contracts passed with one observed
+response model, `1` means a model or Adapter mismatch, and `2` means invalid local configuration.
+Failures are not retried. One run consumes eight model calls, and a pass neither approves deployment nor
+guarantees that a free endpoint will remain available.
+
+See [the smoke tool plan](plans/openrouter-model-smoke-tool.md) for the fixed scenarios and safety
+boundary.
+
 ## Local verification
 
 Start DynamoDB Local, install the package, and run:
