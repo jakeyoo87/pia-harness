@@ -224,14 +224,23 @@ Do not add a tokenizer package, remote token-count request, or model-name heuris
   Adapter and smoke tool expose raw endpoint behavior. The consuming `pia` may pass `2`, meaning one
   initial call plus one automatic retry after a fixed one-second delay. No larger value is accepted in
   this first version.
-- Retry the complete HTTP-and-parse operation only for transport/timeout failures, HTTP 500, 502, 503,
-  or 504, empty content, missing response-envelope fields, or malformed structured JSON. Do not retry
-  HTTP 400, 401, 403, 404, or 429, local input/configuration errors, or domain validation failures.
+- Retry the complete HTTP-and-parse operation only for transport/timeout failures, HTTP 408, any 5xx
+  except 501, empty content, missing response-envelope fields, malformed structured JSON, or a
+  well-formed structured result rejected by the Adapter's local enum/type/field validation. Classify
+  retryability where each safe error is raised.
+- Read the first choice's `finish_reason` before content parsing. `finish_reason="length"` raises the
+  distinct non-retryable `openrouter.output_truncated` event because the same output budget will truncate
+  a second attempt too. Refusal, invalid usage, HTTP 400, 401, 403, 404, 429, and 501, local
+  input/configuration errors, and downstream Memory domain validation are also non-retryable.
 - Answer retry remains async and cancellable. Memory Review and Summary retry synchronously in their
   existing durable executor path. A retry happens before Memory persistence or user delivery, so it
   cannot duplicate a durable Memory action or delivered answer.
 - A timeout may represent a completed provider request whose response was lost, so the second attempt
   can be billed separately. The strict two-attempt ceiling is the accepted Beta tradeoff.
+- With OpenRouter `max_tokens`, `ModelTokenBudget.response_tokens` caps reasoning plus final output
+  together; it is not guaranteed answer-text space. When `max_attempts=2`, a durable synchronous call's
+  worst case is two timeouts plus one second. The consuming application should use a shorter timeout
+  appropriate to the selected model rather than adding backoff machinery.
 
 ## Validation and safe errors
 
@@ -369,6 +378,18 @@ unchanged. Automated tests must pin retry/no-retry classification, exactly one-s
 injected sleeper or patched clock, two-attempt ceiling, success on the second attempt, final safe error,
 and `aclose()` on cancellation. No further live test is required before Claude reviews the combined
 compatibility and retry delta.
+
+## Resolution record: 2026-09-11, after compatibility and retry review
+
+The retry blocker and classification corrections are accepted. Add a non-retryable
+`openrouter.output_truncated` event for `finish_reason="length"`; retry 408 and every 5xx except 501;
+keep refusal and invalid usage non-retryable; and retry Adapter-level malformed or semantically invalid
+structured output once. Build each operation payload once before its attempt loop. The async Answer waits
+with `asyncio.sleep(1)`, while synchronous Memory and Summary wait with `time.sleep(1)` inside their
+existing durable worker thread. No sleeper is added to the public API; tests patch the standard sleep
+functions. `max_attempts` remains keyword-only, accepts only integer 1 or 2, and defaults to 1 so the smoke
+tool remains single-attempt. Implementation proceeds without a retry framework, jitter, fallback, model
+branch, or additional configuration object.
 
 ## Review record: 2026-09-10, Claude, plan commits d7f7c05 and 98a957f
 

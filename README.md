@@ -105,18 +105,24 @@ See [the Orchestrator plan](plans/conversation-orchestrator.md) for the exact li
 - Defines `UNCHANGED`, `REPLACE`, and `CLEAR` output semantics explicitly and asks Memory changes and
   rolling Summary to preserve the source conversation's primary language
 - Uses provider token usage when available and conservative preflight estimates otherwise
+- Accepts `max_attempts=1` or `2`; the default performs one call, while `2` retries a narrowly classified
+  transient provider/structured-output failure once after one second
 - Keeps answer generation async and cancellable while Review and Summary match their synchronous durable
   callable contracts
 - Never performs a separate intent call, keyword parse, retry, model fallback, or live capability probe
 
 Construct `OpenRouterModelAdapter` with an injected API key, exact model ID, shared `ModelTokenBudget`,
-timeout, and optional test clients. Wire `count_input_tokens`, `generate_answer`, `review_memory`, and
+timeout, optional `max_attempts`, and optional test clients. Wire `count_input_tokens`, `generate_answer`, `review_memory`, and
 `summarize` directly into the existing Harness components. Call `aclose()` to close all adapter-owned
 clients; injected clients remain caller-owned.
 
 Use an exact deployed model ID whose context window matches the supplied budget. Do not use a routing
 alias whose effective model and context limit can change. The consuming `pia` application owns Secret
 Manager access, runtime configuration, DynamoDB/IAM, Telegram delivery, deployment, and live E2E tests.
+With `max_tokens`, the response reserve covers reasoning plus final output together. A
+`finish_reason="length"` response is reported as non-retryable truncation. When `max_attempts=2`, choose a
+timeout with the two-timeout-plus-one-second worst case in mind; the smoke tool intentionally keeps the
+default one attempt so it measures raw endpoint behavior.
 
 See [the Model Adapter plan](plans/openrouter-model-adapter.md) for request and validation contracts.
 

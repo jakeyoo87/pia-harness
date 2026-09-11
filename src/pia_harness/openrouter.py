@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
-from collections.abc import Mapping
-from typing import Any
+import time
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, TypeVar
 
 import httpx
 
@@ -32,6 +34,9 @@ from .session import MEMORY_MAX_CHARS, CompletedTurn
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+RETRY_DELAY_SECONDS = 1.0
+
+_Result = TypeVar("_Result")
 
 ANSWER_INSTRUCTION = """Return the normal user-facing answer and one hidden Memory action.
 Use UPDATE only when the current user explicitly asks PIA to retain or durably change user context,
@@ -122,11 +127,13 @@ class OpenRouterModelError(RuntimeError):
         *,
         status: int | None = None,
         error_type: str | None = None,
+        retryable: bool = False,
     ) -> None:
         super().__init__(event)
         self.event = event
         self.status = status
         self.error_type = error_type
+        self.retryable = retryable
 
 
 class OpenRouterModelAdapter:
@@ -137,6 +144,7 @@ class OpenRouterModelAdapter:
         model_id: str,
         token_budget: ModelTokenBudget,
         timeout_seconds: float,
+        max_attempts: int = 1,
         sync_client: httpx.Client | None = None,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -153,6 +161,12 @@ class OpenRouterModelAdapter:
             or timeout_seconds <= 0
         ):
             raise ValueError("timeout_seconds must be positive and finite")
+        if (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or max_attempts not in (1, 2)
+        ):
+            raise ValueError("max_attempts must be 1 or 2")
         if sync_client is not None and not isinstance(sync_client, httpx.Client):
             raise ValueError("sync_client must be an httpx.Client")
         if async_client is not None and not isinstance(
@@ -162,6 +176,7 @@ class OpenRouterModelAdapter:
 
         self.model_id = model_id.strip()
         self.token_budget = token_budget
+        self.max_attempts = max_attempts
         self._headers = {
             "Authorization": f"Bearer {api_key.strip()}",
             "Content-Type": "application/json",
@@ -192,6 +207,15 @@ class OpenRouterModelAdapter:
         if not isinstance(context, AssembledPromptContext):
             raise ValueError("context must be an AssembledPromptContext")
         payload = self._answer_payload(context.parts)
+        return await self._retry_async(
+            lambda: self._generate_answer_once(context, payload)
+        )
+
+    async def _generate_answer_once(
+        self,
+        context: AssembledPromptContext,
+        payload: dict[str, Any],
+    ) -> GeneratedAnswer:
         envelope = await self._post_async(payload)
         content, response_model, usage = _chat_result(envelope)
         output = _json_object(content)
@@ -239,6 +263,13 @@ class OpenRouterModelAdapter:
             schema=_memory_schema(request.max_characters),
             output_token_limit=None,
         )
+        return self._retry_sync(lambda: self._review_memory_once(request, payload))
+
+    def _review_memory_once(
+        self,
+        request: MemoryReviewRequest,
+        payload: dict[str, Any],
+    ) -> MemoryReviewOutput:
         content, _response_model, _usage = _chat_result(self._post(payload))
         output = _json_object(content)
         _exact_keys(output, {"action", "memory_text", "change_summary"})
@@ -272,6 +303,9 @@ class OpenRouterModelAdapter:
             schema=_SUMMARY_SCHEMA,
             output_token_limit=request.max_output_tokens,
         )
+        return self._retry_sync(lambda: self._summarize_once(payload))
+
+    def _summarize_once(self, payload: dict[str, Any]) -> SummaryOutput:
         content, response_model, usage = _chat_result(self._post(payload))
         output = _json_object(content)
         _exact_keys(output, {"summary"})
@@ -281,6 +315,28 @@ class OpenRouterModelAdapter:
             model_id=response_model,
             token_count=(None if usage is None else usage["completion_tokens"]),
         )
+
+    async def _retry_async(
+        self, operation: Callable[[], Awaitable[_Result]]
+    ) -> _Result:
+        for attempt in range(self.max_attempts):
+            try:
+                return await operation()
+            except OpenRouterModelError as error:
+                if not error.retryable or attempt + 1 >= self.max_attempts:
+                    raise
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+        raise AssertionError("retry loop did not return or raise")
+
+    def _retry_sync(self, operation: Callable[[], _Result]) -> _Result:
+        for attempt in range(self.max_attempts):
+            try:
+                return operation()
+            except OpenRouterModelError as error:
+                if not error.retryable or attempt + 1 >= self.max_attempts:
+                    raise
+                time.sleep(RETRY_DELAY_SECONDS)
+        raise AssertionError("retry loop did not return or raise")
 
     def close(self) -> None:
         if self._owns_sync_client:
@@ -337,11 +393,15 @@ class OpenRouterModelAdapter:
             )
         except httpx.TimeoutException as error:
             raise OpenRouterModelError(
-                "openrouter.timeout", error_type=type(error).__name__
+                "openrouter.timeout",
+                error_type=type(error).__name__,
+                retryable=True,
             ) from None
         except httpx.HTTPError as error:
             raise OpenRouterModelError(
-                "openrouter.transport_error", error_type=type(error).__name__
+                "openrouter.transport_error",
+                error_type=type(error).__name__,
+                retryable=True,
             ) from None
         return _response_payload(response)
 
@@ -355,11 +415,15 @@ class OpenRouterModelAdapter:
             )
         except httpx.TimeoutException as error:
             raise OpenRouterModelError(
-                "openrouter.timeout", error_type=type(error).__name__
+                "openrouter.timeout",
+                error_type=type(error).__name__,
+                retryable=True,
             ) from None
         except httpx.HTTPError as error:
             raise OpenRouterModelError(
-                "openrouter.transport_error", error_type=type(error).__name__
+                "openrouter.transport_error",
+                error_type=type(error).__name__,
+                retryable=True,
             ) from None
         return _response_payload(response)
 
@@ -484,7 +548,9 @@ def _memory_schema(max_characters: int) -> dict[str, Any]:
 def _response_payload(response: httpx.Response) -> dict[str, Any]:
     if response.status_code >= 400:
         raise OpenRouterModelError(
-            "openrouter.http_error", status=response.status_code
+            "openrouter.http_error",
+            status=response.status_code,
+            retryable=_retryable_status(response.status_code),
         )
     try:
         payload = response.json()
@@ -493,10 +559,13 @@ def _response_payload(response: httpx.Response) -> dict[str, Any]:
             "openrouter.invalid_response",
             status=response.status_code,
             error_type=type(error).__name__,
+            retryable=True,
         ) from None
     if not isinstance(payload, dict):
         raise OpenRouterModelError(
-            "openrouter.invalid_response", status=response.status_code
+            "openrouter.invalid_response",
+            status=response.status_code,
+            retryable=True,
         )
     return payload
 
@@ -506,7 +575,15 @@ def _chat_result(
 ) -> tuple[str, str, dict[str, int] | None]:
     try:
         choices = payload["choices"]
-        message = choices[0]["message"]
+        choice = choices[0]
+    except (KeyError, IndexError, TypeError) as error:
+        raise _invalid_response(error) from None
+    if not isinstance(choice, dict):
+        raise _invalid_response(TypeError("choice has wrong type"))
+    if choice.get("finish_reason") == "length":
+        raise OpenRouterModelError("openrouter.output_truncated")
+    try:
+        message = choice["message"]
         content = message["content"]
         response_model = payload["model"]
     except (KeyError, IndexError, TypeError) as error:
@@ -514,9 +591,11 @@ def _chat_result(
     if message.get("refusal"):
         raise OpenRouterModelError("openrouter.refusal")
     if not isinstance(content, str) or not content.strip():
-        raise OpenRouterModelError("openrouter.empty_response")
+        raise OpenRouterModelError("openrouter.empty_response", retryable=True)
     if not isinstance(response_model, str) or not response_model.strip():
-        raise OpenRouterModelError("openrouter.invalid_response")
+        raise OpenRouterModelError(
+            "openrouter.invalid_response", retryable=True
+        )
     usage = _usage(payload.get("usage"))
     if usage is not None and usage["completion_tokens"] == 0:
         raise OpenRouterModelError("openrouter.invalid_usage")
@@ -548,31 +627,39 @@ def _json_object(content: str) -> dict[str, Any]:
     except (TypeError, ValueError) as error:
         raise _invalid_output(error) from None
     if not isinstance(value, dict):
-        raise OpenRouterModelError("openrouter.invalid_output")
+        raise OpenRouterModelError("openrouter.invalid_output", retryable=True)
     return value
 
 
 def _exact_keys(value: dict[str, Any], expected: set[str]) -> None:
     if set(value) != expected:
-        raise OpenRouterModelError("openrouter.invalid_output")
+        raise OpenRouterModelError("openrouter.invalid_output", retryable=True)
 
 
 def _nonempty_string(value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise OpenRouterModelError("openrouter.invalid_output")
+        raise OpenRouterModelError("openrouter.invalid_output", retryable=True)
     return value.strip()
 
 
 def _invalid_response(error: Exception) -> OpenRouterModelError:
     return OpenRouterModelError(
-        "openrouter.invalid_response", error_type=type(error).__name__
+        "openrouter.invalid_response",
+        error_type=type(error).__name__,
+        retryable=True,
     )
 
 
 def _invalid_output(error: Exception) -> OpenRouterModelError:
     return OpenRouterModelError(
-        "openrouter.invalid_output", error_type=type(error).__name__
+        "openrouter.invalid_output",
+        error_type=type(error).__name__,
+        retryable=True,
     )
+
+
+def _retryable_status(status: int) -> bool:
+    return status == 408 or (500 <= status <= 599 and status != 501)
 
 
 def _label(name: str, content: str) -> str:

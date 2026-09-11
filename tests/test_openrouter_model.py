@@ -5,6 +5,7 @@ import json
 import unittest
 from datetime import UTC, datetime
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -35,10 +36,14 @@ def chat_response(
     status: int = 200,
     model: str = "vendor/exact-model",
     usage: dict[str, int] | None = None,
+    finish_reason: str | None = None,
 ) -> httpx.Response:
+    choice: dict[str, Any] = {"message": {"content": content}}
+    if finish_reason is not None:
+        choice["finish_reason"] = finish_reason
     payload: dict[str, Any] = {
         "model": model,
-        "choices": [{"message": {"content": content}}],
+        "choices": [choice],
     }
     if usage is not None:
         payload["usage"] = usage
@@ -55,6 +60,16 @@ def completed_turn() -> CompletedTurn:
         assistant_message="답변",
         created_at=now,
         expires_at=int(now.timestamp()) + 30 * 86400,
+    )
+
+
+def answer_content() -> str:
+    return json.dumps(
+        {
+            "answer": "answer",
+            "memory_action": "NONE",
+            "delete_all_confirmed": False,
+        }
     )
 
 
@@ -106,7 +121,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             if not client.is_closed:
                 await client.aclose()
 
-    def adapter(self, handler: Any) -> OpenRouterModelAdapter:
+    def adapter(
+        self, handler: Any, *, max_attempts: int = 1
+    ) -> OpenRouterModelAdapter:
         sync_client = httpx.Client(
             transport=httpx.MockTransport(handler), base_url=BASE_URL
         )
@@ -120,6 +137,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             model_id="vendor/exact-model",
             token_budget=ModelTokenBudget(1_000, 100),
             timeout_seconds=5,
+            max_attempts=max_attempts,
             sync_client=sync_client,
             async_client=async_client,
         )
@@ -490,6 +508,186 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(FAKE_KEY, rendered)
                 self.assertNotIn("secret", rendered)
 
+    async def test_default_is_one_attempt_and_retry_reuses_the_exact_payload(self) -> None:
+        calls: list[bytes] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.content)
+            return chat_response("not-json" if len(calls) == 1 else answer_content())
+
+        context = AssembledPromptContext(answer_parts(), 10, 900)
+        with self.assertRaises(OpenRouterModelError):
+            await self.adapter(handler).generate_answer(context)
+        self.assertEqual(1, len(calls))
+
+        calls.clear()
+        sleeper = AsyncMock()
+        with patch("pia_harness.openrouter.asyncio.sleep", sleeper):
+            result = await self.adapter(
+                handler, max_attempts=2
+            ).generate_answer(context)
+        self.assertIs(MemoryAction.NONE, result.memory_action)
+        self.assertEqual(2, len(calls))
+        self.assertEqual(calls[0], calls[1])
+        sleeper.assert_awaited_once_with(1.0)
+
+    async def test_retryable_http_statuses_retry_once(self) -> None:
+        context = AssembledPromptContext(answer_parts(), 10, 900)
+        for status in (408, 500, 520, 599):
+            with self.subTest(status=status):
+                calls = 0
+
+                def handler(
+                    request: httpx.Request, status: int = status
+                ) -> httpx.Response:
+                    nonlocal calls
+                    calls += 1
+                    if calls == 1:
+                        return chat_response("ignored", status=status)
+                    return chat_response(answer_content())
+
+                with patch(
+                    "pia_harness.openrouter.asyncio.sleep", new=AsyncMock()
+                ):
+                    result = await self.adapter(
+                        handler, max_attempts=2
+                    ).generate_answer(context)
+                self.assertIs(MemoryAction.NONE, result.memory_action)
+                self.assertEqual(2, calls)
+
+    async def test_retryable_failure_stops_after_two_attempts(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return chat_response("ignored", status=503)
+
+        sleeper = AsyncMock()
+        with (
+            patch("pia_harness.openrouter.asyncio.sleep", sleeper),
+            self.assertRaisesRegex(OpenRouterModelError, "openrouter.http_error"),
+        ):
+            await self.adapter(
+                handler, max_attempts=2
+            ).generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900)
+            )
+        self.assertEqual(2, calls)
+        sleeper.assert_awaited_once_with(1.0)
+
+    async def test_permanent_failures_and_truncation_do_not_retry(self) -> None:
+        context = AssembledPromptContext(answer_parts(), 10, 900)
+        for status in (400, 401, 403, 404, 429, 501):
+            with self.subTest(status=status):
+                calls = 0
+
+                def handler(
+                    request: httpx.Request, status: int = status
+                ) -> httpx.Response:
+                    nonlocal calls
+                    calls += 1
+                    return chat_response("ignored", status=status)
+
+                with self.assertRaises(OpenRouterModelError):
+                    await self.adapter(
+                        handler, max_attempts=2
+                    ).generate_answer(context)
+                self.assertEqual(1, calls)
+
+        calls = 0
+
+        def truncated(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return chat_response("", finish_reason="length")
+
+        with self.assertRaisesRegex(
+            OpenRouterModelError, "openrouter.output_truncated"
+        ):
+            await self.adapter(
+                truncated, max_attempts=2
+            ).generate_answer(context)
+        self.assertEqual(1, calls)
+
+        calls = 0
+
+        def invalid_usage(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return chat_response(
+                answer_content(),
+                usage={
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 3,
+                },
+            )
+
+        with self.assertRaisesRegex(
+            OpenRouterModelError, "openrouter.invalid_usage"
+        ):
+            await self.adapter(
+                invalid_usage, max_attempts=2
+            ).generate_answer(context)
+        self.assertEqual(1, calls)
+
+    def test_sync_memory_review_retries_invalid_output_once(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return chat_response("not-json")
+            return chat_response(
+                json.dumps(
+                    {
+                        "action": "REPLACE",
+                        "memory_text": "new",
+                        "change_summary": ["changed"],
+                    }
+                )
+            )
+
+        with patch("pia_harness.openrouter.time.sleep") as sleeper:
+            output = self.adapter(
+                handler, max_attempts=2
+            ).review_memory(
+                MemoryReviewRequest(
+                    "review", "old", (completed_turn(),), 4_000, False
+                )
+            )
+        self.assertIs(MemoryReviewAction.REPLACE, output.action)
+        self.assertEqual(2, calls)
+        sleeper.assert_called_once_with(1.0)
+
+    async def test_cancellation_during_retry_delay_propagates(self) -> None:
+        calls = 0
+        sleeping = asyncio.Event()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return chat_response("ignored", status=503)
+
+        async def blocked_sleep(delay: float) -> None:
+            sleeping.set()
+            await asyncio.Event().wait()
+
+        adapter = self.adapter(handler, max_attempts=2)
+        with patch("pia_harness.openrouter.asyncio.sleep", new=blocked_sleep):
+            task = asyncio.create_task(
+                adapter.generate_answer(
+                    AssembledPromptContext(answer_parts(), 10, 900)
+                )
+            )
+            await sleeping.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(1, calls)
+
     async def test_async_answer_cancellation_propagates(self) -> None:
         started = asyncio.Event()
 
@@ -538,6 +736,10 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             {"model_id": ""},
             {"timeout_seconds": 0},
             {"timeout_seconds": float("inf")},
+            {"max_attempts": 0},
+            {"max_attempts": 3},
+            {"max_attempts": True},
+            {"max_attempts": 1.5},
         )
         defaults = {
             "api_key": FAKE_KEY,
