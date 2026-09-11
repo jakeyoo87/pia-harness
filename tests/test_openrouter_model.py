@@ -165,8 +165,8 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         payload = json.loads(requests[0].content)
         self.assertEqual("vendor/exact-model", payload["model"])
-        self.assertEqual(100, payload["max_completion_tokens"])
-        self.assertNotIn("max_tokens", payload)
+        self.assertEqual(100, payload["max_tokens"])
+        self.assertNotIn("max_completion_tokens", payload)
         self.assertFalse(payload["stream"])
         self.assertEqual({"require_parameters": True}, payload["provider"])
         self.assertTrue(payload["response_format"]["json_schema"]["strict"])
@@ -273,6 +273,16 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replacement, output.memory_text)
         self.assertEqual(("선호를 갱신했어요.",), output.change_summary)
         self.assertNotIn("max_completion_tokens", seen[0])
+        self.assertNotIn("max_tokens", seen[0])
+        memory_system = seen[0]["messages"][0]["content"]
+        normalized_memory_system = " ".join(memory_system.split())
+        self.assertTrue(memory_system.startswith("review\n\n"))
+        self.assertIn("UNCHANGED", memory_system)
+        self.assertIn("JSON null", memory_system)
+        self.assertIn("primary language", normalized_memory_system)
+        self.assertIn(
+            "when the source is Korean, use Korean", normalized_memory_system
+        )
         self.assertIn("Memory Review data", seen[0]["messages"][1]["content"])
         self.assertEqual(
             4_000,
@@ -330,7 +340,13 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(estimated.token_count)
         self.assertEqual(3, reported.token_count)
-        self.assertEqual(77, payloads[0]["max_completion_tokens"])
+        self.assertEqual(77, payloads[0]["max_tokens"])
+        self.assertNotIn("max_completion_tokens", payloads[0])
+        summary_system = payloads[0]["messages"][0]["content"]
+        normalized_summary_system = " ".join(summary_system.split())
+        self.assertTrue(summary_system.startswith("summarize\n\n"))
+        self.assertIn("primary language", normalized_summary_system)
+        self.assertIn("when the source is Korean", normalized_summary_system)
         self.assertIn("Summary source", payloads[0]["messages"][1]["content"])
 
     def test_zeroed_usage_is_treated_as_unavailable(self) -> None:

@@ -99,7 +99,11 @@ See [the Orchestrator plan](plans/conversation-orchestrator.md) for the exact li
 - Returns `answer` and the hidden `MemoryAction` from the same structured answer call
 - Provides the one Memory reviewer callable shared by automatic and explicit Review
 - Uses strict JSON Schema, required-parameter routing, and local fail-closed validation
+- Uses OpenRouter's broadly supported `max_tokens` field for capped Answer and Summary requests; Memory
+  Review remains bounded by its 4,000-character schema and domain validation without a token cap
 - Preserves the Assembler trust boundary when rendering Memory, Summary, and conversation data
+- Defines `UNCHANGED`, `REPLACE`, and `CLEAR` output semantics explicitly and asks Memory changes and
+  rolling Summary to preserve the source conversation's primary language
 - Uses provider token usage when available and conservative preflight estimates otherwise
 - Keeps answer generation async and cancellable while Review and Summary match their synchronous durable
   callable contracts
