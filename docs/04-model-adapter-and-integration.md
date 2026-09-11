@@ -174,7 +174,7 @@ budget = ModelTokenBudget(context_limit=1_050_000, response_tokens=4_096)
 
 adapter = OpenRouterModelAdapter(
     api_key=openrouter_key,
-    model_id="openai/gpt-5.6-luna",
+    model_id=exact_model_id,
     token_budget=budget,
     timeout_seconds=15,
     max_attempts=2,

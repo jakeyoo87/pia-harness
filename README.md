@@ -68,9 +68,9 @@ memory_reviewer = AutomaticMemoryReviewer(store, adapter.review_memory)
 compactor = TokenCompactor(store, adapter.summarize)
 ```
 
-The consuming application then creates `ConversationOrchestrator` with the same `store`, `budget`,
-`adapter.generate_answer`, a channel-specific async `deliver` callable, its system prompt, and a required
-localized explicit-Memory failure notice. See the [integration guide](docs/04-model-adapter-and-integration.md)
+The consuming application then creates `ConversationOrchestrator` with those three components, the same
+`store` and `budget`, `adapter.generate_answer`, `adapter.model_id`, a channel-specific async `deliver`
+callable, its system prompt, and a required localized explicit-Memory failure notice. See the [integration guide](docs/04-model-adapter-and-integration.md)
 for the complete example and ownership boundary.
 
 Always call `await adapter.aclose()` when shutting down an Adapter that owns its HTTP clients.

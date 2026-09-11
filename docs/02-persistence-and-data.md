@@ -61,11 +61,11 @@ Expired Turn items are filtered at read time even if DynamoDB TTL deletion has n
 `get_or_create_active_session` creates one pointer item conditionally. Concurrent creators return the
 winner.
 
-Reset performs:
+The Orchestrator attempts one best-effort forced Memory Review first, then calls
+`reset_active_session`, which performs both store steps:
 
 ```text
-best-effort forced Memory Review
-→ conditionally replace ACTIVE_SESSION.session_id
+conditionally replace ACTIVE_SESSION.session_id
 → delete the old session's SUMMARY item
 ```
 

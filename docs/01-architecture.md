@@ -44,10 +44,10 @@ AWS resource discovery, environment parser, or channel abstraction.
                                      ▼      ▼      ▼
 ┌────────────┐   ┌────────────────────┐  ┌─────────────────────┐
 │ DynamoDB   │◄──│ PromptContext      │  │ AutomaticMemory     │
-│ store      │   │ Assembler          │  │ Reviewer             │
+│ store      │   │ Assembler          │  │ Reviewer            │
 └─────▲──────┘   └─────────▲──────────┘  └──────────▲──────────┘
       │                    │                        │
-      │              ┌─────┴────────────────────────┴─────┐
+      │              ┌─────┴────────────────────────┴──────┐
       │              │ ConversationOrchestrator            │
       └──────────────┤ interruption / commit / delivery    │
                      └──────────────▲──────────────┬───────┘
