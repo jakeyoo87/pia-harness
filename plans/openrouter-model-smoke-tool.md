@@ -33,8 +33,8 @@ scripts. It does not fix those findings on this branch.
 
 ## Ownership boundary
 
-The smoke tool belongs to `pia-harness` because it tests the reusable model Adapter and its four public
-callable contracts. It does not know about Telegram, members, portfolios, DynamoDB, AWS deployment, or
+The smoke tool belongs to `pia-harness` because it tests the reusable model Adapter's three
+provider-calling contracts. It does not know about Telegram, members, portfolios, DynamoDB, AWS deployment, or
 the running Bot.
 
 `pia` or an operator supplies the API key at execution time. AWS Secrets Manager lookup remains outside
@@ -86,10 +86,12 @@ Additional callables:
 
 6. Memory Review with an empty Memory and the durable response preference -> expected `REPLACE`, a
    non-empty document within 4,000 characters, tuple change summary within existing bounds;
-7. rolling Summary over one synthetic Korean Turn -> expected non-empty Summary and valid optional
+7. Memory Review with an already-current Memory and no new durable fact -> expected `UNCHANGED` with an
+   explicit null `memory_text` and empty change summary;
+8. rolling Summary over one synthetic Korean Turn -> expected non-empty Summary and valid optional
    provider completion-token count.
 
-Seven calls per run remain below the existing free-model daily allowance for a small number of candidate
+Eight calls per run remain below the existing free-model daily allowance for a small number of candidate
 comparisons. Do not add repetition, load testing, concurrency testing, benchmarks, or statistical
 scoring in this first tool.
 
@@ -111,9 +113,11 @@ Per-scenario fields:
 Aggregate fields:
 
 - requested exact model ID;
+- sorted distinct response model IDs observed across successful scenarios;
 - total, passed, and failed counts;
 - total elapsed milliseconds;
-- overall `PASS` only when all scenarios pass.
+- overall `PASS` only when all scenarios pass and they report exactly one response model ID. More than
+  one observed model fails the aggregate even when every individual scenario otherwise passes.
 
 Never print or serialize:
 
@@ -164,16 +168,18 @@ network or credential in automated tests.
 
 Required cases:
 
-1. all seven passing scenarios produce seven result lines, one passing aggregate, and exit `0`;
+1. all eight passing scenarios produce eight result lines, one passing aggregate, and exit `0`;
 2. wrong action or delete-confirmation flag fails only that scenario and exits `1`;
 3. safe Adapter error is reported without aborting later scenarios;
 4. Memory output bounds and Summary non-empty checks affect pass/fail correctly;
 5. API key and synthetic Authorization-like sentinel never appear in output or exception text;
 6. missing/empty key and invalid numeric arguments exit `2` without a live call;
 7. known moving/router aliases are rejected before a live call;
-8. Adapter cleanup occurs on pass, failure, and cancellation;
-9. output contains only the documented fields and valid JSON lines;
-10. the existing mocked Adapter and full Harness suites remain green.
+8. an `UNCHANGED` Memory response with explicit null `memory_text` parses and passes;
+9. differing response model IDs fail the aggregate and exit `1`;
+10. Adapter `aclose()` occurs on pass, failure, and cancellation and releases both owned clients;
+11. output contains only the documented fields and valid JSON lines;
+12. the existing mocked Adapter and full Harness suites remain green.
 
 After automated tests, one separately approved live invocation may use the existing EC2 secret through
 an external wrapper that passes the value only in process memory. The script itself does not import
@@ -185,7 +191,7 @@ Update `README.md` with:
 
 - purpose and non-production status;
 - source-checkout invocation;
-- seven-call cost/rate-limit warning;
+- eight-call cost/rate-limit warning;
 - exact model/context requirement;
 - environment-only secret rule;
 - output and exit-code meaning;
@@ -216,7 +222,7 @@ Update `README.md` with:
 ## Claude review questions
 
 1. Is testing the public Adapter rather than duplicating raw OpenRouter HTTP the correct boundary?
-2. Are seven fixed calls enough to cover MemoryAction, Memory Review, and Summary without becoming an
+2. Are eight fixed calls enough to cover MemoryAction, null Memory output, Memory Review, and Summary without becoming an
    evaluation framework?
 3. Are environment-only CLI secret input plus an external EC2 Secrets Manager wrapper sufficient to
    keep AWS concerns out of Harness?
@@ -230,6 +236,15 @@ Update `README.md` with:
 If a blocker exists, propose the smallest correction. Do not fix the Adapter on this branch, add raw
 provider request code, arbitrary prompts, retries, scoring, a model registry, AWS access, database work,
 CI live calls, `pia-agent` changes, or deployment.
+
+## Resolution record: 2026-09-11, after Claude plan review
+
+The review corrections are accepted. Add an eighth `UNCHANGED` Memory Review scenario that requires an
+explicit null `memory_text`; collect successful response model IDs and fail the aggregate when more than
+one distinct model appears; describe the three provider-calling Adapter contracts accurately; and always
+finish the async runner with `aclose()` so both owned clients are released. The early moving-alias denylist
+remains a cheap guard, while observed-model consistency is the general runtime check. Nothing else in the
+scope changes, and implementation proceeds on this branch.
 
 ## Review record: 2026-09-11, Claude, plan commit be6a325
 
