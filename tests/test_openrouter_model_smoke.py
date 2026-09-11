@@ -205,6 +205,35 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("FAIL", results[6]["status"])
         self.assertEqual("FAIL", results[7]["status"])
 
+    async def test_replace_needs_a_document_and_a_reported_change(self) -> None:
+        cases = (
+            MemoryReviewOutput(MemoryReviewAction.REPLACE, "", ("추가했어요.",)),
+            MemoryReviewOutput(
+                MemoryReviewAction.REPLACE, "사용자는 짧은 답변을 선호한다.", ()
+            ),
+        )
+        for replacement in cases:
+            with self.subTest(memory_text=replacement.memory_text):
+                adapter = FakeAdapter(
+                    memories=(
+                        replacement,
+                        MemoryReviewOutput(MemoryReviewAction.UNCHANGED),
+                    )
+                )
+                lines: list[str] = []
+
+                exit_code = await run_smoke(
+                    config=SmokeConfig(MODEL, 262_144),
+                    api_key=FAKE_KEY,
+                    emit=lines.append,
+                    adapter_factory=lambda _adapter=adapter, **values: _adapter,
+                )
+
+                results = parsed(lines)
+                self.assertEqual(1, exit_code)
+                self.assertEqual("FAIL", results[5]["status"])
+                self.assertEqual("PASS", results[6]["status"])
+
     async def test_cancellation_propagates_and_adapter_closes(self) -> None:
         started = asyncio.Event()
 

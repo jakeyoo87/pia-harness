@@ -334,3 +334,71 @@ Add the `UNCHANGED` scenario and the observed-model check, correct the two wordi
 verification cases: a null `memory_text` response parses and passes, and a run whose scenarios report
 different response model IDs fails. Nothing else needs to change, and no raw provider request, arbitrary
 prompt, retry, scoring, model registry, AWS access, or deployment work belongs in this branch.
+
+## Review record: 2026-09-11, Claude, implementation commit 23e45a1
+
+Implementation review against this plan and merged `main` at `9132f99`. Verdict: no blocker. One defect
+was found and fixed on this branch. Nothing was merged, and no raw provider request, arbitrary prompt,
+retry, scoring, model registry, AWS access, DB feature, or deployment was added.
+
+Verified by running. The suite is 74 tests green against DynamoDB Local and ruff reports no findings at
+all, not only on the selected rules. Eight guarantees were then pinned by mutation, and each one fails
+the suite: accepting more than one observed response model, moving `aclose()` out of the `finally`,
+dropping the null check from `UNCHANGED`, dropping the moving-alias guard, stopping the loop after the
+first failed scenario, returning 1 instead of 2 for invalid configuration, accepting an empty
+replacement document, and accepting a replacement that reports no change.
+
+All four plan-review corrections are implemented. The eighth scenario supplies a Memory document that
+already holds the preference and requires `UNCHANGED` with `memory_text` null and an empty change
+summary, so a provider that cannot emit a JSON null under a union type now fails here rather than in
+production. The aggregate collects the sorted distinct response model IDs and fails the run unless
+exactly one appears, which catches a routing alias nobody thought to list.
+
+The rest of the ten focus points hold. The script imports only package-level names and calls only
+`count_input_tokens`, `generate_answer`, `review_memory`, `summarize` and `aclose`; there is no `httpx`
+import and no URL anywhere in it. The eight scenarios are exactly the planned ones: five answers covering
+`NONE`, `UPDATE`, `FORGET`, an unconfirmed `DELETE_ALL` and a confirmed one with the two-turn history that
+makes confirmation meaningful, then `REPLACE`, null `UNCHANGED`, and rolling Summary. Each scenario
+catches `OpenRouterModelError` and `Exception` separately and returns a result instead of raising, so one
+failure costs one scenario and the remaining calls still run; there is no retry, no repetition and no
+loop over models. The key is read only from `OPENROUTER_API_KEY`, never appears in `argv`, and cannot
+reach the output: failures record a safe event, an optional status and an exception type name, never
+`str(error)`, and the field-set test asserts the exact JSON keys of every scenario line, so any added
+field fails the suite. `_validate_config` runs before the budget and the adapter are built, and the CLI
+test proves that a missing key, `openrouter/free`, `~vendor/latest`, a zero context limit and a zero
+timeout all exit 2 with the adapter factory never called. `aclose()` is in a `finally`, and the
+cancellation test cancels mid-answer and asserts the adapter still closed.
+
+## Defect found and fixed: a replacement that reports no change
+
+The replacement scenario validated the document and the shape of the change summary but accepted an empty
+one, and the schema only caps `change_summary` at three items, so an empty array is valid provider output.
+
+That is the one silent failure this tool is meant to catch. `_final_text` returns the bare answer when the
+change list is empty, and on a successful explicit remember or forget the change summary is the user's
+only signal that anything happened — the failure notice covers the failed case, and there is no notice for
+the successful one. A model that replaces Memory correctly but never populates the array would pass the
+whole smoke run and then, in production, quietly answer every "이건 기억해줘" with no confirmation at all.
+
+Fixed by requiring one to three items in the replacement scenario, with a test asserting that both an
+empty document and an empty change summary fail that scenario while the `UNCHANGED` scenario still
+passes. Both mutations now fail the suite.
+
+## Two notes, no change made
+
+`MemoryReviewOutput` carries no model ID, so the observed-model check covers six of the eight calls. The
+two Memory Review calls could still be routed elsewhere without being noticed; the early name check plus
+six observed scenarios is proportionate here, and adding a model ID to a Memory output belongs to the
+Adapter, not to this branch.
+
+`SUMMARY_INSTRUCTION` is imported from `pia_harness.compaction` while `MEMORY_REVIEW_INSTRUCTION` comes
+from the package root. Both are public constants, so this is only an asymmetry in what the root re-exports,
+and it is worth tidying in the package rather than here.
+
+## Instructions for Codex
+
+Nothing further to fix. Confirm main CI succeeds after merge. The tool is a measurement and not an
+approval: a pass says the Adapter's three provider-calling contracts work against one exact model at one
+moment, and the operator still owns the key, the model choice, the approved context limit and the decision
+to deploy. Do not let a later branch add retries, scoring, a second model, or an AWS lookup to this
+script; if the `max_completion_tokens` question is taken up, it belongs in the Adapter with its own plan.

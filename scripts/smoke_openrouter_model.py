@@ -387,9 +387,13 @@ def _parts(
 
 
 def _valid_changes(changes: Any) -> bool:
+    # A replacement must report at least one change. The Orchestrator's only
+    # success signal for an explicit remember or forget is this summary, so a
+    # model that returns an empty array would pass every other contract while
+    # silently removing the user's confirmation from the reply.
     return (
         isinstance(changes, tuple)
-        and len(changes) <= MAX_CHANGE_SUMMARY_ITEMS
+        and 1 <= len(changes) <= MAX_CHANGE_SUMMARY_ITEMS
         and all(
             isinstance(item, str)
             and bool(item.strip())
