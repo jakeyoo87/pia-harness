@@ -122,8 +122,10 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 await client.aclose()
 
     def adapter(
-        self, handler: Any, *, max_attempts: int = 1
+        self, handler: Any, *, max_attempts: int | None = None
     ) -> OpenRouterModelAdapter:
+        # Omitting the argument exercises the Adapter default, which is what the
+        # smoke tool relies on to make exactly one call per scenario.
         sync_client = httpx.Client(
             transport=httpx.MockTransport(handler), base_url=BASE_URL
         )
@@ -132,14 +134,15 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.sync_clients.append(sync_client)
         self.async_clients.append(async_client)
+        chosen = {} if max_attempts is None else {"max_attempts": max_attempts}
         return OpenRouterModelAdapter(
             api_key=FAKE_KEY,
             model_id="vendor/exact-model",
             token_budget=ModelTokenBudget(1_000, 100),
             timeout_seconds=5,
-            max_attempts=max_attempts,
             sync_client=sync_client,
             async_client=async_client,
+            **chosen,
         )
 
     async def test_answer_uses_one_structured_call_and_maps_action_and_usage(self) -> None:
@@ -516,6 +519,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             return chat_response("not-json" if len(calls) == 1 else answer_content())
 
         context = AssembledPromptContext(answer_parts(), 10, 900)
+        self.assertEqual(1, self.adapter(handler).max_attempts)
         with self.assertRaises(OpenRouterModelError):
             await self.adapter(handler).generate_answer(context)
         self.assertEqual(1, len(calls))
@@ -687,6 +691,59 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
         self.assertEqual(1, calls)
+
+    async def test_envelope_failures_retry_only_when_transient(self) -> None:
+        context = AssembledPromptContext(answer_parts(), 10, 900)
+        refused = {
+            "model": "vendor/exact-model",
+            "choices": [{"message": {"content": "", "refusal": "declined"}}],
+        }
+        cases = (
+            ("openrouter.empty_response", lambda: chat_response(""), 2),
+            (
+                "openrouter.invalid_response",
+                lambda: httpx.Response(200, json={"model": "vendor/exact-model"}),
+                2,
+            ),
+            ("openrouter.refusal", lambda: httpx.Response(200, json=refused), 1),
+        )
+        for event, build, expected in cases:
+            with self.subTest(event=event):
+                calls = 0
+
+                def handler(
+                    request: httpx.Request, build: Any = build
+                ) -> httpx.Response:
+                    nonlocal calls
+                    calls += 1
+                    return build()
+
+                with (
+                    patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()),
+                    self.assertRaisesRegex(OpenRouterModelError, event),
+                ):
+                    await self.adapter(
+                        handler, max_attempts=2
+                    ).generate_answer(context)
+                self.assertEqual(expected, calls)
+
+    def test_sync_summary_retries_invalid_output_once(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return chat_response("not-json")
+            return chat_response(json.dumps({"summary": "짧은 요약"}))
+
+        with patch("pia_harness.openrouter.time.sleep") as sleeper:
+            output = self.adapter(handler, max_attempts=2).summarize(
+                SummaryRequest("summarize", None, (completed_turn(),), 77)
+            )
+        self.assertEqual("짧은 요약", output.text)
+        self.assertEqual(2, calls)
+        sleeper.assert_called_once_with(1.0)
 
     async def test_async_answer_cancellation_propagates(self) -> None:
         started = asyncio.Event()

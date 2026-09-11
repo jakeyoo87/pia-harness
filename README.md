@@ -112,9 +112,9 @@ See [the Orchestrator plan](plans/conversation-orchestrator.md) for the exact li
 - Never performs a separate intent call, keyword parse, retry, model fallback, or live capability probe
 
 Construct `OpenRouterModelAdapter` with an injected API key, exact model ID, shared `ModelTokenBudget`,
-timeout, optional `max_attempts`, and optional test clients. Wire `count_input_tokens`, `generate_answer`, `review_memory`, and
-`summarize` directly into the existing Harness components. Call `aclose()` to close all adapter-owned
-clients; injected clients remain caller-owned.
+timeout, optional `max_attempts`, and optional test clients. Wire `count_input_tokens`,
+`generate_answer`, `review_memory`, and `summarize` directly into the existing Harness components.
+Call `aclose()` to close all adapter-owned clients; injected clients remain caller-owned.
 
 Use an exact deployed model ID whose context window matches the supplied budget. Do not use a routing
 alias whose effective model and context limit can change. The consuming `pia` application owns Secret

@@ -689,3 +689,61 @@ classification at the raise site, `asyncio.sleep` on the answer path — and not
 window with the timeout guidance. `ce95752` itself needs no change. Nothing here justifies a model branch,
 exponential backoff, jitter, a `Retry-After` parser, 429 retry, a fallback model, a circuit breaker, a
 queue, a worker, an outbox, or any `pia-agent`, AWS, Bot or deployment change.
+
+## Review record: 2026-09-11, Claude, retry implementation commit 66981d9
+
+Implementation review against the resolution record and the earlier review, on top of `ce95752`,
+`ba13617` and `5d1ac4b`. Verdict: no blocker. Five coverage gaps were found and closed on this branch.
+Nothing was merged, no live call was made, and no retry configuration, backoff, jitter, fallback,
+circuit breaker or `Retry-After` handling was added.
+
+Verified by running. The suite is 82 tests green against DynamoDB Local, ruff reports no findings at all,
+`compileall` and `git diff --check` are clean.
+
+Every correction from the plan review is implemented, and all twelve focus contracts hold. `max_attempts`
+is keyword-only, rejects `0`, `3`, `True` and `1.5`, and defaults to `1`. Each operation builds its payload
+once and passes it into a `_*_once` helper, so both attempts send identical bytes — the retry test compares
+the two recorded request bodies rather than trusting the structure. The two retry helpers are four lines
+each, share nothing but shape, and catch only `OpenRouterModelError`, so `CancelledError` cannot be
+swallowed; the answer path waits with `asyncio.sleep` and a test cancels the task mid-delay and asserts one
+request and a propagated `CancelledError`, while Memory Review and Summary wait with `time.sleep` inside the
+worker thread `_durable_call` already owns. `_retryable_status` is one comparison covering 408 and every 5xx
+except 501, pinned at 408, 500, 520 and 599 and at 400, 401, 403, 404, 429 and 501. `finish_reason` is read
+before the content and refusal checks, so a truncated response raises the distinct non-retryable
+`openrouter.output_truncated` instead of the transient `empty_response` it used to look like. The safe error
+gained only a boolean; it still carries no request, key, prompt, or body, and the existing leak test still
+passes. Nothing in `scripts/` changed, and the retry is invisible to the Memory, Compaction and Orchestrator
+contracts because it resolves entirely inside one Adapter call, before any persistence or delivery.
+
+One deliberate tradeoff is worth naming rather than changing. Raising `output_truncated` before parsing
+rejects the rare response that stops exactly at the cap with complete valid JSON, which would previously
+have succeeded. Reclassifying instead of rejecting would mean threading a truncation flag out of
+`_chat_result` into all three operations to save a coincidence, which costs more clarity than it buys. The
+current rule is loud, fail-closed and correct about the common case; keep it.
+
+## Five coverage gaps found and closed
+
+Mutation testing showed that five of the twelve contracts under review were not held by any test. Making
+refusal retryable, making empty content non-retryable, making a missing response envelope non-retryable,
+removing the retry from `summarize` entirely, and changing the Adapter's own `max_attempts` default from
+`1` to `2` all left the suite green. The first four are named retry categories with no assertion behind
+them; the fifth is the contract the smoke tool depends on, and its failure mode is the worst of the group,
+because every smoke scenario would silently start retrying and the tool would stop measuring raw endpoint
+stability while still reporting a pass.
+
+The default survived because the test helper always passed `max_attempts` explicitly, so no test ever
+constructed the Adapter the way the smoke tool does. Fixed by making the helper omit the argument unless a
+test asks for a value, which makes the real default load-bearing across the whole suite, plus one direct
+assertion. The other four are closed by two compact tests: one drives the answer path through empty
+content, a missing `choices` envelope and a refusal, asserting two, two and one attempts; the other
+retries a malformed Summary body once through the synchronous path and asserts the one-second sleep. All
+five mutations now fail the suite.
+
+## Instructions for Codex
+
+Nothing further to fix. Confirm main CI succeeds after merge. When `pia` passes `max_attempts=2`, set
+`timeout_seconds` with the two-timeout-plus-one-second worst case in mind rather than adding backoff, and
+watch `openrouter.output_truncated` as the signal that the response reserve is too small for the selected
+model's reasoning — that is a budget decision for the application, not a reason to retry. Keep the smoke
+tool at the default one attempt so the raw transient rate stays measurable, and keep classification at the
+raise site if new failure modes appear.
