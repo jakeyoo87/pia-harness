@@ -89,13 +89,14 @@ currently synchronous and run in the Orchestrator's durable executor path.
   `https://openrouter.ai/api/v1`.
 - Authentication: injected Bearer API key. Reject an empty key at construction and never expose it.
 - Non-streaming requests only in this first adapter.
-- Use `max_completion_tokens`, not the legacy `max_tokens` field.
+- Use the broadly supported `max_tokens` field for capped Answer and Summary requests. Memory Review
+  sends neither output-cap field and remains bounded by its schema and domain validation.
 - Use `response_format.type = json_schema`, `strict = true`, and `additionalProperties = false` for
   every operation.
 - Set `provider.require_parameters = true` so OpenRouter routes only to endpoints that support the
   requested structured output.
-- Do not enable response healing, plugins, tools, web search, fallback models, automatic retries, or
-  provider-specific routing preferences.
+- Do not enable response healing, plugins, tools, web search, fallback models, an unbounded retry
+  framework, or provider-specific routing preferences.
 - Missing endpoint support, timeout, transport failure, non-2xx status, refusal, empty content,
   malformed JSON, schema mismatch, and invalid usage fail through the safe adapter error.
 
@@ -219,8 +220,18 @@ Do not add a tokenizer package, remote token-count request, or model-name heuris
   execute after commit ownership in worker threads and are deliberately non-interruptible.
 - One adapter instance may serve different users concurrently. Do not keep request-specific mutable
   state on the adapter.
-- Configure one bounded timeout. Do not retry automatically; the existing Orchestrator failure policy
-  decides whether the answer, Memory, or Compaction can continue.
+- Configure one bounded timeout and an optional `max_attempts` integer. It defaults to `1` so the
+  Adapter and smoke tool expose raw endpoint behavior. The consuming `pia` may pass `2`, meaning one
+  initial call plus one automatic retry after a fixed one-second delay. No larger value is accepted in
+  this first version.
+- Retry the complete HTTP-and-parse operation only for transport/timeout failures, HTTP 500, 502, 503,
+  or 504, empty content, missing response-envelope fields, or malformed structured JSON. Do not retry
+  HTTP 400, 401, 403, 404, or 429, local input/configuration errors, or domain validation failures.
+- Answer retry remains async and cancellable. Memory Review and Summary retry synchronously in their
+  existing durable executor path. A retry happens before Memory persistence or user delivery, so it
+  cannot duplicate a durable Memory action or delivered answer.
+- A timeout may represent a completed provider request whose response was lost, so the second attempt
+  can be billed separately. The strict two-attempt ceiling is the accepted Beta tradeoff.
 
 ## Validation and safe errors
 
@@ -289,7 +300,7 @@ existing Ruff checks. Do not make a live model call as part of automated verific
 
 - string/regex intent parsing or an intent-only model call;
 - OpenRouter Models API discovery or dynamic context-limit updates;
-- multiple model IDs, provider fallbacks, retries, response healing, streaming, tools, web search, or
+- multiple model IDs, provider fallbacks, more than one retry, response healing, streaming, tools, web search, or
   Agent SDK integration;
 - prompt caching, generation-history lookup, price accounting, quota, or billing policy;
 - embeddings, vector Memory, Memory history, confidence scoring, or Memory administration UI;
@@ -328,6 +339,36 @@ existing Ruff checks. Do not make a live model call as part of automated verific
 If a blocker exists, propose the smallest correction. Do not add an intent-only LLM call, keyword
 parser, extra model configuration, tokenizer dependency, provider hierarchy, retry framework, queue,
 worker, outbox, vector database, `pia-agent` change, AWS work, deployment, or live credential use.
+
+## Post-live compatibility and bounded retry decision: 2026-09-11
+
+The merged smoke tool established the following with fixed synthetic data and the existing EC2-held
+OpenRouter key, without committing output or changing AWS or the Bot:
+
+- `nvidia/nemotron-3-super-120b-a12b:free` passed 5/8 with a 4,096-token reserve and 5/8 with 16,384;
+  the failed scenarios changed, so increasing the output cap did not make structured output reliable.
+- `openai/gpt-5.6-luna` on the compatibility branch passed 8/8 in about 19 seconds with a 4,096-token
+  reserve; the same model on the original merged Adapter passed 5/8, including a semantically invalid
+  `UNCHANGED` result.
+- The owner selected the exact `openai/gpt-5.6-luna` model for later `pia` integration, with a
+  1,050,000-token context limit, 4,096 response tokens, and no explicit reasoning parameter initially.
+
+The compatibility branch therefore keeps the provider-agnostic `max_tokens` payload and the strengthened
+Memory action and primary-language instructions. It does not hardcode Luna or any model family.
+
+The owner also requires one bounded automatic retry for production use. Add `max_attempts` to
+`OpenRouterModelAdapter`, accept only `1` or `2`, and default to `1`. Retry the whole call once after a
+fixed one-second delay only for the transient categories listed in the HTTP/concurrency section. The
+smoke tool does not pass the option and therefore remains one attempt per scenario; later `pia`
+integration passes `max_attempts=2`.
+
+The retry is one small loop/helper shared by Answer, Memory Review, and Summary. It adds no jitter,
+exponential policy, `Retry-After` parser, idempotency store, queue, fallback model, circuit breaker,
+provider-specific branch, or configuration object. Safe error content and cancellation behavior remain
+unchanged. Automated tests must pin retry/no-retry classification, exactly one-second delay through an
+injected sleeper or patched clock, two-attempt ceiling, success on the second attempt, final safe error,
+and `aclose()` on cancellation. No further live test is required before Claude reviews the combined
+compatibility and retry delta.
 
 ## Review record: 2026-09-10, Claude, plan commits d7f7c05 and 98a957f
 
