@@ -230,3 +230,86 @@ Update `README.md` with:
 If a blocker exists, propose the smallest correction. Do not fix the Adapter on this branch, add raw
 provider request code, arbitrary prompts, retries, scoring, a model registry, AWS access, database work,
 CI live calls, `pia-agent` changes, or deployment.
+
+## Review record: 2026-09-11, Claude, plan commit be6a325
+
+Plan-only review against merged `main` at `9132f99`. Nothing was implemented and nothing was merged. No
+blocker. One scenario is missing, one rule is unenforceable as written and can be made observable
+instead, and two wording points need correcting. The shape of the tool is right and needs no
+restructuring.
+
+What holds. Driving the public Adapter rather than a second HTTP path is the only boundary that proves
+anything: a raw request would test the operator's understanding of OpenRouter, while this tests the code
+that will actually run. Refusing to work around a rejected parameter is the point of the exercise, and
+deferring the `max_completion_tokens` finding to a later branch keeps this feature a measurement rather
+than a fix. Reading the key from the environment and never from `argv` is correct for the stated reason,
+and leaving Secrets Manager outside the Harness keeps the same line every earlier feature drew. Running
+each scenario once, continuing after a failure, and aggregating into one exit code is the right shape:
+it exposes the whole compatibility surface in one run without becoming a retry policy, and because the
+report distinguishes a safe Adapter error from an expected-versus-actual action, an operator can tell a
+rejected parameter from a model that simply judged one case differently. Printing the generated text is
+safe here precisely because every input is fixed synthetic Korean data.
+
+## Missing scenario: no planned call can produce a null `memory_text`
+
+The Memory schema declares `memory_text` as `{"type": ["string", "null"]}` and marks it required, so
+`UNCHANGED` and `CLEAR` must both come back with an explicit JSON null. Strict structured-output
+implementations do not all accept a union type, and that is exactly the kind of endpoint difference this
+tool exists to find before integration.
+
+Every planned scenario returns a string there. Scenario 6 expects `REPLACE`, and the five answer
+scenarios use a different schema entirely. So a provider that cannot emit `null` under strict mode would
+pass this smoke run and then fail in production on `UNCHANGED`, which is the most common automatic-review
+outcome of all: every revisit that finds nothing worth remembering returns it.
+
+Smallest correction: add one Memory Review scenario whose expected action is `UNCHANGED` with
+`memory_text` null, by supplying a Memory document that already contains the preference and Turns that
+add nothing new. Eight calls per run instead of seven does not change the rate-limit argument. If the
+owner would rather also exercise `allow_clear`, a targeted-forget case expecting `CLEAR` covers the same
+null field, but `UNCHANGED` is the more representative production path and is the better single addition.
+
+## Make the moving-alias rule observable rather than a name list
+
+Rejecting `openrouter/auto`, `openrouter/free` and `~...latest` is right, but a denylist cannot be
+complete, and the failure it guards against is severe: a router alias makes each of the eight scenarios
+potentially hit a different model, which quietly turns the whole report into noise.
+
+Smallest correction, using data the Adapter already returns: record the response model ID for every
+scenario, report the distinct values in the aggregate line, and fail the run when more than one appears.
+That detects any routing alias, including names nobody thought to list, and it costs nothing because the
+Adapter already reports the response model on success. Keep the name check as the cheap early guard it
+is.
+
+## Two wording corrections
+
+The ownership section says the tool exercises the Adapter's four public callable contracts, but only
+three involve a provider. `count_input_tokens` is local, already covered by the mocked suite, and
+correctly absent from the scenarios; say three.
+
+Cleanup must be `aclose()`, not `close()`. The Adapter creates both a sync and an async client when none
+are injected, `close()` releases only the sync one, and the runner is async, so verification case 8
+should name `aclose()` and assert both owned clients are released.
+
+## Answers to the review questions
+
+1. Correct, and the only boundary that proves the shipped code works.
+2. Enough, once the null-`memory_text` case above is added; the ban on repetition, scoring and
+   concurrency is what keeps this a smoke test rather than an evaluation platform.
+3. Sufficient. The environment-only rule plus an external wrapper keeps AWS out of the Harness while
+   still allowing one approved live run.
+4. Yes. Safe event, status and exception type on failure, generated text only for fixed synthetic
+   inputs, and no bodies, headers, causes or key.
+5. Appropriate. One call per scenario with a per-scenario verdict is a measurement, not a retry, and the
+   aggregate exit code is what an operator or a later script can act on.
+6. Appropriate for a diagnostic CLI, and better still with the observed-model check above; the runtime
+   Adapter stays model-agnostic either way.
+7. Nothing is excessive. The ten test cases, three exit codes and field list are all proportionate, and
+   the hedge that data classes appear only if they remove repetition is the right instinct. The one
+   missing item is the scenario above.
+
+## Instructions for Codex
+
+Add the `UNCHANGED` scenario and the observed-model check, correct the two wording points, and add two
+verification cases: a null `memory_text` response parses and passes, and a run whose scenarios report
+different response model IDs fails. Nothing else needs to change, and no raw provider request, arbitrary
+prompt, retry, scoring, model registry, AWS access, or deployment work belongs in this branch.
