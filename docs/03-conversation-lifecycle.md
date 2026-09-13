@@ -212,5 +212,5 @@ remains the application's source of truth for what the user saw.
 Callers map reset and result statuses to their channel UX. The Harness contains no slash-command parser.
 Reset always restores its in-process state in a `finally` block, including when the store or Memory
 Reviewer abandons or fails, so later submissions are not permanently superseded. A veto re-raises
-`ConversationAbandoned` to the caller; a veto during the forced Review stops reset before a new session is
-created.
+`ConversationAbandoned` to the caller; a veto during the forced Review stops reset before the active
+session is replaced.

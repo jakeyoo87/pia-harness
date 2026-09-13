@@ -931,7 +931,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
-    async def test_reset_review_abandonment_does_not_create_a_session(self) -> None:
+    async def test_reset_review_abandonment_does_not_replace_the_session(self) -> None:
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
