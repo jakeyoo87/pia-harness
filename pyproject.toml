@@ -1,13 +1,30 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pia-harness"
 version = "0.2.0"
 description = "Minimal multi-user conversation harness for PIA"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jaehyoung Yoo" }]
 requires-python = ">=3.12"
 dependencies = ["httpx>=0.28,<1"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Documentation = "https://github.com/jakeyoo87/pia-harness/tree/main/docs"
+Issues = "https://github.com/jakeyoo87/pia-harness/issues"
+Repository = "https://github.com/jakeyoo87/pia-harness"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+pia_harness = ["py.typed"]
