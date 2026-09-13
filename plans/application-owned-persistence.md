@@ -81,8 +81,8 @@ from .dynamodb import DynamoDBConversationStore
 동작한다. 하지만 공개 계약이 없기 때문에 소비 애플리케이션이 회원 상태를 반영한 store를 구현할 때
 필요한 메서드, CAS 의미와 실패 의미가 명확하지 않다.
 
-또한 현재 built-in DynamoDB adapter는 물리 key 이름 `pk`/`sk`를 고정한다. `PK`/`SK`를 사용하는
-애플리케이션은 같은 table에 그대로 연결할 수 없다.
+또한 현재 `DynamoDBConversationStore`가 boto3 client, table 이름과 물리 key `pk`/`sk`를 직접
+소유한다. 이 책임은 conversation 정책이 아니라 소비 애플리케이션의 persistence 구현에 속한다.
 
 ## 4. 제안하는 최소 설계
 
@@ -113,7 +113,7 @@ delete_all_for_user
 - `AutomaticMemoryReviewer`, `TokenCompactor`, `ConversationOrchestrator` 생성자는
   `ConversationStore`를 받는다.
 - domain/persistence 예외 중 구체 DB와 무관한 것은 persistence 계약 모듈로 이동한다.
-- `DynamoDBConversationStore`는 Protocol을 만족하는 선택 가능한 built-in adapter로 남긴다.
+- Harness runtime에는 특정 DB adapter를 두지 않는다.
 
 ### 4.2 애플리케이션의 정상적인 abandon
 
@@ -141,23 +141,21 @@ OrchestratorStatus.ABANDONED
 Harness는 사용자가 왜 abandon됐는지 알지 않는다. `DELETION_PENDING`, suspended member, deleted
 workspace 등 제품별 상태는 소비 애플리케이션 내부에만 남는다.
 
-### 4.3 built-in DynamoDB adapter
+### 4.3 구체 DB 구현 제거
 
-`DynamoDBConversationStore`는 standalone 사용과 contract test를 위한 편의 adapter로 유지한다.
+Harness runtime에서 `DynamoDBConversationStore`를 제거한다.
 
-- 기본 물리 key 이름 `pk`/`sk`는 기존 사용자를 위해 유지한다.
-- 선택적인 `partition_key_name`과 `sort_key_name` constructor parameter를 추가한다.
-- 두 이름은 비어 있지 않고 서로 달라야 하며 DynamoDB expression name으로 직접 삽입하지 않고
-  안전한 expression attribute name을 사용한다.
-- item prefix(`USER#`), sort-key 값, domain attributes와 TTL 의미는 유지한다.
-- `PK`/`SK` 설정에 대한 DynamoDB Local contract test를 추가한다.
-- built-in adapter 자체는 회원 table이나 lifecycle을 알지 않으며 ACTIVE check를 추가하지 않는다.
-- 특정 애플리케이션이 원자적인 회원-state condition을 필요로 하면 그 애플리케이션이 Protocol 구현에서
-  보장한다.
+- Harness는 boto3 client, table 이름, IAM, physical key 또는 DynamoDB expression을 받지 않는다.
+- `pk`/`sk`, `PK`/`SK`, `USER#` 같은 물리 persistence 표현을 공개 library 계약으로 고정하지 않는다.
+- boto3를 runtime dependency에서 제거한다.
+- 기존 DynamoDB 구현에 있던 CAS, idempotency, ordering, TTL filtering 의미는
+  `ConversationStore` method contract로 문서화한다.
+- 실제 DynamoDB 구현과 DynamoDB Local contract test는 PIA 저장소로 이동한다.
+- Harness unit test는 test-only in-memory/fake store로 동일한 정책과 Orchestrator 순서를 검증한다.
+- test-only store는 package의 production adapter로 export하지 않는다.
 
-이 변경으로 DynamoDB가 Harness의 필수 storage가 되는 것은 아니다. 현재 package가 제공하는 한 가지
-adapter일 뿐이고 conversation engine은 Protocol에만 의존한다. boto3의 optional dependency 분리는
-이번 변경의 목적에 필요하지 않으므로 별도 작업으로 남긴다.
+이는 DynamoDB 기능을 다른 이름으로 감싸 Harness에 남기는 작업이 아니다. Harness는 persistence를
+요청할 뿐이며 실제 접근은 항상 소비 애플리케이션 코드가 수행한다.
 
 ## 5. PIA가 이후 구현할 수 있는 방식
 
@@ -225,8 +223,7 @@ abandon은 Orchestrator 최상위까지 전파되어 사용자 응답 없이 종
   - Protocol 의존
   - `ABANDONED` 상태 및 phase별 처리
 - `src/pia_harness/dynamodb.py`
-  - persistence 계약 구현
-  - configurable physical key names
+  - runtime에서 제거하고 필요한 DB 독립 exception만 persistence 계약으로 이동
 - `src/pia_harness/__init__.py`
   - 새 공개 계약 export
 - `tests/test_orchestrator.py`
@@ -234,10 +231,12 @@ abandon은 Orchestrator 최상위까지 전파되어 사용자 응답 없이 종
 - `tests/test_memory.py`, `tests/test_compaction.py`
   - direct component에서 abandon 전파
 - `tests/test_conversation_store.py`
-  - 기본 `pk/sk` 회귀와 설정된 `PK/SK` contract
+  - DynamoDB adapter 검증은 제거하고 필요한 Protocol 의미는 test-only store 계약 검증으로 교체
+- `pyproject.toml`
+  - boto3 runtime dependency 제거
 - `README.md`, `docs/01-architecture.md`, `docs/02-persistence-and-data.md`,
   `docs/03-conversation-lifecycle.md`, `docs/04-model-adapter-and-integration.md`
-  - application-owned persistence와 built-in adapter 경계 및 예시 갱신
+  - application-owned persistence와 DB 없는 library 경계 및 주입 예시 갱신
 
 구현 중 실제 import graph를 확인해 예외 순환 참조가 생기지 않도록 domain exception의 위치를
 결정한다. 단순 이름 변경만을 위한 호환 alias는 실제 외부 import를 깨뜨리지 않는 범위에서만 둔다.
@@ -253,17 +252,17 @@ abandon은 Orchestrator 최상위까지 전파되어 사용자 응답 없이 종
 - delivery가 끝난 후 Turn append veto는 `PERSISTENCE_FAILED`이며 답변을 다시 보내지 않음
 - ordinary exceptions와 CAS conflict의 기존 status가 유지됨
 
-### DynamoDB Local contract test
+### persistence contract test
 
-- 기존 기본 `pk/sk` schema 전체 회귀
-- `PK/SK`로 생성한 table에서 Session, Turn, Summary, Memory, reset, partition deletion 전체 동작
-- configurable key name이 condition expression, projection, pagination과 idempotent replay에 모두 적용
-- 서로 다른 user partition 격리와 TTL filtering 유지
+- test-only store로 Session, Turn, Summary, Memory, reset과 전체 삭제 의미 검증
+- CAS winner 보존, Turn replay, ordering, expiry filtering과 사용자 격리 검증
+- Memory, Compaction과 Orchestrator가 구체 DB module 없이 같은 store contract를 공유함을 검증
+- 실제 DynamoDB key, transaction과 pagination은 Harness가 아니라 이후 PIA contract test에서 검증
 
 ### 최종 검증
 
 1. 변경 영역 unit test
-2. DynamoDB Local 전체 Python suite 1회
+2. DB나 network가 필요 없는 전체 Python suite 1회
 3. Ruff import/name 검사
 4. `python -m compileall src tests`
 5. `git diff --check`
@@ -276,7 +275,7 @@ abandon은 Orchestrator 최상위까지 전파되어 사용자 응답 없이 종
 - PIA 회원 model이나 lifecycle enum을 Harness에 추가하지 않는다.
 - authorization callback chain, plugin framework, repository registry를 만들지 않는다.
 - distributed lock, deletion queue, scheduler, worker, outbox를 만들지 않는다.
-- DynamoDB 외 RDS/local adapter를 이번에 구현하지 않는다.
+- DynamoDB, RDS 또는 local production adapter를 Harness에 구현하지 않는다.
 - automatic retry나 fallback을 persistence layer에 추가하지 않는다.
 - 기존 Session/Memory/Compaction schema와 정책을 필요 없이 변경하지 않는다.
 - PIA의 Telegram concurrency나 통합 코드는 이 브랜치에서 수정하지 않는다.
@@ -288,8 +287,8 @@ abandon은 Orchestrator 최상위까지 전파되어 사용자 응답 없이 종
 3. persistence Protocol과 독립 exception 정의
 4. Memory, Compaction, Orchestrator의 concrete store dependency 제거
 5. Orchestrator의 phase별 abandon 처리 구현
-6. DynamoDB physical key name 설정 구현
-7. focused test와 DynamoDB Local 전체 검증
+6. 기존 DynamoDB adapter와 boto3 runtime dependency 제거
+7. focused test와 DB 없는 전체 검증
 8. README와 current docs 갱신
 9. commit/push 후 Claude 최종 구현 검토
 10. blocker 없음 확인 후 사용자 승인에 따라 `main` 병합
@@ -298,13 +297,14 @@ abandon은 Orchestrator 최상위까지 전파되어 사용자 응답 없이 종
 ## 11. Claude 집중 검토 요청
 
 1. 하나의 `ConversationStore` Protocol이 현재 기능에 충분하면서 과도하게 넓지 않은가?
-2. `DynamoDBConversationStore`를 선택적 built-in adapter로 유지하는 것이 library 범용성과 충돌하는가?
+2. 구체 DynamoDB adapter와 boto3를 Harness runtime에서 완전히 제거하면서 보존해야 할 domain contract가
+   빠지지 않았는가?
 3. `ConversationAbandoned`와 `OrchestratorStatus.ABANDONED`가 소비 애플리케이션의 lifecycle veto를
    표현하는 가장 작은 계약인가?
 4. Memory/Compaction의 broad exception 처리 중 abandon이 삼켜질 위치가 더 있는가?
 5. delivery 전 abandon과 delivery 후 Turn append abandon의 서로 다른 결과가 정확한가?
-6. configurable `pk/sk` 이름을 추가할 때 DynamoDB expression, pagination, replay, delete에서 빠지는
-   경로가 있는가?
+6. 기존 DynamoDB test가 검증하던 CAS, replay, ordering, expiry와 격리 의미를 DB 독립 contract test가
+   충분히 보존하는가?
 7. 이 변경이 기존 Harness 사용자의 API나 저장 데이터와 불필요하게 호환성을 깨뜨리는가?
 8. PIA가 같은 table의 Member ACTIVE 조건과 conversation write를 원자적으로 묶는 구현을 이 계약으로
    만들 수 있는가? 불가능하다면 Harness가 PIA schema를 알지 않으면서 필요한 최소 seam은 무엇인가?
