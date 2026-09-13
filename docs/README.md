@@ -8,7 +8,7 @@ usually needs to answer before changing code.
 1. Read the repository `AGENTS.md` and root `README.md`.
 2. Read [Architecture](01-architecture.md) for component ownership and dependencies.
 3. Choose the document that matches the change:
-   - DynamoDB keys, TTL, CAS, reset, deletion: [Persistence and data](02-persistence-and-data.md)
+   - store contract, expiry, CAS, reset, abandon: [Persistence and data](02-persistence-and-data.md)
    - request flow, interruption, Memory, Compaction: [Conversation lifecycle](03-conversation-lifecycle.md)
    - OpenRouter, retry, smoke tests, `pia` wiring: [Model Adapter and integration](04-model-adapter-and-integration.md)
 4. Read the linked source and tests before editing.
