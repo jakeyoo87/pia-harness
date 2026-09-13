@@ -400,6 +400,16 @@ class ConversationStoreContract:
                 user_key="boundaries", session_id=session.session_id, now=self.now
             ).turns,
         )
+        # Memory Review must still see Turns the Summary already covers.
+        self.assertEqual(
+            (first, second),
+            self.store.load_unreviewed_turns(
+                user_key="boundaries",
+                session_id=session.session_id,
+                after_turn_id=None,
+                now=self.now,
+            ),
+        )
         replacement = self.store.reset_active_session(
             user_key="boundaries",
             expected_session_id=session.session_id,
@@ -414,6 +424,51 @@ class ConversationStoreContract:
         self.assertEqual(
             replacement,
             self.store.get_or_create_active_session("boundaries", now=self.now),
+        )
+
+    def test_contract_delete_turns_through_is_scoped_to_one_session(self) -> None:
+        # Every out-of-scope Turn is older than the bound, so a wider delete removes it.
+        old = self.store.get_or_create_active_session("owner", now=self.now)
+        old_turn = self.append(
+            "owner", old.session_id, created_at=self.now - timedelta(seconds=5)
+        )
+        current = self.store.reset_active_session(
+            user_key="owner", expected_session_id=old.session_id, now=self.now
+        )
+        covered = self.append("owner", current.session_id)
+        kept = self.append(
+            "owner", current.session_id, created_at=self.now + timedelta(seconds=2)
+        )
+        neighbour = self.store.get_or_create_active_session("neighbour", now=self.now)
+        neighbour_turn = self.append(
+            "neighbour",
+            neighbour.session_id,
+            created_at=self.now - timedelta(seconds=10),
+        )
+
+        self.store.delete_turns_through(
+            user_key="owner",
+            session_id=current.session_id,
+            through_turn_id=covered.turn_id,
+        )
+
+        self.assertEqual(
+            (kept,),
+            self.store.load_context(
+                user_key="owner", session_id=current.session_id, now=self.now
+            ).turns,
+        )
+        self.assertEqual(
+            (old_turn,),
+            self.store.load_context(
+                user_key="owner", session_id=old.session_id, now=self.now
+            ).turns,
+        )
+        self.assertEqual(
+            (neighbour_turn,),
+            self.store.load_context(
+                user_key="neighbour", session_id=neighbour.session_id, now=self.now
+            ).turns,
         )
 
     def test_contract_load_is_complete_beyond_one_mebibyte(self) -> None:

@@ -33,7 +33,7 @@ class PersistenceValidationTest(unittest.TestCase):
             int((self.now + timedelta(days=30)).timestamp()),
         )
 
-    def test_session_and_memory_owner_mismatch_fail_closed(self) -> None:
+    def test_session_memory_and_turn_owner_mismatch_fail_closed(self) -> None:
         with self.assertRaises(StoreContractError):
             validate_active_session(
                 ActiveSession("other", "session", self.now), user_key="user"
@@ -43,6 +43,17 @@ class PersistenceValidationTest(unittest.TestCase):
                 MemoryDocument("other", "memory", self.turn.turn_id, self.now),
                 user_key="user",
             )
+        for turn in (
+            replace(self.turn, user_key="other"),
+            replace(self.turn, session_id="other"),
+        ):
+            with self.subTest(turn=turn), self.assertRaises(StoreContractError):
+                validate_loaded_context(
+                    ConversationContext(None, (turn,)),
+                    user_key="user",
+                    session_id="session",
+                    now=self.now,
+                )
 
     def test_context_rejects_bad_summary_order_and_expiry(self) -> None:
         summary = RollingSummary(

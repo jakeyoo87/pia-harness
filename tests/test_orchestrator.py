@@ -931,6 +931,53 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
+    async def test_reset_review_abandonment_does_not_create_a_session(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(generate)
+        self.memory.abandon_on = "force"
+        with self.assertRaises(ConversationAbandoned):
+            await orchestrator.reset(user_key="user", now=self.now)
+        self.assertEqual(0, self.store.reset_count)
+
+        result = await orchestrator.submit(
+            user_key="user", message="after reset", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+
+    async def test_confirmed_delete_write_abandonment_sends_no_failure_notice(self) -> None:
+        self.store.memories["user"] = MemoryDocument(
+            "user",
+            "remembered",
+            new_turn_id(self.now - timedelta(seconds=1)),
+            self.now,
+        )
+
+        async def generate(context):
+            confirmed = context.parts[-1].content == "yes"
+            return GeneratedAnswer(
+                "cleared" if confirmed else "confirm",
+                "model",
+                10,
+                memory_action=MemoryAction.DELETE_ALL,
+                delete_all_confirmed=confirmed,
+            )
+
+        orchestrator = self.orchestrator(generate)
+        await orchestrator.submit(user_key="user", message="delete", accepted_at=self.now)
+        delivered = list(self.delivered)
+        # The veto must fire in the clearing write itself, not in earlier context loading.
+        self.store.abandon_on = "replace_memory"
+        confirmed = await orchestrator.submit(
+            user_key="user",
+            message="yes",
+            accepted_at=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, confirmed.status)
+        self.assertEqual(delivered, self.delivered)
+        self.assertEqual("remembered", self.store.memories["user"].memory_text)
+
 
 if __name__ == "__main__":
     unittest.main()

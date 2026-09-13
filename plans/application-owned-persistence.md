@@ -473,3 +473,50 @@ Claude 수정 계획을 기준으로 다음을 구현했다.
   `httpx`만 포함
 
 실제 PIA, AWS, OpenRouter live call, package 공개와 배포는 수행하지 않았다.
+
+## Claude 최종 구현 검토: 2026-09-13, implementation commit 8196748
+
+구현 commit `8196748`을 계획과 이전 검토(`9b89e56`)에 대조해 검토했다. 판정: blocker와 runtime 결함은
+없다. 테스트가 붙잡지 못하던 계약 5건을 같은 브랜치에서 테스트로만 고정했다. main에는 병합하지 않았다.
+
+실행 검증: 전체 suite 94 tests 통과(수정 전 91), Ruff 기본 규칙과 F/E9/B 통과, compileall과
+`git diff --check` 통과. `git archive HEAD`로 만든 깨끗한 source에서 `pia_harness-0.2.0` wheel을 빌드해 새
+venv에 설치했다. 요구 의존성은 `httpx`뿐이고 `dynamodb` module과 boto3는 없으며, root import는
+`pia_harness.testing`을 불러오지 않는다.
+
+계획대로 구현된 것: Protocol 9개 메서드, `SessionStoreError` 밖의 `ConversationAbandoned`,
+`orchestrator.py`의 broad catch 11곳 모두 앞의 abandon 처리, 모든 단계에서 pending batch와 전체 삭제
+confirmation marker를 비우는 `ABANDONED`, reset 상태 복구의 `finally`, write/delete 전에 순서·경계·owner·
+expiry를 검사해 fail closed 하는 Memory와 Compaction, 공유 contract suite, DynamoDB와 boto3의 완전 제거.
+
+mutation 검증에서 위 보장 대부분은 테스트가 붙잡았지만 다음 5건은 제거해도 전체 suite가 통과했다.
+
+1. reset의 forced Memory Review abandon. 기존 reset 테스트는 `reset_active_session`에서만 veto했다. 이
+   처리가 빠지면 veto가 `memory_failed`로 삼켜지고 reset이 그대로 `reset_active_session`까지 진행한다.
+2. confirmed clear 쓰기의 abandon. 기존 테스트는 `get_memory`에서 veto했는데, 그 veto는 앞선 context
+   loading에서 먼저 소모되어 confirmed clear 블록에 도달하지 않았다. 이 처리가 빠지면 veto가 명시적
+   Memory 실패 안내로 바뀌어 vetoed 사용자에게 전달된다.
+3. `validate_loaded_turns`의 Turn owner·session 검사. session과 Memory owner만 테스트돼 있었다. 빠지면
+   store가 다른 사용자의 Turn을 섞어도 Memory Review와 Summary로 들어간다.
+4. `delete_turns_through`의 범위. Protocol의 유일한 파괴적 연산인데 공유 suite와 전체 suite 어디에서도
+   범위를 검사하지 않았다. Turn ID가 timestamp이므로 사용자 범위를 빠뜨린 구현은 다른 사용자의 오래된
+   Turn을 지우면서도 모든 테스트를 통과했다.
+5. `load_unreviewed_turns`가 Summary 경계를 무시한다는 의미. in-memory store 대상 `test_memory.py`에만 있고
+   PIA가 실행할 공유 suite에는 없었다. 틀린 store는 요약된 Turn을 Memory Review에서 빼고, 이어지는
+   Compaction 삭제로 그 내용을 영구히 학습하지 못하게 한다.
+
+수정: 공유 suite에 한 session 범위 삭제 contract test를 추가하고 경계 test에 Summary 경계 무시 assertion을
+넣었다. Orchestrator 테스트 두 개를 추가했다. 하나는 reset forced Review veto 시 `reset_active_session`이
+호출되지 않고 이후 submit이 정상인지, 다른 하나는 confirmed clear 쓰기 veto 시 `ABANDONED`이고 실패 안내가
+전달되지 않는지 확인한다. persistence test에는 Turn owner·session mismatch를 넣었다. 다섯 mutation 모두
+이제 실패한다.
+
+공유 suite 추가분이 fake에 맞춘 것이 아님을 확인하려고, `9b89e56`의 `DynamoDBConversationStore`에서 예외만
+`persistence.py`로 바꿔 DynamoDB Local에서 공유 suite 전체(새 삭제 범위 test 포함 5개)를 실행했고 모두
+통과했다.
+
+### Codex 지시
+
+추가 수정은 필요 없다. main 병합 후 CI를 확인한다. PIA store는 `ConversationStoreContract`를 실제
+DynamoDB store로 반드시 실행하고, Member 조건 실패를 `ConversationAbandoned`로 보고하는지와 transaction
+취소 사유 구분은 PIA 쪽 테스트로 따로 고정한다.
