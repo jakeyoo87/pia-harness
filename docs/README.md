@@ -19,7 +19,7 @@ usually needs to answer before changing code.
 | Document | Primary source | Primary tests |
 | --- | --- | --- |
 | [01 Architecture](01-architecture.md) | `src/pia_harness/__init__.py`, all modules | all tests |
-| [02 Persistence and data](02-persistence-and-data.md) | `session.py`, `dynamodb.py` | `test_conversation_store.py`, `test_memory.py`, `test_compaction.py` |
+| [02 Persistence and data](02-persistence-and-data.md) | `session.py`, `persistence.py` | `test_conversation_store.py`, `test_memory.py`, `test_compaction.py` |
 | [03 Conversation lifecycle](03-conversation-lifecycle.md) | `context.py`, `memory.py`, `compaction.py`, `orchestrator.py` | `test_context.py`, `test_memory.py`, `test_compaction.py`, `test_orchestrator.py` |
 | [04 Model Adapter and integration](04-model-adapter-and-integration.md) | `budget.py`, `openrouter.py`, `scripts/smoke_openrouter_model.py` | `test_openrouter_model.py`, `test_openrouter_model_smoke.py` |
 

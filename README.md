@@ -1,14 +1,14 @@
 # pia-harness
 
-Reusable conversation, persistence, long-term Memory, context, orchestration, and OpenRouter model
-components for PIA. The package is a library: the consuming `pia` application supplies user identity,
-configuration, secrets, AWS resources, channel delivery, and deployment.
+Reusable conversation, long-term Memory, context, orchestration, persistence contracts, and OpenRouter
+model components for PIA. The consuming application supplies user identity, storage implementation,
+configuration, secrets, channel delivery, and deployment.
 
 ## Current capabilities
 
 | Area | Current behavior |
 | --- | --- |
-| Sessions and Turns | One active session per opaque user key, completed Turn persistence, 30-day raw-Turn retention |
+| Sessions and Turns | One active session per opaque user key and completed Turn lifecycle through an application store |
 | Context | User-isolated Memory, rolling Summary, recent Turns, and current input assembled under one token budget |
 | Compaction | 90% trigger, protected recent tail, latest Turn preservation, one rolling Summary per session |
 | Long-term Memory | One user document up to 4,000 characters, one-hour revisit Review, explicit update/forget, CAS writes |
@@ -34,8 +34,6 @@ records, and historical constraints. Source and tests are authoritative if docum
 ## Requirements and installation
 
 - Python 3.12 or newer
-- DynamoDB-compatible table with string partition key `pk` and string sort key `sk`
-- `expires_at` configured as the table TTL attribute when automatic raw-Turn expiry is required
 - OpenRouter API key only when using `OpenRouterModelAdapter`
 
 Install from a checkout:
@@ -46,14 +44,15 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
-The package runtime dependencies are bounded in `pyproject.toml`: boto3 for DynamoDB and httpx for
-OpenRouter.
+The only runtime dependency is bounded in `pyproject.toml`: httpx for the optional OpenRouter Adapter.
 
 ## Minimal construction
 
-The caller creates one shared budget and passes the Adapter's callables into the existing components:
+The caller implements `ConversationStore`, creates one shared budget, and passes its store plus the
+Adapter's callables into the existing components:
 
 ```python
+store = ApplicationConversationStore(...)
 budget = ModelTokenBudget(context_limit=1_050_000, response_tokens=4_096)
 adapter = OpenRouterModelAdapter(
     api_key=openrouter_key,
@@ -77,19 +76,13 @@ Always call `await adapter.aclose()` when shutting down an Adapter that owns its
 
 ## Verification
 
-Start DynamoDB Local, point the suite at it, and run all tests:
+Run the full DB- and network-free suite:
 
 ```bash
-docker run --rm --name pia-harness-dynamodb -d -p 127.0.0.1:8000:8000 \
-  amazon/dynamodb-local:3.3.0
-
-PIA_HARNESS_DYNAMODB_ENDPOINT=http://127.0.0.1:8000 \
-  python -m unittest discover -s tests -v
-
-docker stop pia-harness-dynamodb
+python -m unittest discover -s tests -v
 ```
 
-Run model and Orchestrator tests without DynamoDB:
+Run only model and Orchestrator tests:
 
 ```bash
 python -m unittest tests.test_openrouter_model tests.test_openrouter_model_smoke \
@@ -114,7 +107,7 @@ exit `2` is invalid local configuration.
 ## Non-goals
 
 - No channel, Telegram, member authentication, portfolio, Risk Check, or order execution
-- No AWS table/IAM provisioning or Secrets Manager lookup
+- No database client or adapter, physical key schema, AWS table/IAM provisioning, or Secrets Manager lookup
 - No model selection, fallback hierarchy, dynamic Models API discovery, or reasoning policy
 - No queue, worker, outbox, distributed lock, Memory history, vector search, or administration UI
 - No live calls in automated tests

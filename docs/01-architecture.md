@@ -6,7 +6,7 @@
 conversation state, long-term Memory, context construction, compaction, orchestration, and OpenRouter
 request/response adaptation.
 
-It does not own users, channels, product configuration, AWS provisioning, or deployment.
+It does not own users, channels, product configuration, database access, AWS provisioning, or deployment.
 
 ```text
 pia
@@ -14,12 +14,13 @@ pia
 ├── Telegram/channel delivery
 ├── system prompt and localized failure messages
 ├── exact model, context, timeout and retry choices
-├── Secrets Manager and DynamoDB/IAM configuration
+├── ConversationStore implementation and physical schema
+├── Secrets Manager and infrastructure/IAM configuration
 └── lifecycle and deployment
         │
         ▼
 pia-harness
-├── DynamoDBConversationStore
+├── ConversationStore protocol
 ├── PromptContextAssembler
 ├── AutomaticMemoryReviewer
 ├── TokenCompactor
@@ -33,28 +34,19 @@ AWS resource discovery, environment parser, or channel abstraction.
 ## Component graph
 
 ```text
-                              ┌─────────────────────────────┐
-                              │ OpenRouterModelAdapter      │
-                              │ count / answer / review /   │
-                              │ summarize                   │
-                              └──────┬──────┬──────┬────────┘
-                                     │      │      │
-                     count_input_tokens     │      │
-                                     │ review      │ summarize
-                                     ▼      ▼      ▼
-┌────────────┐   ┌────────────────────┐  ┌─────────────────────┐
-│ DynamoDB   │◄──│ PromptContext      │  │ AutomaticMemory     │
-│ store      │   │ Assembler          │  │ Reviewer            │
-└─────▲──────┘   └─────────▲──────────┘  └──────────▲──────────┘
-      │                    │                        │
-      │              ┌─────┴────────────────────────┴──────┐
-      │              │ ConversationOrchestrator            │
-      └──────────────┤ interruption / commit / delivery    │
-                     └──────────────▲──────────────┬───────┘
-                                    │              │
-                              user input       TokenCompactor
-                                                   │
-                                                   └── rolling Summary
+Application store ─implements─> ConversationStore protocol
+                                      ▲
+                                      │ reads / writes
+                         ConversationOrchestrator
+                           ├─ PromptContextAssembler ← token counter
+                           ├─ AutomaticMemoryReviewer ← review callable
+                           ├─ TokenCompactor ← summarize callable
+                           └─ generate + application delivery callables
+                                      ▲
+                                  user input
+
+OpenRouterModelAdapter may supply the four model callables, but model and storage adapters are
+independent choices.
 ```
 
 The Orchestrator owns sequencing, not model or storage policy. Each lower component keeps a narrow
@@ -66,7 +58,8 @@ contract and can be tested with fakes.
 | --- | --- |
 | `budget.py` | Immutable `ModelTokenBudget` shared by Assembler, Compactor, Adapter, and Orchestrator |
 | `session.py` | Domain records, UTC helpers, sortable unique Turn IDs, Memory character constant |
-| `dynamodb.py` | User-partitioned persistence, consistent reads, idempotent Turn append, CAS, reset and deletion |
+| `persistence.py` | Application-owned store Protocol, DB-independent errors, abandon signal, loaded-Turn validation |
+| `testing.py` | Reusable store contract tests and a test-only in-memory reference store |
 | `context.py` | Ordered typed Context parts, trust labels, identity/boundary validation, input-budget check |
 | `memory.py` | Review scheduling, explicit current-input Review, output validation, Memory CAS |
 | `compaction.py` | Trigger policy, protected tail, rolling Summary replacement, covered-Turn deletion |
@@ -81,15 +74,17 @@ are not integration contracts.
 
 - One opaque `user_key` is the ownership boundary everywhere. The library never derives it from a
   Telegram ID, email, Cognito subject, or account number.
+- Conversation components depend only on `ConversationStore`. The application owns DB access, physical
+  keys, retention configuration, lifecycle authorization, account deletion, and atomicity.
 - One `ModelTokenBudget` instance should be passed to the Adapter and Orchestrator. Assembler and
   Compactor derive their limits from it; do not reconstruct equivalent numbers separately.
 - The Adapter produces `GeneratedAnswer`, `MemoryReviewOutput`, and `SummaryOutput`; it does not persist
   or deliver them.
-- The Memory Reviewer and Compactor own domain validation and conditional persistence after provider
-  output is parsed.
+- The Memory Reviewer and Compactor own domain validation and request conditional persistence after
+  provider output is parsed. The injected store implements that persistence contract.
 - The Orchestrator is the only component that combines concurrency, Memory, Compaction, delivery, and
   completed-Turn persistence.
-- `pia` owns all user-visible channel behavior and all runtime configuration values.
+- The consuming application owns all user-visible channel behavior and runtime configuration values.
 
 ## Trust boundary
 

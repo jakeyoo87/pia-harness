@@ -5,16 +5,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
-from .dynamodb import DynamoDBConversationStore
+from .persistence import (
+    ConversationStore,
+    validate_loaded_memory,
+    validate_loaded_turns,
+)
 from .session import (
-    CompletedTurn,
     MEMORY_MAX_CHARS,
+    CompletedTurn,
     MemoryDocument,
     as_utc,
     is_valid_turn_id,
     turn_id_matches_created_at,
 )
-
 
 MEMORY_REVIEW_INSTRUCTION = """Rewrite one concise long-term Memory document for this user.
 Retain only durable communication preferences, investment horizon, approach, goals, constraints,
@@ -102,7 +105,7 @@ class MemoryReviewResult:
 class AutomaticMemoryReviewer:
     def __init__(
         self,
-        store: DynamoDBConversationStore,
+        store: ConversationStore,
         review: Callable[[MemoryReviewRequest], MemoryReviewOutput],
         *,
         policy: MemoryReviewPolicy | None = None,
@@ -118,14 +121,14 @@ class AutomaticMemoryReviewer:
         session_id: str,
         now: datetime | None = None,
     ) -> bool:
-        memory = self._store.get_memory(user_key)
+        memory = validate_loaded_memory(
+            self._store.get_memory(user_key), user_key=user_key
+        )
         boundary = None if memory is None else memory.last_reviewed_turn_id
+        checked_at = as_utc(now or datetime.now(UTC))
         return bool(
-            self._store.load_unreviewed_turns(
-                user_key=user_key,
-                session_id=session_id,
-                after_turn_id=boundary,
-                now=now,
+            self._load_turns(
+                user_key, session_id, boundary=boundary, now=checked_at
             )
         )
 
@@ -227,15 +230,36 @@ class AutomaticMemoryReviewer:
     def _load(
         self, user_key: str, session_id: str, now: datetime
     ) -> tuple[MemoryDocument | None, tuple[CompletedTurn, ...]]:
-        memory = self._store.get_memory(user_key)
+        memory = validate_loaded_memory(
+            self._store.get_memory(user_key), user_key=user_key
+        )
         boundary = None if memory is None else memory.last_reviewed_turn_id
+        turns = self._load_turns(
+            user_key, session_id, boundary=boundary, now=now
+        )
+        return memory, turns
+
+    def _load_turns(
+        self,
+        user_key: str,
+        session_id: str,
+        *,
+        boundary: str | None,
+        now: datetime,
+    ) -> tuple[CompletedTurn, ...]:
         turns = self._store.load_unreviewed_turns(
             user_key=user_key,
             session_id=session_id,
             after_turn_id=boundary,
             now=now,
         )
-        return memory, turns
+        return validate_loaded_turns(
+            turns,
+            user_key=user_key,
+            session_id=session_id,
+            after_turn_id=boundary,
+            now=now,
+        )
 
     def _apply(
         self,
@@ -269,10 +293,10 @@ class AutomaticMemoryReviewer:
             expected = None if memory is None else memory.last_reviewed_turn_id
             current_ids = tuple(
                 turn.turn_id
-                for turn in self._store.load_unreviewed_turns(
-                    user_key=user_key,
-                    session_id=session_id,
-                    after_turn_id=expected,
+                for turn in self._load_turns(
+                    user_key,
+                    session_id,
+                    boundary=expected,
                     now=now,
                 )
             )

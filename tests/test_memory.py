@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import os
 import unittest
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
-
-import boto3
 
 from pia_harness import (
     MEMORY_MAX_CHARS,
@@ -13,7 +9,6 @@ from pia_harness import (
     AutomaticMemoryReviewer,
     CompletedTurn,
     CurrentMemoryInput,
-    DynamoDBConversationStore,
     MemoryDocument,
     MemoryReviewAction,
     MemoryReviewOutput,
@@ -21,11 +16,10 @@ from pia_harness import (
     MemoryReviewStatus,
     MemoryReviewValidationError,
     RollingSummary,
+    StoreContractError,
     new_turn_id,
 )
-
-
-ENDPOINT = os.environ.get("PIA_HARNESS_DYNAMODB_ENDPOINT")
+from pia_harness.testing import InMemoryConversationStore
 
 
 def completed_turn(created_at: datetime) -> CompletedTurn:
@@ -68,37 +62,9 @@ class MemoryReviewPolicyTest(unittest.TestCase):
         )
 
 
-@unittest.skipUnless(ENDPOINT, "PIA_HARNESS_DYNAMODB_ENDPOINT is not set")
 class AutomaticMemoryReviewerTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.table_name = f"pia-harness-memory-test-{uuid4().hex}"
-        cls.client = boto3.client(
-            "dynamodb",
-            endpoint_url=ENDPOINT,
-            region_name="ap-northeast-2",
-            aws_access_key_id="test",
-            aws_secret_access_key="test",
-        )
-        cls.client.create_table(
-            TableName=cls.table_name,
-            BillingMode="PAY_PER_REQUEST",
-            AttributeDefinitions=[
-                {"AttributeName": "pk", "AttributeType": "S"},
-                {"AttributeName": "sk", "AttributeType": "S"},
-            ],
-            KeySchema=[
-                {"AttributeName": "pk", "KeyType": "HASH"},
-                {"AttributeName": "sk", "KeyType": "RANGE"},
-            ],
-        )
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.client.delete_table(TableName=cls.table_name)
-
     def setUp(self) -> None:
-        self.store = DynamoDBConversationStore(self.client, self.table_name)
+        self.store = InMemoryConversationStore()
         self.now = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
 
     def append(
@@ -631,6 +597,32 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
         self.store.delete_memory("memory-keep")
         self.store.delete_memory("memory-keep")
         self.assertIsNone(self.store.get_memory("memory-keep"))
+
+    def test_misordered_store_turns_fail_before_review_or_write(self) -> None:
+        class MisorderedStore(InMemoryConversationStore):
+            def load_unreviewed_turns(self, **values):
+                return tuple(reversed(super().load_unreviewed_turns(**values)))
+
+        store = MisorderedStore()
+        session = store.get_or_create_active_session("misordered", now=self.now)
+        for offset in range(2):
+            created_at = self.now + timedelta(seconds=offset)
+            store.append_completed_turn(
+                user_key="misordered",
+                session_id=session.session_id,
+                turn_id=new_turn_id(created_at),
+                user_message="question",
+                assistant_message="answer",
+                created_at=created_at,
+            )
+        calls = []
+        reviewer = AutomaticMemoryReviewer(store, lambda request: calls.append(request))
+        with self.assertRaises(StoreContractError):
+            reviewer.force_review(
+                user_key="misordered", session_id=session.session_id, now=self.now
+            )
+        self.assertEqual([], calls)
+        self.assertIsNone(store.get_memory("misordered"))
 
 
 if __name__ == "__main__":

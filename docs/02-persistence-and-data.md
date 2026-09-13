@@ -1,147 +1,136 @@
-# Persistence and data
+# Persistence contract and data
 
-## Table contract
+## Ownership boundary
 
-`DynamoDBConversationStore` uses one DynamoDB-compatible table with:
+`pia-harness` defines conversation domain records and the synchronous `ConversationStore` Protocol. It
+does not open a database connection, know a table name, construct a physical key, configure TTL, or
+authorize a user.
 
-- string partition key: `pk`;
-- string sort key: `sk`;
-- TTL attribute: `expires_at`, applied only to raw Turn items;
-- consistent reads for active session, Memory, Summary, and Turn queries.
+The consuming application implements the Protocol and owns:
 
-The consuming application creates the table, enables TTL, supplies the low-level boto3 DynamoDB client,
-and grants IAM permissions. The Harness does not create or discover infrastructure.
+- database and physical schema;
+- stable opaque `user_key` mapping;
+- retention duration and physical expiry;
+- lifecycle checks and atomic write authorization;
+- account-wide conversation deletion;
+- infrastructure, IAM, encryption, backup, and deployment.
 
-Every item for one user is isolated under:
+Harness components call the store through the injected Protocol. Store calls are synchronous and the
+Orchestrator moves durable calls to worker threads.
 
-```text
-pk = USER#{opaque_user_key}
-```
+## Domain records
 
-Never use an email address, channel username, account number, or other direct personal identifier as
-`user_key`.
+The Protocol exchanges typed records rather than database items.
 
-## Item map
-
-| Purpose | `sk` | Important attributes | TTL |
-| --- | --- | --- | --- |
-| Active session | `ACTIVE_SESSION` | `session_id`, `created_at` | none |
-| Completed Turn | `TURN#{session_id}#{turn_id}` | `session_id`, `turn_id`, `user_message`, `assistant_message`, `created_at`, `expires_at` | default 30 days |
-| Rolling Summary | `SUMMARY#{session_id}` | `session_id`, `summary_text`, `through_turn_id`, `summary_tokens`, `model_id`, `updated_at` | none |
-| Long-term Memory | `MEMORY` | `memory_text`, `last_reviewed_turn_id`, `updated_at` | none |
-
-The item names are exact current implementation contracts. There is no GSI, category item, Memory
-history, session-history item, archive, or S3 copy.
-
-## Turn identity and ordering
-
-`new_turn_id(created_at)` creates:
-
-```text
-YYYYMMDDTHHMMSSffffffZ_{32 lowercase hex characters}
-```
-
-The timestamp prefix makes IDs sortable and the random suffix prevents collisions at one timestamp.
-`append_completed_turn` requires the ID timestamp to match the timezone-aware `created_at` value.
-
-A completed Turn contains one combined user batch and the delivered assistant response. The default
-maximum combined UTF-8 content size is 256 KiB. The default TTL is `created_at + 30 days` and can be
-changed through `DynamoDBConversationStore(retention_days=...)`.
-
-Turn append is idempotent:
-
-- first write uses `attribute_not_exists(pk) AND attribute_not_exists(sk)`;
-- the same key and exactly the same item can be replayed successfully;
-- the same Turn ID with different content raises `TurnConflictError`.
-
-Expired Turn items are filtered at read time even if DynamoDB TTL deletion has not run yet.
-
-## Active session and reset
-
-`get_or_create_active_session` creates one pointer item conditionally. Concurrent creators return the
-winner.
-
-The Orchestrator attempts one best-effort forced Memory Review first, then calls
-`reset_active_session`, which performs both store steps:
-
-```text
-conditionally replace ACTIVE_SESSION.session_id
-→ delete the old session's SUMMARY item
-```
-
-The active pointer update requires the caller's expected current session ID. A changed pointer raises
-`SessionConflictError` rather than overwriting the winner.
-
-Reset does not synchronously delete old raw Turns; they become unreachable from the new active session
-and expire under their existing TTL. Long-term Memory is preserved. The Orchestrator also clears its
-in-process complete-deletion confirmation state.
-
-## Context loading and Summary boundary
-
-`load_context(user_key, session_id)` returns:
-
-- the one current `SUMMARY#{session_id}`, if present;
-- only unexpired raw Turns whose `turn_id` is strictly greater than `summary.through_turn_id`.
-
-This prevents a summarized Turn from appearing twice in model context even when physical deletion of a
-covered Turn has not completed.
-
-Summary replacement uses compare-and-set on the previously observed `through_turn_id`, or requires item
-absence for the first Summary. A lost CAS returns false and leaves the winner intact. Covered raw Turns
-are deleted only after the Summary write succeeds.
-
-## Long-term Memory boundary
-
-One `MEMORY` item stores a complete free-form document of at most 4,000 Unicode characters.
-`last_reviewed_turn_id` means every eligible Turn at or below that boundary has already been presented to
-the winning Memory Review.
-
-Memory replacement uses compare-and-set on the previously observed boundary, or item absence for the
-first write. A lost CAS is returned as a stale result and never overwrites newer Memory.
-
-An empty Memory document is valid and still carries a boundary. Confirmed “delete all Memory” therefore
-writes:
-
-```text
-memory_text = ""
-last_reviewed_turn_id = newest accepted input Turn ID
-```
-
-It does not delete the item. Removing the boundary would allow retained raw Turns to repopulate content
-the user just deleted. `delete_memory` remains a low-level operation; account closure uses partition-wide
-deletion.
-
-## Unreviewed Turn loading
-
-`load_unreviewed_turns` intentionally ignores the rolling Summary boundary. It queries unexpired raw
-Turns strictly after `last_reviewed_turn_id`, because Memory Review and Conversation Summary are separate
-purposes.
-
-Compaction can physically remove an unreviewed Turn if the preceding best-effort Memory Review fails.
-Reset can make an old session's unreviewed Turns unreachable. Conversation availability and explicit
-reset take priority; there is no outbox, recovery ledger, or automatic retry loop at the persistence
-layer.
-
-## User deletion
-
-`delete_all_for_user(user_key)` queries keys only inside `USER#{user_key}` and deletes every item in that
-partition, including active session, all session Turns and Summaries, and Memory. It is repeatable and
-does not scan or touch another user's partition.
-
-The consuming application remains responsible for invoking this method as part of its complete member
-withdrawal workflow and for deleting data in its other stores.
-
-## Failure and consistency summary
-
-| Operation | Protection | Failure result |
+| Record | Purpose | Important fields |
 | --- | --- | --- |
-| Active session create | item-absence condition | return concurrent winner or raise store error |
-| Turn append | item-absence condition + exact replay check | idempotent replay or `TurnConflictError` |
-| Session reset | expected session ID | `SessionConflictError` |
-| Memory replace | expected review boundary | stale result, winner preserved |
-| Summary replace | expected summary boundary | no replacement, winner preserved |
-| Context load | Summary boundary + expiry filter | no duplicate or expired Turn in returned context |
-| User deletion | partition-scoped query | repeatable count of removed items |
+| `ActiveSession` | current reset boundary | `user_key`, `session_id`, `created_at` |
+| `CompletedTurn` | one delivered combined exchange | identity, messages, `created_at`, `expires_at` |
+| `RollingSummary` | one current Summary per session | `through_turn_id`, tokens, model, update time |
+| `MemoryDocument` | one long-term document per user | text, `last_reviewed_turn_id`, update time |
+| `ConversationContext` | Summary plus eligible recent Turns | `summary`, ordered `turns` |
 
-These guarantees are single-table data guarantees. In-flight model generation and same-user commit order
-are handled separately by the in-process Orchestrator.
+No physical `PK`, `SK`, prefix, attribute name, table, index, or database type is part of these records.
+Applications may use DynamoDB, RDS, a local database, or another implementation as long as the contract
+is preserved.
+
+## Required store operations
+
+The runtime uses exactly these nine operations:
+
+```text
+get_or_create_active_session
+append_completed_turn
+load_context
+get_memory
+replace_memory
+load_unreviewed_turns
+replace_summary
+delete_turns_through
+reset_active_session
+```
+
+Account deletion is not called by a Harness component. The application owns its deletion method and
+invokes it from its member lifecycle.
+
+## Required semantics
+
+### Isolation and completeness
+
+Every operation is scoped by `user_key`. A store must never return or mutate another user's records.
+Turn loads must return every eligible record, including data spanning multiple database pages.
+
+### Turn ordering and expiry
+
+`load_context` and `load_unreviewed_turns` return Turns in strictly increasing `turn_id` order.
+
+- `load_context` returns only Turns strictly above its Summary boundary.
+- `load_unreviewed_turns` returns only Turns strictly above `after_turn_id`, or all eligible Turns when
+  the boundary is `None`; it ignores the rolling Summary boundary.
+- both exclude Turns with `expires_at <= now` even when physical TTL deletion is delayed.
+
+Memory Reviewer and Compactor validate returned identity, order, boundary, Turn ID, and expiry before a
+write or covered-Turn deletion. A violation raises `StoreContractError` and fails closed. Completeness
+cannot be inferred from returned data, so application stores must run the shared contract suite.
+
+### Active session and reset
+
+`get_or_create_active_session` produces one winner for concurrent creation. `reset_active_session`
+replaces only the expected active session and raises `SessionConflictError` when the pointer changed.
+The application implementation also removes the replaced session's Summary. Old raw Turns can remain
+until their application-defined expiry; long-term Memory remains.
+
+### Completed Turn replay
+
+`append_completed_turn` validates a sortable Turn ID matching `created_at` and returns the stored record.
+An identical replay succeeds. The same Turn ID with different content raises `TurnConflictError`.
+Applications may impose a maximum encoded size and use `TurnTooLargeError`.
+
+### Memory and Summary CAS
+
+`replace_memory` and `replace_summary` compare the caller's observed boundary with the current boundary.
+The first write requires absence. A lost compare-and-set returns `False` and never overwrites the winner.
+
+The Memory document is at most 4,000 Unicode characters. An empty document remains valid because its
+boundary prevents retained raw Turns from recreating content after confirmed complete forgetting.
+
+Compaction writes the replacement Summary before calling `delete_turns_through`. The application store
+must delete only the requested user's requested session Turns at or below the winning boundary.
+
+## Application lifecycle veto
+
+An application store or delivery port raises `ConversationAbandoned` when product lifecycle policy no
+longer permits the conversation, such as a missing or withdrawing user.
+
+`ConversationAbandoned` is not a `SessionStoreError`. It means deliberate application veto, not storage
+failure, CAS loss, or a retryable outage. The Orchestrator clears the batch, performs no automatic retry,
+adds no failure notice, and returns `ABANDONED`.
+
+The application decides how to make the lifecycle check atomic with persistence. For example, an
+application using one DynamoDB table can combine its member-state ConditionCheck with a conversation
+mutation in one transaction. It must distinguish member-condition cancellation from Memory/Summary CAS,
+Turn replay/conflict, and session conflict.
+
+Deletion operations that remove conversation data are application-owned and should remain repeatable.
+They are not gated by an ACTIVE check because deletion moves in the same direction as withdrawal.
+
+## Reusable contract tests
+
+`pia_harness.testing.ConversationStoreContract` is a `unittest` mixin for application adapters. It
+checks:
+
+- user isolation and increasing Turn order;
+- identical replay and conflicting replay;
+- expiry filtering at the exact boundary;
+- strict Summary and Memory boundaries;
+- CAS winner preservation;
+- reset conflict;
+- complete loads beyond 1 MiB so pagination cannot silently truncate context.
+
+Harness runs the same suite against `InMemoryConversationStore`, a test-only reference implementation.
+Consuming applications subclass the mixin and return their real store from `make_store`. Application-
+specific membership transactions, physical keys, pagination implementation, and account deletion need
+additional application tests.
+
+`InMemoryConversationStore` and the contract mixin live in `pia_harness.testing`; they are not exported
+from the package root and are not production storage adapters.
