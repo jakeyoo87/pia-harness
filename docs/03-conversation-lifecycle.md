@@ -103,7 +103,7 @@ Automatic Review is evaluated when the user returns after at least one hour and 
 completed Turns exist. There is no idle timer, Cron, worker, queue, or Turn-count trigger.
 
 Before Compaction and reset, `force_review` reviews any unreviewed current-session Turns. Failure is
-best-effort and does not block Compaction or reset.
+best-effort and does not block Compaction or reset; `ConversationAbandoned` still stops both.
 
 The reviewer retains durable communication preferences, investment horizon, user-authored theses,
 corrections, constraints, and decisions. It excludes transient prices/news, public facts, external text
@@ -211,4 +211,6 @@ remains the application's source of truth for what the user saw.
 
 Callers map reset and result statuses to their channel UX. The Harness contains no slash-command parser.
 Reset always restores its in-process state in a `finally` block, including when the store or Memory
-Reviewer abandons or fails, so later submissions are not permanently superseded.
+Reviewer abandons or fails, so later submissions are not permanently superseded. A veto re-raises
+`ConversationAbandoned` to the caller; a veto during the forced Review stops reset before a new session is
+created.

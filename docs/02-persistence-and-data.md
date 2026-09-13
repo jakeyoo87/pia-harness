@@ -122,8 +122,9 @@ checks:
 - user isolation and increasing Turn order;
 - identical replay and conflicting replay;
 - expiry filtering at the exact boundary;
-- strict Summary and Memory boundaries;
+- strict Summary and Memory boundaries, with unreviewed loads ignoring the Summary boundary;
 - CAS winner preservation;
+- `delete_turns_through` removing only the requested session's Turns at or below the bound;
 - reset conflict;
 - complete loads beyond 1 MiB so pagination cannot silently truncate context.
 

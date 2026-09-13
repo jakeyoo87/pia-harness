@@ -520,3 +520,12 @@ mutation 검증에서 위 보장 대부분은 테스트가 붙잡았지만 다�
 추가 수정은 필요 없다. main 병합 후 CI를 확인한다. PIA store는 `ConversationStoreContract`를 실제
 DynamoDB store로 반드시 실행하고, Member 조건 실패를 `ConversationAbandoned`로 보고하는지와 transaction
 취소 사유 구분은 PIA 쪽 테스트로 따로 고정한다.
+
+### 문서 반영 확인: 2026-09-13, main `bf1c2ef`
+
+병합된 README와 current docs를 코드에 대조했다. 새 경계(Harness는 Protocol만 정의하고 DB 접근·key·보존·
+탈퇴 삭제는 애플리케이션 소유), 9개 store 연산과 의미, `ABANDONED`, reset `finally`, fail-closed 검증,
+0.2.0의 `httpx` 단일 의존성, DB 없는 검증 명령은 정확했다. 다음만 고쳤다. docs/README 읽기 순서의
+DynamoDB key 표현, docs/02 contract suite 목록에 빠진 session 범위 삭제와 Summary 경계 무시, docs/03의
+forced Review가 abandon에는 멈춘다는 점과 reset이 veto를 호출자에게 다시 raise한다는 점, README의 넘친
+줄 하나.
