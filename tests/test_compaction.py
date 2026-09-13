@@ -1,60 +1,27 @@
 from __future__ import annotations
 
-import os
 import unittest
 from datetime import UTC, datetime, timedelta
 from math import floor
-from uuid import uuid4
-
-import boto3
 
 from pia_harness import (
     CompactionPolicy,
     ContextUsage,
-    DynamoDBConversationStore,
+    ConversationContext,
     ModelTokenBudget,
     RollingSummary,
+    StoreContractError,
     SummaryOutput,
     SummaryValidationError,
     TokenCompactor,
     new_turn_id,
 )
+from pia_harness.testing import InMemoryConversationStore
 
 
-ENDPOINT = os.environ.get("PIA_HARNESS_DYNAMODB_ENDPOINT")
-
-
-@unittest.skipUnless(ENDPOINT, "PIA_HARNESS_DYNAMODB_ENDPOINT is not set")
 class TokenCompactionTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.table_name = f"pia-harness-compaction-test-{uuid4().hex}"
-        cls.client = boto3.client(
-            "dynamodb",
-            endpoint_url=ENDPOINT,
-            region_name="ap-northeast-2",
-            aws_access_key_id="test",
-            aws_secret_access_key="test",
-        )
-        cls.client.create_table(
-            TableName=cls.table_name,
-            BillingMode="PAY_PER_REQUEST",
-            AttributeDefinitions=[
-                {"AttributeName": "pk", "AttributeType": "S"},
-                {"AttributeName": "sk", "AttributeType": "S"},
-            ],
-            KeySchema=[
-                {"AttributeName": "pk", "KeyType": "HASH"},
-                {"AttributeName": "sk", "KeyType": "RANGE"},
-            ],
-        )
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.client.delete_table(TableName=cls.table_name)
-
     def setUp(self) -> None:
-        self.store = DynamoDBConversationStore(self.client, self.table_name)
+        self.store = InMemoryConversationStore()
         self.now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
         self.policy = CompactionPolicy(
             trigger_ratio=0.90,
@@ -191,12 +158,15 @@ class TokenCompactionTest(unittest.TestCase):
         )
         self.assertEqual(replacement, context.summary)
         self.assertEqual((more_turns[-1],), context.turns)
-        items = self.client.query(
-            TableName=self.table_name,
-            KeyConditionExpression="pk = :pk",
-            ExpressionAttributeValues={":pk": {"S": f"USER#{user_key}"}},
-        )["Items"]
-        self.assertEqual(3, len(items))
+        self.assertEqual(
+            (more_turns[-1],),
+            self.store.load_unreviewed_turns(
+                user_key=user_key,
+                session_id=session.session_id,
+                after_turn_id=None,
+                now=self.now,
+            ),
+        )
 
     def test_newest_turn_is_kept_even_when_over_tail_budget(self) -> None:
         user_key = "compact-large-tail"
@@ -290,6 +260,53 @@ class TokenCompactionTest(unittest.TestCase):
                 now=self.now,
             ).summary
         )
+
+    def test_misordered_store_turns_fail_before_summary_or_delete(self) -> None:
+        class MisorderedStore(InMemoryConversationStore):
+            def __init__(self):
+                super().__init__()
+                self.delete_calls = 0
+
+            def load_context(self, **values):
+                context = super().load_context(**values)
+                return ConversationContext(
+                    context.summary, tuple(reversed(context.turns))
+                )
+
+            def delete_turns_through(self, **values):
+                self.delete_calls += 1
+                return super().delete_turns_through(**values)
+
+        store = MisorderedStore()
+        session = store.get_or_create_active_session("misordered", now=self.now)
+        for offset in range(3):
+            created_at = self.now + timedelta(seconds=offset)
+            store.append_completed_turn(
+                user_key="misordered",
+                session_id=session.session_id,
+                turn_id=new_turn_id(created_at),
+                user_message="question",
+                assistant_message="answer",
+                created_at=created_at,
+            )
+        summaries = []
+        compactor = TokenCompactor(
+            store,
+            lambda request: summaries.append(request),
+            estimate_tokens=len,
+            policy=self.policy,
+        )
+        with self.assertRaises(StoreContractError):
+            compactor.compact_after_response(
+                user_key="misordered",
+                session_id=session.session_id,
+                token_budget=self.token_budget,
+                model_id="model",
+                estimated_context_tokens=90,
+                now=self.now + timedelta(minutes=1),
+            )
+        self.assertEqual([], summaries)
+        self.assertEqual(0, store.delete_calls)
 
 
 if __name__ == "__main__":

@@ -67,12 +67,16 @@ must not let context overflow silently.
 When the trigger is reached:
 
 1. Load the current Summary and unexpired raw Turns.
-2. Preserve the newest Turn regardless of size.
-3. Preserve as much recent tail as fits the protected-tail budget.
-4. Summarize the previous Summary plus older covered Turns.
-5. Validate a non-empty, smaller Summary and its optional provider token count.
-6. CAS-write one replacement `SUMMARY#{session_id}`.
-7. Delete raw Turns through the winning `through_turn_id` only after the write succeeds.
+2. Validate store identity, strict Turn order, Summary boundary, and expiry; fail closed on violation.
+3. Preserve the newest Turn regardless of size.
+4. Preserve as much recent tail as fits the protected-tail budget.
+5. Summarize the previous Summary plus older covered Turns.
+6. Validate a non-empty, smaller Summary and its optional provider token count.
+7. CAS-write one replacement Summary.
+8. Delete raw Turns through the winning `through_turn_id` only after the write succeeds.
+
+The store owns the physical Summary and Turn representation. Harness validates the returned sequence
+because a bad boundary could otherwise delete a Turn that was not summarized.
 
 On assembly overflow, the Orchestrator makes at most one Compaction and one reassembly attempt. A still
 oversized batch returns `CONTEXT_OVERFLOW` and clears that unprocessable pending batch so later short
@@ -179,6 +183,7 @@ Final delivery happens before completed-Turn persistence. This is intentional:
 | --- | --- |
 | `DELIVERED` | answer delivered and completed Turn persisted |
 | `SUPERSEDED` | a newer generation or reset replaced this submission |
+| `ABANDONED` | the application vetoed the conversation; pending input is cleared without retry or notice |
 | `CONTEXT_OVERFLOW` | one compact/reassemble attempt could not fit the batch |
 | `GENERATION_FAILED` | assembly or model generation failed before commit/delivery |
 | `DELIVERY_FAILED` | final text could not be delivered; pending input remains eligible |
@@ -187,6 +192,11 @@ Final delivery happens before completed-Turn persistence. This is intentional:
 `memory_failed` and `compaction_failed` report non-blocking side-operation failures. A required localized
 explicit-Memory failure notice is appended when an explicit update, forget, or confirmed clear fails or
 loses CAS; automatic Memory failure stays silent.
+
+`ConversationAbandoned` is treated consistently during reads, Memory, Compaction, delivery, and final
+Turn append. It is never swallowed by a best-effort catch or converted to an ordinary failure. Even when
+delivery already completed, the batch is cleared so it cannot be delivered again; the delivery port
+remains the application's source of truth for what the user saw.
 
 ## Reset
 
@@ -200,3 +210,5 @@ loses CAS; automatic Memory failure stays silent.
 6. leaves long-term Memory intact.
 
 Callers map reset and result statuses to their channel UX. The Harness contains no slash-command parser.
+Reset always restores its in-process state in a `finally` block, including when the store or Memory
+Reviewer abandons or fails, so later submissions are not permanently superseded.

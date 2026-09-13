@@ -442,3 +442,34 @@ suite를 한 번 통과시켜 suite가 fake가 아닌 실제 의미를 담았음
 `DynamoDBConversationStore`와 DynamoDB Local로 통과시킨 뒤 test-only store도 통과하게 한다. 그다음
 Memory·Compaction 테스트를 test-only store로 옮기고, 마지막에 `dynamodb.py`와 boto3를 제거한다. suite가
 실제 store로 통과하기 전에는 DynamoDB 구현을 지우지 않는다.
+
+## 구현 결과: 2026-09-13
+
+Claude 수정 계획을 기준으로 다음을 구현했다.
+
+- DB 독립 `ConversationStore` Protocol과 persistence exception을 `persistence.py`에 추가했다.
+- lifecycle veto를 `ConversationAbandoned`와 `OrchestratorStatus.ABANDONED` 하나로 통일했다.
+- abandon은 모든 pre-delivery 경로에서 broad failure 처리보다 우선하며 pending batch와 전체 Memory 삭제
+  confirmation marker를 정리한다.
+- delivery 후 Turn append가 abandon돼도 batch를 비워 재전달하지 않는다.
+- reset은 store/reviewer 결과와 관계없이 `finally`에서 per-user 상태를 복구한다.
+- Session, Memory, Summary, Turn의 owner, identity, boundary, expiry를 검사하고 Memory와 Compaction은 잘못된
+  Turn 순서에서 write/delete 전 fail closed한다.
+- `pia_harness.testing`에 재사용 가능한 `ConversationStoreContract`와 test-only
+  `InMemoryConversationStore`를 추가했다.
+- contract suite를 제거 전 실제 `DynamoDBConversationStore`와 DynamoDB Local에서 먼저 통과시켰다.
+- 이후 `dynamodb.py`, boto3 runtime dependency와 DynamoDB 전용 테스트 설정을 제거했다.
+- package version을 breaking persistence boundary에 맞춰 `0.2.0`으로 올리고 README/current docs를
+  application-owned persistence 기준으로 갱신했다.
+
+검증:
+
+- 제거 전 기존 DynamoDB Adapter + 공유 contract suite: 11 tests passed
+- 최종 DB/network-free 전체 suite: 91 tests passed
+- Ruff `F401,F811,F821,F822`: passed
+- `python -m compileall -q src tests scripts`: passed
+- `git diff --check`: commit 직전 별도 확인
+- read-only source copy에서 `pia-harness==0.2.0` wheel build/install: passed; runtime requirement는
+  `httpx`만 포함
+
+실제 PIA, AWS, OpenRouter live call, package 공개와 배포는 수행하지 않았다.

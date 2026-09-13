@@ -14,7 +14,6 @@ from .context import (
     ContextBudgetExceeded,
     PromptContextAssembler,
 )
-from .dynamodb import DynamoDBConversationStore
 from .memory import (
     MAX_CHANGE_SUMMARY_CHARS,
     MAX_CHANGE_SUMMARY_ITEMS,
@@ -23,8 +22,13 @@ from .memory import (
     MemoryReviewResult,
     MemoryReviewStatus,
 )
+from .persistence import (
+    ConversationAbandoned,
+    ConversationStore,
+    validate_active_session,
+    validate_loaded_memory,
+)
 from .session import ActiveSession, MemoryDocument, as_utc, new_turn_id
-
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
 
@@ -39,6 +43,7 @@ class MemoryAction(StrEnum):
 class OrchestratorStatus(StrEnum):
     DELIVERED = "DELIVERED"
     SUPERSEDED = "SUPERSEDED"
+    ABANDONED = "ABANDONED"
     CONTEXT_OVERFLOW = "CONTEXT_OVERFLOW"
     GENERATION_FAILED = "GENERATION_FAILED"
     DELIVERY_FAILED = "DELIVERY_FAILED"
@@ -107,7 +112,7 @@ class ConversationOrchestrator:
     def __init__(
         self,
         *,
-        store: DynamoDBConversationStore,
+        store: ConversationStore,
         assembler: PromptContextAssembler,
         memory_reviewer: AutomaticMemoryReviewer,
         compactor: TokenCompactor,
@@ -208,38 +213,47 @@ class ConversationOrchestrator:
                 _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
 
         memory_failed = False
-        async with state.commit_lock:
-            session = await _durable_call(
-                self._store.get_or_create_active_session,
-                user_key,
-                now=now,
-            )
-            try:
-                await _durable_call(
-                    self._memory_reviewer.force_review,
+        try:
+            async with state.commit_lock:
+                session = validate_active_session(
+                    await _durable_call(
+                        self._store.get_or_create_active_session,
+                        user_key,
+                        now=now,
+                    ),
                     user_key=user_key,
-                    session_id=session.session_id,
-                    now=now,
                 )
-            except Exception:
-                memory_failed = True
-            replacement = await _durable_call(
-                self._store.reset_active_session,
-                user_key=user_key,
-                expected_session_id=session.session_id,
-                now=now,
-            )
-
-        async with state.state_lock:
-            _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
-            state.pending.clear()
-            state.phase = _Phase.IDLE
-            state.active_task = None
-            state.committing_count = 0
-            state.reset_requested = False
-            state.delete_all_confirmation_pending = False
-        await self._remove_if_idle(user_key, state)
-        return ConversationResetResult(replacement, memory_failed)
+                try:
+                    await _durable_call(
+                        self._memory_reviewer.force_review,
+                        user_key=user_key,
+                        session_id=session.session_id,
+                        now=now,
+                    )
+                except ConversationAbandoned:
+                    raise
+                except Exception:
+                    memory_failed = True
+                replacement = validate_active_session(
+                    await _durable_call(
+                        self._store.reset_active_session,
+                        user_key=user_key,
+                        expected_session_id=session.session_id,
+                        now=now,
+                    ),
+                    user_key=user_key,
+                )
+            return ConversationResetResult(replacement, memory_failed)
+        finally:
+            async with state.state_lock:
+                _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
+                state.pending.clear()
+                state.phase = _Phase.IDLE
+                state.active_task = None
+                state.committing_count = 0
+                state.reset_requested = False
+                state.delete_all_confirmation_pending = False
+            await self._remove_if_idle(user_key, state)
 
     async def _state_for(self, user_key: str) -> _UserState:
         async with self._states_lock:
@@ -269,10 +283,13 @@ class ConversationOrchestrator:
         compaction_failed = False
         try:
             async with state.commit_lock:
-                session = await _durable_call(
-                    self._store.get_or_create_active_session,
-                    user_key,
-                    now=batch[-1].value.accepted_at,
+                session = validate_active_session(
+                    await _durable_call(
+                        self._store.get_or_create_active_session,
+                        user_key,
+                        now=batch[-1].value.accepted_at,
+                    ),
+                    user_key=user_key,
                 )
             assembled, overflow_result, overflow_memory_failed = (
                 await self._assemble_with_overflow(
@@ -314,6 +331,20 @@ class ConversationOrchestrator:
                 batch,
                 result,
                 clear_pending=delivery_succeeded,
+            )
+        except ConversationAbandoned:
+            await self._finish_generation(
+                user_key,
+                state,
+                generation_id,
+                batch,
+                ConversationResult(
+                    OrchestratorStatus.ABANDONED,
+                    memory_failed=memory_failed,
+                    compaction_failed=compaction_failed,
+                ),
+                clear_pending=True,
+                clear_confirmation=True,
             )
         except asyncio.CancelledError:
             return
@@ -369,6 +400,8 @@ class ConversationOrchestrator:
                         session_id=session.session_id,
                         now=batch[-1].value.accepted_at,
                     )
+                except ConversationAbandoned:
+                    raise
                 except Exception:
                     memory_failed = True
                 try:
@@ -382,6 +415,8 @@ class ConversationOrchestrator:
                         usage=None,
                         now=batch[-1].value.accepted_at,
                     )
+                except ConversationAbandoned:
+                    raise
                 except Exception:
                     return None, ConversationResult(
                         OrchestratorStatus.CONTEXT_OVERFLOW,
@@ -484,6 +519,8 @@ class ConversationOrchestrator:
                         explicit_memory_failed = True
                     else:
                         _add_changes(changes, review)
+                except ConversationAbandoned:
+                    raise
                 except Exception:
                     memory_failed = True
                     explicit_memory_failed = True
@@ -493,7 +530,10 @@ class ConversationOrchestrator:
                 and state.delete_all_confirmation_pending
             ):
                 try:
-                    current = await _durable_call(self._store.get_memory, user_key)
+                    current = validate_loaded_memory(
+                        await _durable_call(self._store.get_memory, user_key),
+                        user_key=user_key,
+                    )
                     expected = (
                         None if current is None else current.last_reviewed_turn_id
                     )
@@ -511,6 +551,8 @@ class ConversationOrchestrator:
                     if not replaced:
                         memory_failed = True
                         explicit_memory_failed = True
+                except ConversationAbandoned:
+                    raise
                 except Exception:
                     memory_failed = True
                     explicit_memory_failed = True
@@ -529,6 +571,8 @@ class ConversationOrchestrator:
                         request_at=now,
                     )
                     _add_changes(changes, review)
+                except ConversationAbandoned:
+                    raise
                 except Exception:
                     memory_failed = True
 
@@ -549,6 +593,8 @@ class ConversationOrchestrator:
                         now=now,
                     )
                     _add_changes(changes, review)
+                except ConversationAbandoned:
+                    raise
                 except Exception:
                     memory_failed = True
                 try:
@@ -562,12 +608,16 @@ class ConversationOrchestrator:
                         usage=answer.usage,
                         now=now,
                     )
+                except ConversationAbandoned:
+                    raise
                 except Exception:
                     compaction_failed = True
 
             final_text = _final_text(answer.text, changes)
             try:
                 await self._deliver(user_key, final_text)
+            except ConversationAbandoned:
+                raise
             except Exception:
                 return ConversationResult(
                     OrchestratorStatus.DELIVERY_FAILED,
@@ -597,6 +647,8 @@ class ConversationOrchestrator:
                     assistant_message=final_text,
                     created_at=batch[-1].value.accepted_at,
                 )
+            except ConversationAbandoned:
+                raise
             except Exception:
                 return ConversationResult(
                     OrchestratorStatus.PERSISTENCE_FAILED,
@@ -623,6 +675,7 @@ class ConversationOrchestrator:
         result: ConversationResult,
         *,
         clear_pending: bool,
+        clear_confirmation: bool = False,
     ) -> None:
         start_next = False
         async with state.state_lock:
@@ -630,6 +683,8 @@ class ConversationOrchestrator:
                 return
             if clear_pending:
                 del state.pending[: len(batch)]
+            if clear_confirmation:
+                state.delete_all_confirmation_pending = False
             owner = batch[-1]
             if not owner.future.done():
                 owner.future.set_result(result)

@@ -6,9 +6,8 @@ from datetime import UTC, datetime
 from math import floor
 
 from .budget import ModelTokenBudget
-from .dynamodb import DynamoDBConversationStore
-from .session import CompletedTurn, RollingSummary
-
+from .persistence import ConversationStore, validate_loaded_context
+from .session import CompletedTurn, RollingSummary, as_utc
 
 SUMMARY_INSTRUCTION = """Create a concise rolling conversation summary.
 Preserve important entities, dates, numbers, decisions, corrections, user constraints, and unresolved
@@ -79,7 +78,7 @@ class SummaryValidationError(RuntimeError):
 class TokenCompactor:
     def __init__(
         self,
-        store: DynamoDBConversationStore,
+        store: ConversationStore,
         summarize: Callable[[SummaryRequest], SummaryOutput],
         *,
         estimate_tokens: Callable[[str], int] | None = None,
@@ -126,6 +125,13 @@ class TokenCompactor:
 
         context = self._store.load_context(
             user_key=user_key, session_id=session_id, now=now
+        )
+        checked_at = as_utc(now or datetime.now(UTC))
+        context = validate_loaded_context(
+            context,
+            user_key=user_key,
+            session_id=session_id,
+            now=checked_at,
         )
         covered, _tail = _split_turns(
             context.turns,

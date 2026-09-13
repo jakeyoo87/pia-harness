@@ -158,18 +158,16 @@ clients remain caller-owned; `close()` closes only an Adapter-owned sync client.
 ## Complete construction example
 
 ```python
-import boto3
-
 from pia_harness import (
     AutomaticMemoryReviewer,
     ConversationOrchestrator,
-    DynamoDBConversationStore,
     ModelTokenBudget,
     OpenRouterModelAdapter,
     PromptContextAssembler,
     TokenCompactor,
 )
 
+store = ApplicationConversationStore(...)
 budget = ModelTokenBudget(context_limit=1_050_000, response_tokens=4_096)
 
 adapter = OpenRouterModelAdapter(
@@ -180,10 +178,6 @@ adapter = OpenRouterModelAdapter(
     max_attempts=2,
 )
 
-store = DynamoDBConversationStore(
-    boto3.client("dynamodb", region_name="ap-northeast-2"),
-    table_name=user_table_name,
-)
 assembler = PromptContextAssembler(adapter.count_input_tokens)
 memory_reviewer = AutomaticMemoryReviewer(store, adapter.review_memory)
 compactor = TokenCompactor(store, adapter.summarize)
@@ -262,11 +256,12 @@ The consuming application must:
 1. pin a reviewed `pia-harness` version or commit reproducibly;
 2. load the API key from Secrets Manager and never log or persist it;
 3. configure an exact model ID, its current context limit, response reserve, timeout, and attempts;
-4. create the DynamoDB client/store with the correct table key and TTL contract;
+4. implement `ConversationStore`, including isolation, complete ordered loads, expiry, CAS, replay,
+   reset, and application lifecycle veto;
 5. derive one opaque stable user key from authenticated membership, never from mutable channel labels;
 6. supply its trusted system prompt, localized explicit-Memory failure notice, and async channel delivery;
 7. map Orchestrator statuses to user-facing channel behavior;
-8. call `reset` and partition deletion from the application's reset and withdrawal workflows;
+8. call Harness `reset` and application-owned conversation deletion from reset and withdrawal workflows;
 9. close the Adapter on shutdown;
 10. run local integration tests before any AWS, Bot, or production change;
 11. review cost limits and provider data handling before sending real user conversation content;
@@ -274,3 +269,9 @@ The consuming application must:
 
 The Harness contains no `pia` environment parser. Configuration names and deployment mechanics belong to
 the consuming repository.
+
+Application stores should run `pia_harness.testing.ConversationStoreContract` against their real
+persistence implementation. The Harness contains no database client, physical key mapping, member-state
+schema, account-deletion method, or infrastructure policy. `ConversationAbandoned` lets a store or
+delivery port veto work for an unavailable user without exposing the product-specific reason to the
+library.

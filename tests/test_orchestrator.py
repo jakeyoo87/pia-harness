@@ -7,16 +7,18 @@ from datetime import UTC, datetime, timedelta
 from pia_harness import (
     MESSAGE_SEPARATOR,
     ActiveSession,
+    ConversationAbandoned,
     ConversationContext,
     ConversationOrchestrator,
     GeneratedAnswer,
     MemoryAction,
     MemoryDocument,
-    ModelTokenBudget,
     MemoryReviewResult,
     MemoryReviewStatus,
+    ModelTokenBudget,
     OrchestratorStatus,
     PromptContextAssembler,
+    new_turn_id,
 )
 
 
@@ -28,8 +30,15 @@ class FakeStore:
         self.fail_append = False
         self.fail_replace = False
         self.reset_count = 0
+        self.abandon_on: str | None = None
+
+    def _check(self, operation: str) -> None:
+        if self.abandon_on == operation:
+            self.abandon_on = None
+            raise ConversationAbandoned(operation)
 
     def get_or_create_active_session(self, user_key, *, now=None):
+        self._check("session")
         session = self.sessions.get(user_key)
         if session is None:
             session = ActiveSession(user_key, f"session-{user_key}-0", now)
@@ -37,9 +46,11 @@ class FakeStore:
         return session
 
     def get_memory(self, user_key):
+        self._check("get_memory")
         return self.memories.get(user_key)
 
     def replace_memory(self, memory, *, expected_last_reviewed_turn_id):
+        self._check("replace_memory")
         if self.fail_replace:
             return False
         current = self.memories.get(memory.user_key)
@@ -50,6 +61,7 @@ class FakeStore:
         return True
 
     def load_context(self, *, user_key, session_id, now=None):
+        self._check("load_context")
         return ConversationContext(
             summary=None,
             turns=tuple(
@@ -71,6 +83,7 @@ class FakeStore:
         )
 
     def append_completed_turn(self, **values):
+        self._check("append")
         if self.fail_append:
             self.fail_append = False
             raise RuntimeError("append failed")
@@ -84,6 +97,7 @@ class FakeStore:
         return turn
 
     def reset_active_session(self, *, user_key, expected_session_id, now=None):
+        self._check("reset")
         self.reset_count += 1
         replacement = ActiveSession(
             user_key,
@@ -100,27 +114,41 @@ class FakeMemoryReviewer:
         self.calls = []
         self.fail = False
         self.force_changes = ()
+        self.abandon_on: str | None = None
+
+    def _check(self, operation: str) -> None:
+        if self.abandon_on == operation:
+            self.abandon_on = None
+            raise ConversationAbandoned(operation)
 
     def review_if_due(self, **values):
         self.calls.append("revisit")
+        self._check("revisit")
         if self.fail:
             raise RuntimeError("memory failed")
         return None
 
     def force_review(self, **values):
         self.calls.append("force")
+        self._check("force")
         if self.fail:
             raise RuntimeError("memory failed")
         if self.force_changes:
             return MemoryReviewResult(
                 MemoryReviewStatus.REPLACED,
-                MemoryDocument("user", "memory", "0000000000000-old", values["now"]),
+                MemoryDocument(
+                    "user",
+                    "memory",
+                    new_turn_id(values["now"] - timedelta(seconds=1)),
+                    values["now"],
+                ),
                 self.force_changes,
             )
         return None
 
     def review_explicit_input(self, **values):
         self.calls.append("explicit")
+        self._check("explicit")
         current = values["current_input"]
         self.explicit_inputs.append((current, values["allow_clear"]))
         if self.fail:
@@ -142,6 +170,7 @@ class FakeCompactor:
         self.due = False
         self.progress = True
         self.calls = []
+        self.abandon = False
 
     def should_compact(self, **values):
         self.calls.append(("check", values))
@@ -149,6 +178,9 @@ class FakeCompactor:
 
     def compact_after_response(self, **values):
         self.calls.append(("compact", values))
+        if self.abandon:
+            self.abandon = False
+            raise ConversationAbandoned("compact")
         return object() if self.progress else None
 
 
@@ -354,7 +386,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_delete_all_requires_preceding_delivered_request(self) -> None:
         self.store.memories["user"] = MemoryDocument(
-            "user", "remembered", "0000000000000-old", self.now
+            "user",
+            "remembered",
+            new_turn_id(self.now - timedelta(seconds=1)),
+            self.now,
         )
 
         async def generate(context):
@@ -398,7 +433,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_delete_all_confirmation_without_pending_marker_is_not_honored(self) -> None:
         self.store.memories["user"] = MemoryDocument(
-            "user", "remembered", "0000000000000-old", self.now
+            "user",
+            "remembered",
+            new_turn_id(self.now - timedelta(seconds=1)),
+            self.now,
         )
 
         async def generate(context):
@@ -481,13 +519,21 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 self.calls.append("revisit")
                 return MemoryReviewResult(
                     MemoryReviewStatus.REPLACED,
-                    MemoryDocument("user", "memory", "0000000000000-old", values["request_at"]),
+                    MemoryDocument(
+                        "user",
+                        "memory",
+                        new_turn_id(values["request_at"] - timedelta(seconds=1)),
+                        values["request_at"],
+                    ),
                     ("첫째", "둘째", "셋째"),
                 )
 
         self.memory = BusyRevisit()
         self.store.memories["user"] = MemoryDocument(
-            "user", "remembered", "0000000000000-old", self.now
+            "user",
+            "remembered",
+            new_turn_id(self.now - timedelta(seconds=1)),
+            self.now,
         )
 
         async def generate(context):
@@ -721,6 +767,169 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             [OrchestratorStatus.DELIVERED, OrchestratorStatus.DELIVERED],
             [result.status for result in results],
         )
+
+    async def test_store_abandonment_clears_batch_and_allows_future_use(self) -> None:
+        seen = []
+
+        async def generate(context):
+            seen.append(context.parts[-1].content)
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(generate)
+        self.store.abandon_on = "session"
+        abandoned = await orchestrator.submit(
+            user_key="user", message="A", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, abandoned.status)
+        self.assertEqual([], seen)
+        self.assertEqual([], self.delivered)
+
+        recovered = await orchestrator.submit(
+            user_key="user", message="B", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, recovered.status)
+        self.assertEqual(["B"], seen)
+
+    async def test_memory_and_compaction_abandonment_do_not_deliver(self) -> None:
+        async def explicit(context):
+            return GeneratedAnswer(
+                "answer", "model", 10, memory_action=MemoryAction.UPDATE
+            )
+
+        orchestrator = self.orchestrator(explicit)
+        self.memory.abandon_on = "explicit"
+        result = await orchestrator.submit(
+            user_key="user", message="remember", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, result.status)
+        self.assertEqual([], self.delivered)
+        self.assertEqual([], self.store.turns)
+
+        async def ordinary(context):
+            return GeneratedAnswer("answer", "model", 90)
+
+        self.compactor.due = True
+        self.compactor.abandon = True
+        result = await self.orchestrator(ordinary).submit(
+            user_key="other", message="compact", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, result.status)
+        self.assertEqual([], self.delivered)
+
+    async def test_due_and_overflow_abandonment_stop_before_delivery(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        self.memory.abandon_on = "revisit"
+        due = await self.orchestrator(generate).submit(
+            user_key="due", message="question", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, due.status)
+
+        self.memory = FakeMemoryReviewer()
+        self.memory.abandon_on = "force"
+        forced = await self.orchestrator(generate, counter=lambda parts: 901).submit(
+            user_key="overflow-review", message="question", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, forced.status)
+        self.assertFalse(
+            any(call[0] == "compact" for call in self.compactor.calls)
+        )
+
+        self.memory = FakeMemoryReviewer()
+        self.compactor = FakeCompactor()
+        self.compactor.abandon = True
+        compacted = await self.orchestrator(
+            generate, counter=lambda parts: 901
+        ).submit(
+            user_key="overflow-compact", message="question", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, compacted.status)
+        self.assertEqual([], self.delivered)
+
+    async def test_confirmed_delete_abandonment_clears_confirmation_marker(self) -> None:
+        self.store.memories["user"] = MemoryDocument(
+            "user",
+            "remembered",
+            new_turn_id(self.now - timedelta(seconds=1)),
+            self.now,
+        )
+
+        async def generate(context):
+            confirmed = context.parts[-1].content == "yes"
+            return GeneratedAnswer(
+                "confirm" if not confirmed else "cleared",
+                "model",
+                10,
+                memory_action=MemoryAction.DELETE_ALL,
+                delete_all_confirmed=confirmed,
+            )
+
+        orchestrator = self.orchestrator(generate)
+        requested = await orchestrator.submit(
+            user_key="user", message="delete", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, requested.status)
+        self.store.abandon_on = "get_memory"
+        confirmed = await orchestrator.submit(
+            user_key="user",
+            message="yes",
+            accepted_at=self.now + timedelta(seconds=1),
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, confirmed.status)
+        self.assertNotIn("user", orchestrator._states)
+        self.assertEqual("remembered", self.store.memories["user"].memory_text)
+
+    async def test_delivery_and_post_delivery_append_abandonment_clear_batch(self) -> None:
+        seen = []
+        delivery_calls = 0
+
+        async def generate(context):
+            seen.append(context.parts[-1].content)
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def abandon_once(user_key, text):
+            nonlocal delivery_calls
+            delivery_calls += 1
+            if delivery_calls == 1:
+                raise ConversationAbandoned("inactive")
+            self.delivered.append((user_key, text))
+
+        orchestrator = self.orchestrator(generate, deliver=abandon_once)
+        first = await orchestrator.submit(
+            user_key="user", message="A", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, first.status)
+        second = await orchestrator.submit(
+            user_key="user", message="B", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, second.status)
+        self.assertEqual(["A", "B"], seen)
+
+        self.store.abandon_on = "append"
+        after_delivery = await orchestrator.submit(
+            user_key="user", message="C", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.ABANDONED, after_delivery.status)
+        final = await orchestrator.submit(
+            user_key="user", message="D", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, final.status)
+        self.assertEqual("D", seen[-1])
+
+    async def test_reset_abandonment_always_recovers_user_state(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(generate)
+        self.store.abandon_on = "reset"
+        with self.assertRaises(ConversationAbandoned):
+            await orchestrator.reset(user_key="user", now=self.now)
+
+        result = await orchestrator.submit(
+            user_key="user", message="after reset", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
 
 if __name__ == "__main__":
