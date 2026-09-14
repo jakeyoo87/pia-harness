@@ -101,9 +101,11 @@ and `FORGET` retain the existing Reviewer path. A combined search and complete-M
 therefore requires a separate non-search deletion message.
 
 When search is observed through usage or a `url_citation` annotation, the Answer must contain at least one
-Markdown HTTPS link and every such link must exactly match a returned citation URL. Missing or invented
-links are retryable invalid output. The Harness does not add a sources Schema, rewrite citations, persist
-search results, or expose their text.
+URL and every HTTP or HTTPS URL occurrence must exactly match a returned HTTPS citation URL. This covers
+Markdown targets, bare URLs and autolinks without parsing each presentation form; only trailing whitespace,
+closing delimiters or sentence punctuation is allowed. Missing, invented, insecure or citation-prefix links
+are retryable invalid output. The Harness does not add a sources Schema, rewrite citations, persist search
+results, or expose their text.
 
 ## Rendering and language
 

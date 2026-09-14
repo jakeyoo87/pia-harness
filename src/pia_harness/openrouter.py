@@ -41,7 +41,8 @@ WEB_SEARCH_ENGINES = frozenset(
     {"auto", "native", "exa", "firecrawl", "parallel", "perplexity"}
 )
 WEB_SEARCH_CONTEXT_SIZES = frozenset({"low", "medium", "high"})
-_MARKDOWN_HTTPS_LINK = re.compile(r"\[[^\]\n]+\]\((https://[^\s)]+)\)")
+_URL_SCHEME = re.compile(r"https?://", re.IGNORECASE)
+_URL_TERMINATORS = frozenset(")]>}.,;:!?\"'，。！？、")
 
 _Result = TypeVar("_Result")
 
@@ -833,9 +834,25 @@ def _citation_urls(value: Any) -> tuple[str, ...]:
 
 
 def _validate_cited_answer(answer: str, citation_urls: tuple[str, ...]) -> None:
-    answer_urls = tuple(_MARKDOWN_HTTPS_LINK.findall(answer))
-    if not answer_urls or any(url not in citation_urls for url in answer_urls):
+    starts = tuple(match.start() for match in _URL_SCHEME.finditer(answer))
+    if not starts:
         raise OpenRouterModelError("openrouter.invalid_output", retryable=True)
+    citations = tuple(sorted(set(citation_urls), key=len, reverse=True))
+    for start in starts:
+        if not any(
+            answer.startswith(url, start)
+            and _url_ends_here(answer, start + len(url))
+            for url in citations
+        ):
+            raise OpenRouterModelError("openrouter.invalid_output", retryable=True)
+
+
+def _url_ends_here(answer: str, end: int) -> bool:
+    return (
+        end == len(answer)
+        or answer[end].isspace()
+        or answer[end] in _URL_TERMINATORS
+    )
 
 
 def _json_object(content: str) -> dict[str, Any]:

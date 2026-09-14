@@ -313,3 +313,15 @@ Telegram은 bare URL도 링크로 보여주므로, 조작된 검색 결과가 �
 
 위 citation 검증 blocker만 테스트와 함께 고친 뒤 전체 suite를 다시 실행한다. 링크 판정 규칙만 바뀌므로 live smoke는
 검색 시나리오 하나만 다시 확인하면 된다. sources Schema, citation renderer, fallback, 추가 retry 정책은 넣지 않는다.
+
+## Codex 최종 검토 반영: 2026-09-14
+
+citation blocker를 정규식별 Markdown 예외 추가로 처리하지 않는다. 답변의 모든 `http://` 또는 `https://` 시작점을
+찾고, provider가 준 전체 HTTPS citation URL 중 하나가 그 위치에서 정확히 끝나는지만 확인한다. citation URL 자체에
+`)`가 포함돼도 전체 문자열로 대조하므로 정상 처리되며, citation 접두사 뒤에 문자가 이어지는 URL은 거부한다. 정확한
+URL 뒤에는 문자열 끝, 공백, 닫는 구분자 또는 문장 부호만 허용한다. 따라서 Markdown·bare URL·autolink를 별도
+파서나 renderer 없이 같은 규칙으로 검증한다.
+
+새로운 2단계 경계에 대한 비차단 테스트 누락도 작은 범위에서 보완한다. 검색 단계 retry가 성공한 첫 structured
+호출을 반복하지 않는지와 검색 단계 cancellation이 그대로 전파되는지만 추가한다. 새로운 retry 정책이나 fallback은
+도입하지 않는다.

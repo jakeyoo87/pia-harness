@@ -318,56 +318,74 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.delete_all_confirmed)
         self.assertEqual(0, result.web_search_requests)
 
-    async def test_searched_answer_rejects_uncited_or_missing_links(self) -> None:
-        cited_url = "https://example.com/cited"
-        for answer in (
-            "출처 링크가 없습니다.",
-            "[가짜 출처](https://example.com/invented)",
-        ):
-            with self.subTest(answer=answer):
-                calls = 0
+    async def test_searched_answer_validates_every_url_against_citations(self) -> None:
+        async def generate(answer: str, cited_url: str) -> GeneratedAnswer:
+            calls = 0
 
-                def handler(request: httpx.Request, answer=answer) -> httpx.Response:
-                    nonlocal calls
-                    calls += 1
-                    if calls == 1:
-                        return chat_response(
-                            json.dumps(
-                                {
-                                    "answer": "검색 전 임시 답변",
-                                    "memory_action": "NONE",
-                                    "delete_all_confirmed": False,
-                                    "needs_web_search": True,
-                                },
-                                ensure_ascii=False,
-                            )
-                        )
+            def handler(request: httpx.Request) -> httpx.Response:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
                     return chat_response(
-                        answer,
-                        usage={
-                            "prompt_tokens": 1,
-                            "completion_tokens": 1,
-                            "total_tokens": 2,
-                            "server_tool_use": {"web_search_requests": 1},
-                        },
-                        annotations=[
+                        json.dumps(
                             {
-                                "type": "url_citation",
-                                "url_citation": {"url": cited_url},
-                            }
-                        ],
+                                "answer": "검색 전 임시 답변",
+                                "memory_action": "NONE",
+                                "delete_all_confirmed": False,
+                                "needs_web_search": True,
+                            },
+                            ensure_ascii=False,
+                        )
                     )
-
-                adapter = self.adapter(
-                    handler,
-                    web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
+                return chat_response(
+                    answer,
+                    usage={
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                        "server_tool_use": {"web_search_requests": 1},
+                    },
+                    annotations=[
+                        {
+                            "type": "url_citation",
+                            "url_citation": {"url": cited_url},
+                        }
+                    ],
                 )
-                with self.assertRaisesRegex(
-                    OpenRouterModelError, "openrouter.invalid_output"
-                ):
-                    await adapter.generate_answer(
-                        AssembledPromptContext(answer_parts(), 10, 900)
-                    )
+
+            return await self.adapter(
+                handler,
+                web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
+            ).generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+
+        cited_url = "https://example.com/cited"
+        invalid = (
+            "출처 링크가 없습니다.",
+            f"[출처]({cited_url}) 가짜 https://evil.test/phish",
+            f"[출처]({cited_url}) [비보안](http://evil.test/phish)",
+            f"[출처]({cited_url}) <https://evil.test/phish>",
+            f"[출처]({cited_url}) https://example.com/cited-extra",
+        )
+        for answer in invalid:
+            with self.subTest(answer=answer), self.assertRaisesRegex(
+                OpenRouterModelError, "openrouter.invalid_output"
+            ):
+                await generate(answer, cited_url)
+
+        valid = (
+            f"[출처]({cited_url})",
+            f"출처 {cited_url}.",
+            f"출처 <{cited_url}>",
+            "[출처](https://example.com/Foo_(bar))",
+        )
+        for answer in valid:
+            with self.subTest(answer=answer):
+                expected = (
+                    "https://example.com/Foo_(bar)"
+                    if "Foo_" in answer
+                    else cited_url
+                )
+                self.assertEqual(answer, (await generate(answer, expected)).text)
 
     async def test_answer_uses_one_structured_call_and_maps_action_and_usage(self) -> None:
         requests: list[httpx.Request] = []
@@ -957,6 +975,91 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
         self.assertEqual(1, calls)
+
+    async def test_search_retry_does_not_repeat_structured_stage(self) -> None:
+        structured_calls = 0
+        search_calls = 0
+        cited_url = "https://example.com/cited"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal structured_calls, search_calls
+            payload = json.loads(request.content)
+            if "response_format" in payload:
+                structured_calls += 1
+                return chat_response(
+                    json.dumps(
+                        {
+                            "answer": "draft",
+                            "memory_action": "NONE",
+                            "delete_all_confirmed": False,
+                            "needs_web_search": True,
+                        }
+                    )
+                )
+            search_calls += 1
+            if search_calls == 1:
+                return chat_response("ignored", status=503)
+            return chat_response(
+                f"[출처]({cited_url})",
+                usage={
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "server_tool_use": {"web_search_requests": 1},
+                },
+                annotations=[
+                    {
+                        "type": "url_citation",
+                        "url_citation": {"url": cited_url},
+                    }
+                ],
+            )
+
+        with patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()):
+            result = await self.adapter(
+                handler,
+                max_attempts=2,
+                web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
+            ).generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+        self.assertEqual(f"[출처]({cited_url})", result.text)
+        self.assertEqual(1, structured_calls)
+        self.assertEqual(2, search_calls)
+
+    async def test_cancellation_during_search_stage_propagates(self) -> None:
+        search_started = asyncio.Event()
+        structured_calls = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal structured_calls
+            payload = json.loads(request.content)
+            if "response_format" in payload:
+                structured_calls += 1
+                return chat_response(
+                    json.dumps(
+                        {
+                            "answer": "draft",
+                            "memory_action": "NONE",
+                            "delete_all_confirmed": False,
+                            "needs_web_search": True,
+                        }
+                    )
+                )
+            search_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        adapter = self.adapter(
+            handler,
+            web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
+        )
+        task = asyncio.create_task(
+            adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+        )
+        await search_started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(1, structured_calls)
 
     async def test_envelope_failures_retry_only_when_transient(self) -> None:
         context = AssembledPromptContext(answer_parts(), 10, 900)
