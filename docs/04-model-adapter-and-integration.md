@@ -275,6 +275,21 @@ This is integration evidence, not a hardcoded Harness default or permanent provi
 the current OpenRouter Models API, price, data policy, and smoke result before deployment. The intended
 initial `pia` runtime setting is `timeout_seconds=15` and `max_attempts=2`.
 
+On 2026-09-14, the optional two-stage configuration below passed all ten base plus Web Search scenarios
+with one observed response model. The required-search scenario used Exa once and returned a Markdown URL
+that matched a provider `url_citation`; the no-search scenario reported zero searches. Chat Completions
+returned the observed count under `usage.server_tool_use_details`.
+
+```text
+model_id = openai/gpt-5.6-luna
+web_search = OpenRouterWebSearchConfig("exa", 3, 5, "low")
+context_limit = 1,050,000
+response_tokens = 4,096
+```
+
+This smoke used only synthetic prompts. It proves compatibility at that time, not future search quality,
+source access, or stable pricing.
+
 ## Live smoke tool
 
 `scripts/smoke_openrouter_model.py` uses only public Adapter methods and eight fixed synthetic Korean

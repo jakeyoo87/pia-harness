@@ -4,7 +4,7 @@
 - 브랜치: `codex/openrouter-web-search`
 - 구현: Codex
 - 검토: Claude
-- 상태: 계획 검토 대기
+- 상태: 구현 및 실모델 검증 완료, 최종 검토 대기
 
 ## 목표
 
@@ -238,3 +238,16 @@ citation annotation을 반환했다. API 키와 사용자 데이터는 출력하
 Chat Completions usage가 문서 예시의 `server_tool_use` 대신 `server_tool_use_details`를 사용해 검색 횟수를 0으로
 판정했다. Adapter는 두 필드 중 존재하는 값을 허용하고 둘이 함께 있을 때 값이 다르면 invalid usage로 거부한다.
 해당 synthetic 호출에서 Exa 검색 비용은 모델 토큰과 별도로 `$0.007`이 관찰됐다. 가격은 계약에 고정하지 않는다.
+
+## 최종 구현 검증: 2026-09-14
+
+- network-free 전체 suite: 100개 통과
+- 실제 `openai/gpt-5.6-luna` + Exa 10-scenario smoke: 10/10 통과, 약 26초
+- 검색 필요 Answer: 첫 structured 호출 후 Exa 검색 1회, 실제 `url_citation`과 일치하는 Markdown 링크 반환
+- 검색 불필요 Answer: 첫 structured 호출에서 종료, 검색 0회
+- 기존 명시적 Memory action 5개, Memory Review 2개, rolling Summary 1개 모두 통과
+- 관찰된 응답 모델 ID는 `openai/gpt-5.6-luna` 하나로 일관됨
+- API 키, 실제 사용자 데이터, PIA 코드, AWS 및 Bot은 변경하거나 출력하지 않음
+
+구현 커밋은 `97d68bf`, 2단계 호환 수정은 `487332c`, 실제 usage 필드 수정은 `0d9a04d`다. 최종 Claude 검토 후
+blocker가 없을 때만 main 병합과 버전 릴리스를 진행한다.
