@@ -233,3 +233,8 @@ citation annotation을 반환했다. API 키와 사용자 데이터는 출력하
 
 이 수정은 별도 검색 Intent 모델, 키워드 분기, sources Schema, citation renderer, fallback 모델을 추가하지 않는다.
 구현 후 network-free 전체 suite와 Luna+Exa 10-scenario smoke를 다시 통과시키고 최종 Claude 검토를 받는다.
+
+첫 2단계 smoke는 10개 중 9개가 통과했다. 검색 Answer의 content와 `url_citation`은 올바르게 반환됐지만 실제
+Chat Completions usage가 문서 예시의 `server_tool_use` 대신 `server_tool_use_details`를 사용해 검색 횟수를 0으로
+판정했다. Adapter는 두 필드 중 존재하는 값을 허용하고 둘이 함께 있을 때 값이 다르면 invalid usage로 거부한다.
+해당 synthetic 호출에서 Exa 검색 비용은 모델 토큰과 별도로 `$0.007`이 관찰됐다. 가격은 계약에 고정하지 않는다.

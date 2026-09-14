@@ -793,18 +793,22 @@ def _usage(value: Any) -> tuple[dict[str, int] | None, int]:
         counts[name] = count
     if counts["total_tokens"] != counts["prompt_tokens"] + counts["completion_tokens"]:
         raise OpenRouterModelError("openrouter.invalid_usage")
-    server_tool_use = value.get("server_tool_use")
-    web_search_requests = 0
-    if server_tool_use is not None:
+    observed_search_counts: list[int] = []
+    for name in ("server_tool_use", "server_tool_use_details"):
+        server_tool_use = value.get(name)
+        if server_tool_use is None:
+            continue
         if not isinstance(server_tool_use, dict):
             raise OpenRouterModelError("openrouter.invalid_usage")
-        web_search_requests = server_tool_use.get("web_search_requests", 0)
-        if (
-            isinstance(web_search_requests, bool)
-            or not isinstance(web_search_requests, int)
-            or web_search_requests < 0
-        ):
+        count = server_tool_use.get("web_search_requests", 0)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise OpenRouterModelError("openrouter.invalid_usage")
+        observed_search_counts.append(count)
+    if len(set(observed_search_counts)) > 1:
+        raise OpenRouterModelError("openrouter.invalid_usage")
+    web_search_requests = (
+        0 if not observed_search_counts else observed_search_counts[0]
+    )
     return (None if not any(counts.values()) else counts), web_search_requests
 
 

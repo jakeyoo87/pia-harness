@@ -90,8 +90,10 @@ receive tools.
 The split is required by observed compatibility: with Luna, both OpenRouter Chat Completions and Responses
 returned plain text rather than the requested strict JSON when Server Tools and structured output were sent
 in one request. Keeping the decisions separate also prevents searched content from controlling Memory
-actions. The Adapter reports validated `GeneratedAnswer.web_search_requests`; missing usage means zero
-observed requests.
+actions. The Adapter reports validated `GeneratedAnswer.web_search_requests`; it accepts the documented
+`usage.server_tool_use` and the currently observed Chat Completions
+`usage.server_tool_use_details` spelling, and rejects conflicting counts. Missing usage means zero observed
+requests.
 
 Search results are untrusted data and never enter the structured Memory-action call. When the structured
 call requests search, any simultaneous `DELETE_ALL` is still downgraded to `NONE`, while targeted `UPDATE`

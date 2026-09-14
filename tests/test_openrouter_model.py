@@ -169,7 +169,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                         "prompt_tokens": 20,
                         "completion_tokens": 10,
                         "total_tokens": 30,
-                        "server_tool_use": {"web_search_requests": 1},
+                        "server_tool_use_details": {"web_search_requests": 1},
                     },
                     annotations=[
                         {
@@ -691,6 +691,23 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     await adapter.generate_answer(
                         AssembledPromptContext(answer_parts(), 10, 900)
                     )
+
+        adapter = self.adapter(
+            lambda request: chat_response(
+                answer_content(),
+                usage={
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "server_tool_use": {"web_search_requests": 1},
+                    "server_tool_use_details": {"web_search_requests": 2},
+                },
+            )
+        )
+        with self.assertRaisesRegex(OpenRouterModelError, "openrouter.invalid_usage"):
+            await adapter.generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900)
+            )
 
     async def test_errors_do_not_retain_secrets_prompts_or_response_bodies(self) -> None:
         secret_body = "provider-body-must-not-escape"
