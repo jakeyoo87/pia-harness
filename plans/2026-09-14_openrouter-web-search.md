@@ -251,3 +251,65 @@ Chat Completions usage가 문서 예시의 `server_tool_use` 대신 `server_tool
 
 구현 커밋은 `97d68bf`, 2단계 호환 수정은 `487332c`, 실제 usage 필드 수정은 `0d9a04d`다. 최종 Claude 검토 후
 blocker가 없을 때만 main 병합과 버전 릴리스를 진행한다.
+
+## Claude 최종 구현 검토: 2026-09-14, origin/main...d4b22c6
+
+한 호출 구현 `97d68bf`를 대체한 2단계 구조 `487332c`, usage 필드 수정 `0d9a04d`, 문서 `d4b22c6`까지 전체 diff를
+검토했다. 구현 수정·실모델 호출·PIA·AWS·Bot 변경은 하지 않았다. 판정: blocker 1건. 나머지는 계획과 검토 반영대로
+구현됐다.
+
+실행 검증: network-free 전체 suite 100개 통과, Ruff 기본 규칙과 F/E9/B, compileall, `git diff --check` 통과.
+아래 blocker는 실제 Adapter를 mock transport로 호출해 재현했다.
+
+### 계획대로 구현된 것
+
+- **공개 API.** `OpenRouterWebSearchConfig`는 불변이고 엔진·결과 수·context size를 생성 시 검증한다. `web_search`는
+  keyword-only 인자다. `GeneratedAnswer.web_search_requests`는 기본값 0인 마지막 필드이고 Orchestrator가 검증한다.
+  설정을 생략하면 v0.2.0 Schema와 payload가 그대로다.
+- **Memory 안전 경계.** 첫 호출에는 도구가 없으므로 검색 결과가 `memory_action` 결정에 들어오지 않는다. 검색과
+  `DELETE_ALL`이 함께 요청되면 `NONE`과 확인값 `False`로 내린다. Memory Review와 Summary에는 도구가 없다.
+- **Retry와 cancellation.** 두 단계가 각각 기존 bounded retry를 쓰고, 두 번째 단계 실패는 오류로 끝나며 첫 단계
+  draft로 fallback하지 않는다. `CancelledError`를 잡는 곳이 없어 어느 단계에서든 취소가 전파된다.
+- **Token accounting.** preflight는 두 payload 중 큰 값을 쓰고, 검색된 Answer는 두 번째 호출의 model ID·usage·
+  `total_tokens`를 Compaction에 넘긴다. 이 값은 검색 context를 포함한다.
+- **Usage.** `server_tool_use`와 실제 관찰된 `server_tool_use_details`를 모두 받고, 값이 다르면 invalid usage로
+  거부한다.
+
+### Blocker: citation 검증이 Markdown HTTPS 링크만 확인해 가짜 링크가 통과한다
+
+`_validate_cited_answer`는 `[text](https://...)` 형태만 추출해 citation URL과 비교한다. 검색 결과는 untrusted
+data이고 이 검증이 가짜·주입 링크를 막는 유일한 결정적 통제인데, 다른 형태의 URL은 전혀 검사하지 않는다. 실제
+Adapter로 검색 단계 응답을 흉내 낸 결과는 다음과 같다. 모든 경우에 올바른 cited Markdown 링크가 하나 함께 있다.
+
+- 만들어낸 bare `https://` URL: 통과
+- `http://` Markdown 링크: 통과
+- `<https://...>` autolink: 통과
+- URL에 `)`가 들어간 올바른 citation(예: Wikipedia `Foo_(bar)`): 거부
+
+Telegram은 bare URL도 링크로 보여주므로, 조작된 검색 결과가 모델을 통해 피싱 링크를 답변에 넣어도 실제 출처
+하나만 있으면 사용자에게 전달된다. 반대로 괄호가 들어간 정상 출처는 retry 뒤 `GENERATION_FAILED`가 된다.
+
+필요한 수정:
+
+- 답변 안의 모든 `http://`·`https://` URL 등장을 Markdown 대상, bare URL, autolink 구분 없이 추출해, 각각이
+  citation URL과 정확히 같아야 한다. URL 뒤에 붙은 Markdown 닫는 괄호나 문장 부호만 허용한다.
+- `http://`는 citation URL이 아니므로 거부한다. 기존처럼 인용된 링크는 하나 이상 있어야 한다.
+- URL 안의 `)`에서 잘리지 않아야 한다. citation `https://a.com/x`에 대해 답변의 `https://a.com/xyz`처럼 citation을
+  접두사로 가진 다른 URL은 거부해야 한다.
+- 테스트: 위 네 경우와 접두사 경우를 고정하고, `docs/04-model-adapter-and-integration.md`의 "every such link" 설명을
+  "답변의 모든 URL"로 고친다.
+
+### 비차단 참고
+
+- 문서는 "검색 단계 retry가 성공한 첫 단계를 다시 호출하지 않는다"와 두 단계 cancellation을 설명하지만 이를 고정하는
+  테스트가 없다. 두 번째 단계 실패 뒤 재시도할 때 첫 단계 호출 수가 1인지, 두 번째 단계에서 취소하면
+  `CancelledError`가 전파되는지 테스트를 추가하면 좋다.
+- `url_citation` URL이 `http://`이면 응답 전체가 retryable invalid response로 실패한다. fail-closed이므로 이번에는
+  그대로 둔다.
+- 두 번째 단계는 usage의 검색 횟수를 요구한다. OpenRouter가 usage를 빼면 검색 답변이 fail-closed로 실패하지만,
+  관찰된 응답은 usage를 포함한다.
+
+### Codex 지시
+
+위 citation 검증 blocker만 테스트와 함께 고친 뒤 전체 suite를 다시 실행한다. 링크 판정 규칙만 바뀌므로 live smoke는
+검색 시나리오 하나만 다시 확인하면 된다. sources Schema, citation renderer, fallback, 추가 retry 정책은 넣지 않는다.
