@@ -325,3 +325,26 @@ URL 뒤에는 문자열 끝, 공백, 닫는 구분자 또는 문장 부호만 �
 새로운 2단계 경계에 대한 비차단 테스트 누락도 작은 범위에서 보완한다. 검색 단계 retry가 성공한 첫 structured
 호출을 반복하지 않는지와 검색 단계 cancellation이 그대로 전파되는지만 추가한다. 새로운 retry 정책이나 fallback은
 도입하지 않는다.
+
+### 최종 blocker 수정 검증
+
+- 답변의 모든 Markdown, bare, autolink HTTP(S) URL을 동일한 citation 기준으로 검증한다.
+- 정상 citation과 가짜 bare URL, HTTP Markdown, 가짜 autolink 또는 citation-prefix URL을 섞은 경우를 모두 거부한다.
+- `)`를 포함한 citation URL과 citation 그대로인 Markdown·bare·autolink는 허용한다.
+- 검색 단계 retry는 첫 structured 단계를 반복하지 않고, 검색 단계 cancellation은 그대로 전파된다.
+- network-free 대상 테스트 64개와 전체 suite 102개가 통과했다.
+- 최종 Luna+Exa synthetic 검색 시나리오는 검색 1회와 실제 citation 일치 링크로 통과했다.
+
+### 범용성 및 단순성 재점검
+
+- Harness에는 PIA, Telegram, 특정 모델 ID 또는 Exa 기본값이 없다. OpenRouter 전용 설정 객체만 공개하고 모든
+  정책값은 caller가 전달한다.
+- 비검색 caller와 설정 생략 시 기존 v0.2.0 요청 계약이 유지된다.
+- 두 단계는 Adapter 내부의 기존 async 요청·retry·cancellation 경로만 재사용한다. 별도 Intent 모델, keyword 규칙,
+  worker, queue, fallback 또는 scheduler가 없다.
+- URL 검증은 표시 형식별 파서가 아니라 provider citation 전체 문자열 대조 하나다. 허용 예외는 URL 뒤의 공백,
+  닫는 구분자와 문장 부호뿐이다.
+- 파괴적 Memory 예외는 검색과 전체 삭제가 같은 요청에 섞인 경우 하나뿐이며, 사용자는 별도 비검색 요청으로 다시
+  삭제할 수 있다. UPDATE·FORGET은 기존 Reviewer를 그대로 사용한다.
+- 문서에 없는 응답 변형을 일반화하지 않고, 공식 문서형 `server_tool_use`와 실제 관찰형
+  `server_tool_use_details`만 지원한다.
