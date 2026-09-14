@@ -6,6 +6,10 @@
 `ModelTokenBudget`; it contains no model family name, Models API discovery, pricing policy, fallback
 model, or reasoning choice.
 
+The caller may also pass an `OpenRouterWebSearchConfig`. This is an OpenRouter transport capability, not
+a Harness product default. The consuming application owns whether search is enabled and which engine and
+limits to use.
+
 It implements the four callables consumed by the Harness:
 
 ```text
@@ -62,6 +66,35 @@ The Adapter validates envelope, JSON shape, exact fields, enum and boolean types
 model ID, and optional usage. Memory and Compaction components perform their authoritative semantic and
 persistence validation afterward.
 
+## Optional Web Search
+
+Web Search uses the current OpenRouter Server Tool request shape and is added only to Answer payloads:
+
+```python
+from pia_harness import OpenRouterWebSearchConfig
+
+web_search = OpenRouterWebSearchConfig(
+    engine="exa",
+    max_results=3,
+    max_total_results=5,
+    search_context_size="low",
+)
+```
+
+Omitting the option preserves the v0.2.0 request shape. Memory Review and Summary never receive `tools`.
+The model decides whether a supplied search tool is needed. The Adapter reports validated
+`GeneratedAnswer.web_search_requests`; missing usage means zero observed requests.
+
+Search results are untrusted data. A searched Answer cannot request or confirm `DELETE_ALL`; the Adapter
+downgrades that action to `NONE`. Targeted `UPDATE` and `FORGET` still pass through the existing Memory
+Reviewer. A combined search and complete-Memory deletion request therefore requires a separate non-search
+deletion message.
+
+When search is observed through usage or a `url_citation` annotation, the Answer must contain at least one
+Markdown HTTPS link and every such link must exactly match a returned citation URL. Missing or invented
+links are retryable invalid output. The Harness does not add a sources Schema, rewrite citations, persist
+search results, or expose their text.
+
 ## Rendering and language
 
 The Answer renderer accepts only a first trusted `SYSTEM` part. It appends the fixed Memory-action
@@ -89,11 +122,18 @@ budget = ModelTokenBudget(
 ```
 
 `count_input_tokens` conservatively counts UTF-8 bytes over the exact rendered Answer messages and
-structured-output schema. This is deliberately an overestimate for many languages and may compact early.
+structured-output schema, plus the Server Tool declaration when configured. Search result content is not
+available during local preflight. This is deliberately an overestimate for many languages and may compact
+early.
 
 After a successful Answer, OpenRouter native usage is preferred. `ContextUsage` uses the response model
 ID, and Compaction consumes it only when it matches `GeneratedAnswer.model_id`. Missing or all-zero usage
 falls back to the conservative estimate.
+
+Provider `total_tokens` includes the successful call's search context and corrects later Compaction
+decisions. A bounded retry can execute search again and incur another search charge. The application can
+wrap the injected `generate_answer` callable to observe `web_search_requests`; search pricing and budgets
+remain application concerns.
 
 `SummaryOutput.token_count` is populated only from valid provider `completion_tokens`. It remains `None`
 when usage is absent; the Compactor must not mistake UTF-8 bytes for provider tokens.
@@ -163,6 +203,7 @@ from pia_harness import (
     ConversationOrchestrator,
     ModelTokenBudget,
     OpenRouterModelAdapter,
+    OpenRouterWebSearchConfig,
     PromptContextAssembler,
     TokenCompactor,
 )
@@ -176,6 +217,7 @@ adapter = OpenRouterModelAdapter(
     token_budget=budget,
     timeout_seconds=15,
     max_attempts=2,
+    web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),  # optional
 )
 
 assembler = PromptContextAssembler(adapter.count_input_tokens)
@@ -224,7 +266,7 @@ initial `pia` runtime setting is `timeout_seconds=15` and `max_attempts=2`.
 ## Live smoke tool
 
 `scripts/smoke_openrouter_model.py` uses only public Adapter methods and eight fixed synthetic Korean
-calls:
+base calls:
 
 1. ordinary Answer -> `NONE`;
 2. durable preference -> `UPDATE`;
@@ -234,6 +276,9 @@ calls:
 6. Memory addition -> `REPLACE` with a meaningful change notice;
 7. already-current Memory -> `UNCHANGED` with null text and no notice;
 8. rolling Summary.
+
+When `--web-search-engine` is supplied, it adds two Answer scenarios: one explicitly current question that
+must search and return a citation-backed Markdown link, and one timeless question that must not search.
 
 It rejects known moving/router aliases, continues after an individual failure, performs no internal
 retry, and fails the aggregate if successful Answer/Summary results report multiple response model IDs.

@@ -66,6 +66,7 @@ class GeneratedAnswer:
     usage: ContextUsage | None = None
     memory_action: MemoryAction = MemoryAction.NONE
     delete_all_confirmed: bool = False
+    web_search_requests: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,6 +758,12 @@ def _validate_generated_answer(answer: GeneratedAnswer) -> None:
         raise ValueError(
             "delete_all_confirmed requires the DELETE_ALL memory action"
         )
+    if (
+        isinstance(answer.web_search_requests, bool)
+        or not isinstance(answer.web_search_requests, int)
+        or answer.web_search_requests < 0
+    ):
+        raise ValueError("generated answer web_search_requests is invalid")
     if (
         isinstance(answer.estimated_total_tokens, bool)
         or not isinstance(answer.estimated_total_tokens, int)

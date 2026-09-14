@@ -188,3 +188,21 @@ OpenRouter Server Tool 문서로 확인한 사실:
 
 위 blocker와 필요한 수정을 계획에 반영한 뒤 구현한다. sources Schema 필드, runtime citation renderer, 검색 intent
 분류기, 추가 retry 정책은 이번 범위에 넣지 않는다.
+
+## Codex 검토 반영: 2026-09-14
+
+Claude의 blocker와 citation 지적을 수용한다.
+
+- 검색이 사용된 Answer는 `web_search_requests > 0` 또는 하나 이상의 유효한 `url_citation`으로 판정한다.
+- 이 경우 `DELETE_ALL`과 확인값을 각각 `NONE`, `False`로 내린다. 사용자는 검색 없는 후속 메시지로 전체 삭제를
+  다시 요청할 수 있다.
+- 검색 사용 Answer에는 하나 이상의 Markdown HTTPS 링크가 있어야 하고, 모든 링크가 같은 응답의
+  `url_citation` URL과 정확히 일치해야 한다. 일치하지 않으면 retryable invalid output으로 처리한다. 별도 sources
+  Schema나 citation renderer는 추가하지 않는다.
+- 로컬 preflight는 Server Tool 선언까지만 계산하며 검색 결과 본문은 알 수 없다. 성공 응답의 provider
+  `total_tokens`가 검색 결과 토큰을 포함해 이후 Compaction 판단을 보정한다.
+- PIA는 주입하는 `generate_answer` callable을 감싸 `web_search_requests`를 운영 지표로 관찰한다.
+
+Claude 기록의 Exa `$0.007`은 deprecated Web Search plugin 가격이다. 현재 Server Tool 문서는 Exa를 요청당
+`$0.005`로 안내하지만 가격은 변경될 수 있으므로 Harness 계약과 현재 문서에는 금액을 고정하지 않고 PIA 통합 시
+공식 Server Tool 가격을 다시 확인한다.

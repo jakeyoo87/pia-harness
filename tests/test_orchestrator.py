@@ -593,6 +593,23 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], self.memory.calls)
         self.assertEqual([], self.store.turns)
 
+    async def test_invalid_generated_web_search_usage_fails_before_commit(self) -> None:
+        for index, value in enumerate((True, -1, "1")):
+            with self.subTest(value=value):
+                async def generate(context, value=value):
+                    return GeneratedAnswer(
+                        "answer", "model", 10, web_search_requests=value
+                    )
+
+                result = await self.orchestrator(generate).submit(
+                    user_key=f"user-{index}",
+                    message="question",
+                    accepted_at=self.now,
+                )
+
+                self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual([], self.store.turns)
+
     async def test_overflow_compacts_once_and_stops_without_progress(self) -> None:
         generated = []
 

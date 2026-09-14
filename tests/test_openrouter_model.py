@@ -19,6 +19,7 @@ from pia_harness import (
     ModelTokenBudget,
     OpenRouterModelAdapter,
     OpenRouterModelError,
+    OpenRouterWebSearchConfig,
     PromptContextKind,
     PromptContextPart,
     PromptTrust,
@@ -35,10 +36,14 @@ def chat_response(
     *,
     status: int = 200,
     model: str = "vendor/exact-model",
-    usage: dict[str, int] | None = None,
+    usage: dict[str, Any] | None = None,
     finish_reason: str | None = None,
+    annotations: list[dict[str, Any]] | None = None,
 ) -> httpx.Response:
-    choice: dict[str, Any] = {"message": {"content": content}}
+    message: dict[str, Any] = {"content": content}
+    if annotations is not None:
+        message["annotations"] = annotations
+    choice: dict[str, Any] = {"message": message}
     if finish_reason is not None:
         choice["finish_reason"] = finish_reason
     payload: dict[str, Any] = {
@@ -122,7 +127,11 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 await client.aclose()
 
     def adapter(
-        self, handler: Any, *, max_attempts: int | None = None
+        self,
+        handler: Any,
+        *,
+        max_attempts: int | None = None,
+        web_search: OpenRouterWebSearchConfig | None = None,
     ) -> OpenRouterModelAdapter:
         # Omitting the argument exercises the Adapter default, which is what the
         # smoke tool relies on to make exactly one call per scenario.
@@ -142,8 +151,163 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             timeout_seconds=5,
             sync_client=sync_client,
             async_client=async_client,
+            web_search=web_search,
             **chosen,
         )
+
+    async def test_web_search_is_answer_only_and_maps_safe_usage(self) -> None:
+        requests: list[dict[str, Any]] = []
+        cited_url = "https://example.com/current"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requests.append(payload)
+            schema = payload["response_format"]["json_schema"]["name"]
+            if schema == "pia_answer":
+                return chat_response(
+                    json.dumps(
+                        {
+                            "answer": f"최신 정보입니다. [출처]({cited_url})",
+                            "memory_action": "DELETE_ALL",
+                            "delete_all_confirmed": True,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    usage={
+                        "prompt_tokens": 20,
+                        "completion_tokens": 10,
+                        "total_tokens": 30,
+                        "server_tool_use": {"web_search_requests": 1},
+                    },
+                    annotations=[
+                        {
+                            "type": "url_citation",
+                            "url_citation": {"url": cited_url, "title": "Current"},
+                        }
+                    ],
+                )
+            if schema == "pia_memory_review":
+                return chat_response(
+                    json.dumps(
+                        {
+                            "action": "UNCHANGED",
+                            "memory_text": None,
+                            "change_summary": [],
+                        }
+                    )
+                )
+            return chat_response(json.dumps({"summary": "요약"}, ensure_ascii=False))
+
+        web_search = OpenRouterWebSearchConfig("exa", 3, 5, "low")
+        adapter = self.adapter(handler, web_search=web_search)
+        result = await adapter.generate_answer(
+            AssembledPromptContext(answer_parts(), 10, 900)
+        )
+        adapter.review_memory(
+            MemoryReviewRequest("review", "", (completed_turn(),), 4_000, False)
+        )
+        adapter.summarize(SummaryRequest("summary", None, (completed_turn(),), 100))
+
+        self.assertIs(MemoryAction.NONE, result.memory_action)
+        self.assertFalse(result.delete_all_confirmed)
+        self.assertEqual(1, result.web_search_requests)
+        self.assertEqual(
+            [
+                {
+                    "type": "openrouter:web_search",
+                    "parameters": {
+                        "engine": "exa",
+                        "max_results": 3,
+                        "max_total_results": 5,
+                        "search_context_size": "low",
+                    },
+                }
+            ],
+            requests[0]["tools"],
+        )
+        self.assertNotIn("tools", requests[1])
+        self.assertNotIn("tools", requests[2])
+        counted = {
+            "messages": requests[0]["messages"],
+            "response_format": requests[0]["response_format"],
+            "tools": requests[0]["tools"],
+        }
+        self.assertEqual(
+            len(
+                json.dumps(
+                    counted,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ),
+            adapter.count_input_tokens(answer_parts()),
+        )
+
+    async def test_annotation_alone_blocks_delete_all(self) -> None:
+        cited_url = "https://example.com/source"
+        adapter = self.adapter(
+            lambda request: chat_response(
+                json.dumps(
+                    {
+                        "answer": f"[출처]({cited_url})",
+                        "memory_action": "DELETE_ALL",
+                        "delete_all_confirmed": True,
+                    },
+                    ensure_ascii=False,
+                ),
+                annotations=[
+                    {
+                        "type": "url_citation",
+                        "url_citation": {"url": cited_url},
+                    }
+                ],
+            )
+        )
+        result = await adapter.generate_answer(
+            AssembledPromptContext(answer_parts(), 10, 900)
+        )
+        self.assertIs(MemoryAction.NONE, result.memory_action)
+        self.assertFalse(result.delete_all_confirmed)
+        self.assertEqual(0, result.web_search_requests)
+
+    async def test_searched_answer_rejects_uncited_or_missing_links(self) -> None:
+        cited_url = "https://example.com/cited"
+        for answer in (
+            "출처 링크가 없습니다.",
+            "[가짜 출처](https://example.com/invented)",
+        ):
+            with self.subTest(answer=answer):
+                adapter = self.adapter(
+                    lambda request, answer=answer: chat_response(
+                        json.dumps(
+                            {
+                                "answer": answer,
+                                "memory_action": "NONE",
+                                "delete_all_confirmed": False,
+                            },
+                            ensure_ascii=False,
+                        ),
+                        usage={
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                            "server_tool_use": {"web_search_requests": 1},
+                        },
+                        annotations=[
+                            {
+                                "type": "url_citation",
+                                "url_citation": {"url": cited_url},
+                            }
+                        ],
+                    )
+                )
+                with self.assertRaisesRegex(
+                    OpenRouterModelError, "openrouter.invalid_output"
+                ):
+                    await adapter.generate_answer(
+                        AssembledPromptContext(answer_parts(), 10, 900)
+                    )
 
     async def test_answer_uses_one_structured_call_and_maps_action_and_usage(self) -> None:
         requests: list[httpx.Request] = []
@@ -442,6 +606,31 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             await adapter.generate_answer(
                 AssembledPromptContext(answer_parts(), 10, 900)
             )
+
+        for server_tool_use in (
+            "wrong",
+            {"web_search_requests": True},
+            {"web_search_requests": -1},
+            {"web_search_requests": "1"},
+        ):
+            with self.subTest(server_tool_use=server_tool_use):
+                adapter = self.adapter(
+                    lambda request, value=server_tool_use: chat_response(
+                        answer_content(),
+                        usage={
+                            "prompt_tokens": 1,
+                            "completion_tokens": 1,
+                            "total_tokens": 2,
+                            "server_tool_use": value,
+                        },
+                    )
+                )
+                with self.assertRaisesRegex(
+                    OpenRouterModelError, "openrouter.invalid_usage"
+                ):
+                    await adapter.generate_answer(
+                        AssembledPromptContext(answer_parts(), 10, 900)
+                    )
 
     async def test_errors_do_not_retain_secrets_prompts_or_response_bodies(self) -> None:
         secret_body = "provider-body-must-not-escape"
@@ -797,6 +986,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             {"max_attempts": 3},
             {"max_attempts": True},
             {"max_attempts": 1.5},
+            {"web_search": "exa"},
         )
         defaults = {
             "api_key": FAKE_KEY,
@@ -807,6 +997,18 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         for override in invalid:
             with self.subTest(override=override), self.assertRaises(ValueError):
                 OpenRouterModelAdapter(**(defaults | override))
+
+        for values in (
+            ("unknown", 3, 5, "low"),
+            ("exa", 0, 5, "low"),
+            ("exa", 26, 5, "low"),
+            ("exa", True, 5, "low"),
+            ("exa", 3, 0, "low"),
+            ("exa", 3, True, "low"),
+            ("exa", 3, 5, "tiny"),
+        ):
+            with self.subTest(web_search=values), self.assertRaises(ValueError):
+                OpenRouterWebSearchConfig(*values)
 
 
 if __name__ == "__main__":

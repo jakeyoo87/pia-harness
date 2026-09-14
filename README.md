@@ -13,8 +13,8 @@ configuration, secrets, channel delivery, and deployment.
 | Compaction | 90% trigger, protected recent tail, latest Turn preservation, one rolling Summary per session |
 | Long-term Memory | One user document up to 4,000 characters, one-hour revisit Review, explicit update/forget, CAS writes |
 | Orchestration | Hermes-style interruption during generation, serialized commit, bounded overflow recovery |
-| Model access | Model-agnostic OpenRouter Adapter for Answer, Memory Review, Summary, structured output, and bounded retry |
-| Diagnostics | Eight-scenario synthetic OpenRouter model smoke tool |
+| Model access | Model-agnostic OpenRouter Adapter for Answer, Memory Review, Summary, structured output, bounded retry, and optional Answer-only Web Search |
+| Diagnostics | Eight-scenario base smoke plus two optional Web Search scenarios |
 
 The current implementation is single-process. Distributed coordination, Telegram, AWS infrastructure,
 and deployment belong to the consuming application.
@@ -52,6 +52,8 @@ The caller implements `ConversationStore`, creates one shared budget, and passes
 Adapter's callables into the existing components:
 
 ```python
+from pia_harness import OpenRouterWebSearchConfig
+
 store = ApplicationConversationStore(...)
 budget = ModelTokenBudget(context_limit=1_050_000, response_tokens=4_096)
 adapter = OpenRouterModelAdapter(
@@ -60,6 +62,8 @@ adapter = OpenRouterModelAdapter(
     token_budget=budget,
     timeout_seconds=15,
     max_attempts=2,
+    # Optional; policy and values belong to the consuming application.
+    # web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
 )
 
 assembler = PromptContextAssembler(adapter.count_input_tokens)
@@ -101,9 +105,14 @@ PYTHONPATH=src python scripts/smoke_openrouter_model.py \
   --timeout-seconds 15
 ```
 
-The tool performs eight fixed synthetic calls, never retries internally, emits JSON lines, and exits `0`
-only when every scenario passes with one observed response model. Exit `1` is a model/Adapter mismatch;
-exit `2` is invalid local configuration.
+Add `--web-search-engine exa --web-search-max-results 3
+--web-search-max-total-results 5 --web-search-context-size low` to run the two additional synthetic
+search/no-search scenarios. Web Search is available only to Answer calls; Memory Review and Summary never
+receive the tool.
+
+The tool performs eight fixed base calls and, when Web Search is configured, two additional Answer calls.
+It never retries internally, emits JSON lines, and exits `0` only when every scenario passes with one
+observed response model. Exit `1` is a model/Adapter mismatch; exit `2` is invalid local configuration.
 
 ## Non-goals
 

@@ -34,6 +34,7 @@ from .memory import (
 from .openrouter import (
     OpenRouterModelAdapter,
     OpenRouterModelError,
+    OpenRouterWebSearchConfig,
 )
 from .orchestrator import (
     MESSAGE_SEPARATOR,
@@ -99,6 +100,7 @@ __all__ = [
     "ModelTokenBudget",
     "OpenRouterModelAdapter",
     "OpenRouterModelError",
+    "OpenRouterWebSearchConfig",
     "OrchestratorStatus",
     "PromptContextAssembler",
     "PromptContextKind",

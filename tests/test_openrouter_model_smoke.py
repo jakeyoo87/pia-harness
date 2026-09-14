@@ -10,6 +10,7 @@ from pia_harness import (
     MemoryReviewAction,
     MemoryReviewOutput,
     OpenRouterModelError,
+    OpenRouterWebSearchConfig,
     SummaryOutput,
 )
 from scripts.smoke_openrouter_model import SmokeConfig, cli, run_smoke
@@ -77,13 +78,16 @@ def answer(
     *,
     confirmed: bool = False,
     model: str = MODEL,
+    text: str = "한국어 synthetic 답변",
+    web_search_requests: int = 0,
 ) -> GeneratedAnswer:
     return GeneratedAnswer(
-        text="한국어 synthetic 답변",
+        text=text,
         model_id=model,
         estimated_total_tokens=20,
         memory_action=action,
         delete_all_confirmed=confirmed,
+        web_search_requests=web_search_requests,
     )
 
 
@@ -102,6 +106,37 @@ def parsed(lines: list[str]) -> list[dict]:
 
 
 class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_web_search_scenarios_observe_search_and_no_search(self) -> None:
+        answers = passing_answers() + (
+            answer(
+                MemoryAction.NONE,
+                text="[OpenRouter](https://openrouter.ai/docs)",
+                web_search_requests=1,
+            ),
+            answer(MemoryAction.NONE, text="4"),
+        )
+        adapter = FakeAdapter(answers=answers)
+        lines: list[str] = []
+
+        exit_code = await run_smoke(
+            config=SmokeConfig(
+                MODEL,
+                262_144,
+                web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
+            ),
+            api_key=FAKE_KEY,
+            emit=lines.append,
+            adapter_factory=lambda **values: adapter,
+        )
+
+        results = parsed(lines)
+        self.assertEqual(0, exit_code)
+        self.assertEqual(11, len(results))
+        self.assertEqual(10, results[-1]["total"])
+        self.assertEqual(7, adapter.answer_calls)
+        self.assertEqual(1, results[5]["web_search_requests"])
+        self.assertEqual(0, results[6]["web_search_requests"])
+
     async def test_all_eight_scenarios_pass_and_adapter_closes(self) -> None:
         adapter = FakeAdapter()
         lines: list[str] = []
@@ -333,6 +368,7 @@ class OpenRouterModelSmokeCliTest(unittest.TestCase):
                     "actual_confirmed",
                     "total_tokens",
                     "completion_tokens",
+                    "web_search_requests",
                     "output_text",
                     "error_event",
                     "error_status",
