@@ -206,3 +206,30 @@ Claude의 blocker와 citation 지적을 수용한다.
 Claude 기록의 Exa `$0.007`은 deprecated Web Search plugin 가격이다. 현재 Server Tool 문서는 Exa를 요청당
 `$0.005`로 안내하지만 가격은 변경될 수 있으므로 Harness 계약과 현재 문서에는 금액을 고정하지 않고 PIA 통합 시
 공식 Server Tool 가격을 다시 확인한다.
+
+## 실모델 호환성 결과와 수정 설계: 2026-09-14
+
+커밋 `97d68bf`의 한 호출 설계로 network-free suite 99개는 통과했지만, 실제
+`openai/gpt-5.6-luna` + Exa smoke에서 Web Search가 설정된 Answer 7개가 모두 strict JSON 대신 일반 텍스트를
+반환해 실패했다. 도구가 없는 Memory Review와 Summary 3개는 통과했다. 별도 synthetic 진단에서도 Chat
+Completions는 비검색 응답을 `4`로 반환했고, Responses API 역시 `text.format`을 적용하지 않고 일반 텍스트와
+citation annotation을 반환했다. API 키와 사용자 데이터는 출력하지 않았다.
+
+한 호출 구조를 우회 파싱하지 않고 다음 두 단계로 대체한다.
+
+1. 기존 strict Answer 호출은 도구 없이 실행하고, Web Search가 설정된 경우에만 Schema에
+   `needs_web_search: boolean`을 추가한다. 이 호출이 Answer draft, Memory action, 검색 필요 여부를 결정한다.
+2. `needs_web_search=false`면 첫 Answer를 그대로 반환한다.
+3. `true`면 draft text를 버리고 같은 Context로 별도 Chat Completions 호출을 수행한다. 이 호출에만
+   `openrouter:web_search`를 제공하며 일반 텍스트와 citation을 반환한다.
+4. 두 번째 호출은 실제 검색 횟수 1 이상, citation 1개 이상, 답변의 모든 Markdown URL이 citation URL과
+   일치해야 성공한다. 검색 없이 최신 답변으로 조용히 fallback하지 않는다.
+5. Memory action은 검색 결과가 들어오기 전 첫 호출 값만 사용한다. 동시에 `DELETE_ALL`과 검색이 요청되면
+   `DELETE_ALL`을 `NONE`으로 내려 별도 비검색 삭제 요청을 요구한다.
+6. 각 단계는 기존 1~2회 bounded retry를 독립적으로 사용한다. 두 번째 단계 실패는 성공한 첫 단계를 다시
+   호출하지 않는다.
+7. 검색된 최종 Answer의 model ID, usage, token count를 Compaction에 사용한다. 첫 호출은 별도 과금되지만 두
+   호출의 토큰을 합쳐 하나의 context 크기로 취급하지 않는다.
+
+이 수정은 별도 검색 Intent 모델, 키워드 분기, sources Schema, citation renderer, fallback 모델을 추가하지 않는다.
+구현 후 network-free 전체 suite와 Luna+Exa 10-scenario smoke를 다시 통과시키고 최종 Claude 검토를 받는다.

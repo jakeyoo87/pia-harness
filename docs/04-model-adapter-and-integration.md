@@ -68,7 +68,7 @@ persistence validation afterward.
 
 ## Optional Web Search
 
-Web Search uses the current OpenRouter Server Tool request shape and is added only to Answer payloads:
+Web Search uses the current OpenRouter Server Tool request shape through a two-stage Answer flow:
 
 ```python
 from pia_harness import OpenRouterWebSearchConfig
@@ -81,14 +81,22 @@ web_search = OpenRouterWebSearchConfig(
 )
 ```
 
-Omitting the option preserves the v0.2.0 request shape. Memory Review and Summary never receive `tools`.
-The model decides whether a supplied search tool is needed. The Adapter reports validated
-`GeneratedAnswer.web_search_requests`; missing usage means zero observed requests.
+Omitting the option preserves the v0.2.0 request shape. When configured, the first Answer call remains a
+strict structured call without tools and adds one `needs_web_search` boolean. The model decides this value
+from the question's meaning. `false` delivers the structured call's Answer; `true` discards its draft text
+and starts one separate plain-text Answer call with `openrouter:web_search`. Memory Review and Summary never
+receive tools.
 
-Search results are untrusted data. A searched Answer cannot request or confirm `DELETE_ALL`; the Adapter
-downgrades that action to `NONE`. Targeted `UPDATE` and `FORGET` still pass through the existing Memory
-Reviewer. A combined search and complete-Memory deletion request therefore requires a separate non-search
-deletion message.
+The split is required by observed compatibility: with Luna, both OpenRouter Chat Completions and Responses
+returned plain text rather than the requested strict JSON when Server Tools and structured output were sent
+in one request. Keeping the decisions separate also prevents searched content from controlling Memory
+actions. The Adapter reports validated `GeneratedAnswer.web_search_requests`; missing usage means zero
+observed requests.
+
+Search results are untrusted data and never enter the structured Memory-action call. When the structured
+call requests search, any simultaneous `DELETE_ALL` is still downgraded to `NONE`, while targeted `UPDATE`
+and `FORGET` retain the existing Reviewer path. A combined search and complete-Memory deletion request
+therefore requires a separate non-search deletion message.
 
 When search is observed through usage or a `url_citation` annotation, the Answer must contain at least one
 Markdown HTTPS link and every such link must exactly match a returned citation URL. Missing or invented
@@ -121,19 +129,21 @@ budget = ModelTokenBudget(
 )
 ```
 
-`count_input_tokens` conservatively counts UTF-8 bytes over the exact rendered Answer messages and
-structured-output schema, plus the Server Tool declaration when configured. Search result content is not
-available during local preflight. This is deliberately an overestimate for many languages and may compact
-early.
+`count_input_tokens` conservatively counts UTF-8 bytes for both possible Answer payloads and uses the
+larger value. This covers the structured Schema or the Server Tool declaration before either call. Search
+result content is not available during local preflight. This is deliberately an overestimate for many
+languages and may compact early.
 
 After a successful Answer, OpenRouter native usage is preferred. `ContextUsage` uses the response model
 ID, and Compaction consumes it only when it matches `GeneratedAnswer.model_id`. Missing or all-zero usage
 falls back to the conservative estimate.
 
-Provider `total_tokens` includes the successful call's search context and corrects later Compaction
-decisions. A bounded retry can execute search again and incur another search charge. The application can
-wrap the injected `generate_answer` callable to observe `web_search_requests`; search pricing and budgets
-remain application concerns.
+For a searched Answer, final usage and model ID come from the second call. Provider `total_tokens` includes
+that call's search context and corrects later Compaction decisions; the first classification/draft call is
+a separate billed request but does not share a context window. Each stage has the same bounded retry, so a
+search retry does not repeat a successful first stage. The application can wrap the injected
+`generate_answer` callable to observe `web_search_requests`; pricing and budgets remain application
+concerns.
 
 `SummaryOutput.token_count` is populated only from valid provider `completion_tokens`. It remains `None`
 when usage is absent; the Compactor must not mistake UTF-8 bytes for provider tokens.
@@ -277,8 +287,9 @@ base calls:
 7. already-current Memory -> `UNCHANGED` with null text and no notice;
 8. rolling Summary.
 
-When `--web-search-engine` is supplied, it adds two Answer scenarios: one explicitly current question that
-must search and return a citation-backed Markdown link, and one timeless question that must not search.
+When `--web-search-engine` is supplied, it adds two Answer scenarios: one explicitly current question whose
+structured first stage must select search and whose second stage must return a citation-backed Markdown
+link, and one timeless question that must finish after the structured first stage without searching.
 
 It rejects known moving/router aliases, continues after an individual failure, performs no internal
 retry, and fails the aggregate if successful Answer/Summary results report multiple response model IDs.

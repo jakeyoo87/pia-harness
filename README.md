@@ -13,7 +13,7 @@ configuration, secrets, channel delivery, and deployment.
 | Compaction | 90% trigger, protected recent tail, latest Turn preservation, one rolling Summary per session |
 | Long-term Memory | One user document up to 4,000 characters, one-hour revisit Review, explicit update/forget, CAS writes |
 | Orchestration | Hermes-style interruption during generation, serialized commit, bounded overflow recovery |
-| Model access | Model-agnostic OpenRouter Adapter for Answer, Memory Review, Summary, structured output, bounded retry, and optional Answer-only Web Search |
+| Model access | Model-agnostic OpenRouter Adapter for structured Answer/Memory/Summary, bounded retry, and optional model-decided two-stage Web Search |
 | Diagnostics | Eight-scenario base smoke plus two optional Web Search scenarios |
 
 The current implementation is single-process. Distributed coordination, Telegram, AWS infrastructure,
@@ -107,8 +107,8 @@ PYTHONPATH=src python scripts/smoke_openrouter_model.py \
 
 Add `--web-search-engine exa --web-search-max-results 3
 --web-search-max-total-results 5 --web-search-context-size low` to run the two additional synthetic
-search/no-search scenarios. Web Search is available only to Answer calls; Memory Review and Summary never
-receive the tool.
+search/no-search scenarios. A structured Answer first decides whether search is needed; only a positive
+decision starts a second cited-text call with the tool. Memory Review and Summary never receive it.
 
 The tool performs eight fixed base calls and, when Web Search is configured, two additional Answer calls.
 It never retries internally, emits JSON lines, and exits `0` only when every scenario passes with one
