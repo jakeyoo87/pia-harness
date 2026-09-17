@@ -168,20 +168,20 @@ class OpenRouterModelError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class OpenRouterWebSearchConfig:
     engine: str
-    max_results: int
-    max_total_results: int
+    max_results: int | None
+    max_total_results: int | None
     search_context_size: str
 
     def __post_init__(self) -> None:
         if self.engine not in WEB_SEARCH_ENGINES:
             raise ValueError("web search engine is invalid")
-        if (
+        if self.max_results is not None and (
             isinstance(self.max_results, bool)
             or not isinstance(self.max_results, int)
             or not 1 <= self.max_results <= 25
         ):
             raise ValueError("web search max_results is invalid")
-        if (
+        if self.max_total_results is not None and (
             isinstance(self.max_total_results, bool)
             or not isinstance(self.max_total_results, int)
             or self.max_total_results <= 0
@@ -533,18 +533,21 @@ class OpenRouterModelAdapter:
     ) -> dict[str, Any]:
         if self.web_search is None:
             raise AssertionError("search payload requires search configuration")
+        parameters: dict[str, Any] = {
+            "engine": self.web_search.engine,
+            "search_context_size": self.web_search.search_context_size,
+        }
+        if self.web_search.max_results is not None:
+            parameters["max_results"] = self.web_search.max_results
+        if self.web_search.max_total_results is not None:
+            parameters["max_total_results"] = self.web_search.max_total_results
         return {
             "model": self.model_id,
             "messages": _search_messages(parts),
             "tools": [
                 {
                     "type": "openrouter:web_search",
-                    "parameters": {
-                        "engine": self.web_search.engine,
-                        "max_results": self.web_search.max_results,
-                        "max_total_results": self.web_search.max_total_results,
-                        "search_context_size": self.web_search.search_context_size,
-                    },
+                    "parameters": parameters,
                 }
             ],
             "provider": {"require_parameters": True},

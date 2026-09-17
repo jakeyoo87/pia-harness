@@ -295,6 +295,45 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
 
 
 class OpenRouterModelSmokeCliTest(unittest.TestCase):
+    def test_web_search_cli_uses_provider_result_defaults(self) -> None:
+        answers = passing_answers() + (
+            answer(
+                MemoryAction.NONE,
+                text="[OpenRouter](https://openrouter.ai/docs)",
+                web_search_requests=1,
+            ),
+            answer(MemoryAction.NONE, text="4"),
+        )
+        adapter = FakeAdapter(answers=answers)
+        captured: list[dict] = []
+
+        def factory(**values):
+            captured.append(values)
+            return adapter
+
+        self.assertEqual(
+            0,
+            cli(
+                [
+                    "--model",
+                    MODEL,
+                    "--context-limit",
+                    "262144",
+                    "--web-search-engine",
+                    "exa",
+                    "--web-search-context-size",
+                    "low",
+                ],
+                environ={"OPENROUTER_API_KEY": FAKE_KEY},
+                emit=lambda line: None,
+                adapter_factory=factory,
+            ),
+        )
+        self.assertEqual(
+            OpenRouterWebSearchConfig("exa", None, None, "low"),
+            captured[0]["web_search"],
+        )
+
     def test_invalid_key_alias_and_numbers_exit_two_without_adapter(self) -> None:
         calls: list[dict] = []
 

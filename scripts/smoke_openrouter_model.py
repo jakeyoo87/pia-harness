@@ -424,8 +424,8 @@ def _web_search_scenarios() -> tuple[
         (
             "answer_web_search",
             _parts(
-                "웹 검색을 사용해 OpenRouter Web Search Server Tool 공식 문서의 "
-                "현재 제목을 확인하고 출처 링크를 포함해줘."
+                "현재 OpenRouter Web Search Server Tool 공식 문서의 제목을 "
+                "확인하고 출처 링크를 포함해줘."
             ),
             True,
         ),
@@ -551,8 +551,8 @@ def _parser() -> argparse.ArgumentParser:
         "--web-search-engine",
         choices=("auto", "native", "exa", "firecrawl", "parallel", "perplexity"),
     )
-    parser.add_argument("--web-search-max-results", type=int, default=3)
-    parser.add_argument("--web-search-max-total-results", type=int, default=5)
+    parser.add_argument("--web-search-max-results", type=int)
+    parser.add_argument("--web-search-max-total-results", type=int)
     parser.add_argument(
         "--web-search-context-size",
         choices=("low", "medium", "high"),

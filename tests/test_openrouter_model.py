@@ -291,6 +291,56 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             requests[0]["response_format"]["json_schema"]["schema"]["required"],
         )
 
+    async def test_web_search_omits_optional_result_limits(self) -> None:
+        requests: list[dict[str, Any]] = []
+        cited_url = "https://example.com/current"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requests.append(payload)
+            if "response_format" in payload:
+                return chat_response(
+                    json.dumps(
+                        {
+                            "answer": "draft",
+                            "memory_action": "NONE",
+                            "delete_all_confirmed": False,
+                            "needs_web_search": True,
+                        }
+                    )
+                )
+            return chat_response(
+                f"[출처]({cited_url})",
+                usage={
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "server_tool_use": {"web_search_requests": 1},
+                },
+                annotations=[
+                    {
+                        "type": "url_citation",
+                        "url_citation": {"url": cited_url},
+                    }
+                ],
+            )
+
+        adapter = self.adapter(
+            handler,
+            web_search=OpenRouterWebSearchConfig("exa", None, None, "low"),
+        )
+        await adapter.generate_answer(
+            AssembledPromptContext(answer_parts(), 10, 900)
+        )
+
+        self.assertEqual(
+            {
+                "engine": "exa",
+                "search_context_size": "low",
+            },
+            requests[1]["tools"][0]["parameters"],
+        )
+
     async def test_annotation_alone_blocks_delete_all(self) -> None:
         cited_url = "https://example.com/source"
         adapter = self.adapter(
@@ -1015,7 +1065,10 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
-        with patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()):
+        with (
+            patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()),
+            self.assertLogs("pia_harness.openrouter", level="DEBUG") as captured,
+        ):
             result = await self.adapter(
                 handler,
                 max_attempts=2,
@@ -1024,6 +1077,12 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(f"[출처]({cited_url})", result.text)
         self.assertEqual(1, structured_calls)
         self.assertEqual(2, search_calls)
+        logs = "\n".join(captured.output)
+        self.assertIn(
+            "model.attempt_failed stage=web_search_answer attempt=1",
+            logs,
+        )
+        self.assertNotIn("stage=answer_decision", logs)
 
     async def test_cancellation_during_search_stage_propagates(self) -> None:
         search_started = asyncio.Event()

@@ -75,11 +75,15 @@ from pia_harness import OpenRouterWebSearchConfig
 
 web_search = OpenRouterWebSearchConfig(
     engine="exa",
-    max_results=3,
-    max_total_results=5,
+    max_results=None,
+    max_total_results=None,
     search_context_size="low",
 )
 ```
+
+`max_results` and `max_total_results` are optional pass-through controls. `None` omits each field from
+the request and leaves result selection to the provider; positive integers preserve explicit caller
+limits. The Harness does not invent product defaults for either value.
 
 Omitting the option preserves the v0.2.0 request shape. When configured, the first Answer call remains a
 strict structured call without tools and adds one `needs_web_search` boolean. The model decides this value
