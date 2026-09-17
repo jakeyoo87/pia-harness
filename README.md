@@ -108,10 +108,11 @@ PYTHONPATH=src python scripts/smoke_openrouter_model.py \
   --timeout-seconds 15
 ```
 
-Add `--web-search-engine exa --web-search-max-results 3
---web-search-max-total-results 5 --web-search-context-size low` to run the two additional synthetic
+Add `--web-search-engine exa --web-search-context-size low` to run the two additional synthetic
 search/no-search scenarios. A structured Answer first decides whether search is needed; only a positive
 decision starts a second cited-text call with the tool. Memory Review and Summary never receive it.
+Optional `--web-search-max-results` and `--web-search-max-total-results` flags override the provider
+defaults only when explicitly supplied.
 
 The tool performs eight fixed base calls and, when Web Search is configured, two additional Answer calls.
 It never retries internally, emits JSON lines, and exits `0` only when every scenario passes with one

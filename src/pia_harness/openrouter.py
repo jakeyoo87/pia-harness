@@ -32,7 +32,12 @@ from .memory import (
     MemoryReviewOutput,
     MemoryReviewRequest,
 )
-from .orchestrator import GeneratedAnswer, MemoryAction
+from .orchestrator import (
+    ConversationProgress,
+    GeneratedAnswer,
+    MemoryAction,
+    ProgressReporter,
+)
 from .session import MEMORY_MAX_CHARS, CompletedTurn
 
 
@@ -168,20 +173,20 @@ class OpenRouterModelError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class OpenRouterWebSearchConfig:
     engine: str
-    max_results: int
-    max_total_results: int
+    max_results: int | None
+    max_total_results: int | None
     search_context_size: str
 
     def __post_init__(self) -> None:
         if self.engine not in WEB_SEARCH_ENGINES:
             raise ValueError("web search engine is invalid")
-        if (
+        if self.max_results is not None and (
             isinstance(self.max_results, bool)
             or not isinstance(self.max_results, int)
             or not 1 <= self.max_results <= 25
         ):
             raise ValueError("web search max_results is invalid")
-        if (
+        if self.max_total_results is not None and (
             isinstance(self.max_total_results, bool)
             or not isinstance(self.max_total_results, int)
             or self.max_total_results <= 0
@@ -261,7 +266,9 @@ class OpenRouterModelAdapter:
         return max(counts)
 
     async def generate_answer(
-        self, context: AssembledPromptContext
+        self,
+        context: AssembledPromptContext,
+        progress: ProgressReporter | None = None,
     ) -> GeneratedAnswer:
         if not isinstance(context, AssembledPromptContext):
             raise ValueError("context must be an AssembledPromptContext")
@@ -272,10 +279,13 @@ class OpenRouterModelAdapter:
         )
         if not needs_web_search:
             return answer
+        await _report_progress(progress, ConversationProgress.WEB_SEARCH_STARTED)
         search_payload = self._search_payload(context.parts)
         searched = await self._retry_async(
             lambda: self._search_answer_once(context, search_payload),
             stage="web_search_answer",
+            progress=progress,
+            retry_progress=ConversationProgress.WEB_SEARCH_RETRYING,
         )
         return GeneratedAnswer(
             text=searched.text,
@@ -451,6 +461,8 @@ class OpenRouterModelAdapter:
         operation: Callable[[], Awaitable[_Result]],
         *,
         stage: str,
+        progress: ProgressReporter | None = None,
+        retry_progress: ConversationProgress | None = None,
     ) -> _Result:
         for attempt in range(self.max_attempts):
             started = time.monotonic()
@@ -461,6 +473,8 @@ class OpenRouterModelAdapter:
                 if not error.retryable or attempt + 1 >= self.max_attempts:
                     raise
                 self._log_retry(stage, attempt)
+                if retry_progress is not None:
+                    await _report_progress(progress, retry_progress)
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
         raise AssertionError("retry loop did not return or raise")
 
@@ -533,18 +547,21 @@ class OpenRouterModelAdapter:
     ) -> dict[str, Any]:
         if self.web_search is None:
             raise AssertionError("search payload requires search configuration")
+        parameters: dict[str, Any] = {
+            "engine": self.web_search.engine,
+            "search_context_size": self.web_search.search_context_size,
+        }
+        if self.web_search.max_results is not None:
+            parameters["max_results"] = self.web_search.max_results
+        if self.web_search.max_total_results is not None:
+            parameters["max_total_results"] = self.web_search.max_total_results
         return {
             "model": self.model_id,
             "messages": _search_messages(parts),
             "tools": [
                 {
                     "type": "openrouter:web_search",
-                    "parameters": {
-                        "engine": self.web_search.engine,
-                        "max_results": self.web_search.max_results,
-                        "max_total_results": self.web_search.max_total_results,
-                        "search_context_size": self.web_search.search_context_size,
-                    },
+                    "parameters": parameters,
                 }
             ],
             "provider": {"require_parameters": True},
@@ -630,6 +647,19 @@ class OpenRouterModelAdapter:
                 retryable=True,
             ) from None
         return _response_payload(response)
+
+
+async def _report_progress(
+    reporter: ProgressReporter | None, event: ConversationProgress
+) -> None:
+    if reporter is None:
+        return
+    try:
+        await reporter(event)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
 
 
 def _answer_messages(

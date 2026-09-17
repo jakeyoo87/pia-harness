@@ -12,6 +12,7 @@ import httpx
 from pia_harness import (
     AssembledPromptContext,
     CompletedTurn,
+    ConversationProgress,
     CurrentMemoryInput,
     MemoryAction,
     MemoryReviewAction,
@@ -260,6 +261,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_web_search_config_keeps_unneeded_answer_to_one_call(self) -> None:
         requests: list[dict[str, Any]] = []
+        progress: list[ConversationProgress] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content)
@@ -279,16 +281,70 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             handler,
             web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
         )
+        async def report(event: ConversationProgress) -> None:
+            progress.append(event)
+
         result = await adapter.generate_answer(
-            AssembledPromptContext(answer_parts(), 10, 900)
+            AssembledPromptContext(answer_parts(), 10, 900), report
         )
         self.assertEqual("4", result.text)
         self.assertEqual(0, result.web_search_requests)
         self.assertEqual(1, len(requests))
+        self.assertEqual([], progress)
         self.assertNotIn("tools", requests[0])
         self.assertIn(
             "needs_web_search",
             requests[0]["response_format"]["json_schema"]["schema"]["required"],
+        )
+
+    async def test_web_search_omits_optional_result_limits(self) -> None:
+        requests: list[dict[str, Any]] = []
+        cited_url = "https://example.com/current"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requests.append(payload)
+            if "response_format" in payload:
+                return chat_response(
+                    json.dumps(
+                        {
+                            "answer": "draft",
+                            "memory_action": "NONE",
+                            "delete_all_confirmed": False,
+                            "needs_web_search": True,
+                        }
+                    )
+                )
+            return chat_response(
+                f"[출처]({cited_url})",
+                usage={
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "server_tool_use": {"web_search_requests": 1},
+                },
+                annotations=[
+                    {
+                        "type": "url_citation",
+                        "url_citation": {"url": cited_url},
+                    }
+                ],
+            )
+
+        adapter = self.adapter(
+            handler,
+            web_search=OpenRouterWebSearchConfig("exa", None, None, "low"),
+        )
+        await adapter.generate_answer(
+            AssembledPromptContext(answer_parts(), 10, 900)
+        )
+
+        self.assertEqual(
+            {
+                "engine": "exa",
+                "search_context_size": "low",
+            },
+            requests[1]["tools"][0]["parameters"],
         )
 
     async def test_annotation_alone_blocks_delete_all(self) -> None:
@@ -980,6 +1036,10 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         structured_calls = 0
         search_calls = 0
         cited_url = "https://example.com/cited"
+        progress: list[ConversationProgress] = []
+
+        async def report(event: ConversationProgress) -> None:
+            progress.append(event)
 
         def handler(request: httpx.Request) -> httpx.Response:
             nonlocal structured_calls, search_calls
@@ -1015,15 +1075,33 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
-        with patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()):
+        with (
+            patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()),
+            self.assertLogs("pia_harness.openrouter", level="DEBUG") as captured,
+        ):
             result = await self.adapter(
                 handler,
                 max_attempts=2,
                 web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
-            ).generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+            ).generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900), report
+            )
         self.assertEqual(f"[출처]({cited_url})", result.text)
         self.assertEqual(1, structured_calls)
         self.assertEqual(2, search_calls)
+        self.assertEqual(
+            [
+                ConversationProgress.WEB_SEARCH_STARTED,
+                ConversationProgress.WEB_SEARCH_RETRYING,
+            ],
+            progress,
+        )
+        logs = "\n".join(captured.output)
+        self.assertIn(
+            "model.attempt_failed stage=web_search_answer attempt=1",
+            logs,
+        )
+        self.assertNotIn("stage=answer_decision", logs)
 
     async def test_cancellation_during_search_stage_propagates(self) -> None:
         search_started = asyncio.Event()

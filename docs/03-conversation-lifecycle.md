@@ -151,6 +151,11 @@ When the OpenRouter Adapter is configured with Web Search and the Answer request
 `NONE` instead of `DELETE_ALL`, so neither stage arms nor confirms complete deletion. `UPDATE` and
 `FORGET` are unchanged. See [Model Adapter and integration](04-model-adapter-and-integration.md).
 
+An application may opt into best-effort progress delivery. The Adapter reports only
+`WEB_SEARCH_STARTED` and `WEB_SEARCH_RETRYING`; the Orchestrator adds `COMPLETE` after final delivery or
+generation termination. Progress carries the opaque newest Turn ID so a consuming channel can ignore a
+late event from a superseded generation. The legacy one-argument Answer callable remains supported.
+
 ## Interruption and commit ownership
 
 Per-user coordination has three phases:

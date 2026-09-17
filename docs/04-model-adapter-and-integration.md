@@ -75,11 +75,15 @@ from pia_harness import OpenRouterWebSearchConfig
 
 web_search = OpenRouterWebSearchConfig(
     engine="exa",
-    max_results=3,
-    max_total_results=5,
+    max_results=None,
+    max_total_results=None,
     search_context_size="low",
 )
 ```
+
+`max_results` and `max_total_results` are optional pass-through controls. `None` omits each field from
+the request and leaves result selection to the provider; positive integers preserve explicit caller
+limits. The Harness does not invent product defaults for either value.
 
 Omitting the option preserves the v0.2.0 request shape. When configured, the first Answer call remains a
 strict structured call without tools and adds one `needs_web_search` boolean. The model decides this value
@@ -94,6 +98,12 @@ actions. The Adapter reports validated `GeneratedAnswer.web_search_requests`; it
 `usage.server_tool_use` and the currently observed Chat Completions
 `usage.server_tool_use_details` spelling, and rejects conflicting counts. Missing usage means zero observed
 requests, so the search stage fails as described below.
+
+`generate_answer` accepts an optional per-call progress reporter. It emits `WEB_SEARCH_STARTED` before
+the plain-text search request and `WEB_SEARCH_RETRYING` immediately before the one bounded retry. Reporter
+failure is ignored, cancellation still propagates, and no prompt, query, URL, provider detail, or user
+identifier is included. Applications that need channel progress wire the optional Orchestrator progress
+ports; existing callers use the unchanged one-argument callable.
 
 Search results are untrusted data and never enter the structured Memory-action call. When the structured
 call requests search, any simultaneous `DELETE_ALL` is still downgraded to `NONE`, while targeted `UPDATE`
