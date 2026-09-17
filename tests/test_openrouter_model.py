@@ -1106,13 +1106,55 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 return chat_response("not-json")
             return chat_response(json.dumps({"summary": "짧은 요약"}))
 
-        with patch("pia_harness.openrouter.time.sleep") as sleeper:
+        with (
+            patch("pia_harness.openrouter.time.sleep") as sleeper,
+            self.assertLogs("pia_harness.openrouter", level="DEBUG") as captured,
+        ):
             output = self.adapter(handler, max_attempts=2).summarize(
                 SummaryRequest("summarize", None, (completed_turn(),), 77)
             )
         self.assertEqual("짧은 요약", output.text)
         self.assertEqual(2, calls)
         sleeper.assert_called_once_with(1.0)
+        logs = "\n".join(captured.output)
+        self.assertIn(
+            "model.attempt_failed stage=summary attempt=1 max_attempts=2 "
+            "event=openrouter.invalid_output",
+            logs,
+        )
+        self.assertIn(
+            "model.retry_scheduled stage=summary next_attempt=2 "
+            "delay_seconds=1.0",
+            logs,
+        )
+
+    async def test_async_retry_logs_safe_failure_metadata(self) -> None:
+        secret = "response-body-must-not-be-logged"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout(secret, request=request)
+
+        with (
+            patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()),
+            self.assertLogs("pia_harness.openrouter", level="DEBUG") as captured,
+            self.assertRaisesRegex(OpenRouterModelError, "openrouter.timeout"),
+        ):
+            await self.adapter(handler, max_attempts=2).generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900)
+            )
+
+        logs = "\n".join(captured.output)
+        self.assertIn(
+            "model.attempt_failed stage=answer_decision attempt=1 "
+            "max_attempts=2 event=openrouter.timeout status=none "
+            "error_type=ReadTimeout retryable=true",
+            logs,
+        )
+        self.assertIn(
+            "model.attempt_failed stage=answer_decision attempt=2",
+            logs,
+        )
+        self.assertNotIn(secret, logs)
 
     async def test_async_answer_cancellation_propagates(self) -> None:
         started = asyncio.Event()

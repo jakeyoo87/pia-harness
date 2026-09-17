@@ -210,6 +210,14 @@ design.
 It does not retain or chain the request, Authorization header, API key, prompt, response body, or user
 content.
 
+The Adapter uses the standard `pia_harness.openrouter` Python logger without configuring handlers or a
+log level. At `DEBUG`, a failed attempt reports only its operation stage (`answer_decision`,
+`web_search_answer`, `memory_review`, or `summary`), attempt bounds, stable event, optional HTTP status or
+exception type, retryability, and elapsed milliseconds. A scheduled retry is a separate DEBUG event.
+Prompts, response bodies, headers, credentials, citation text, and user identifiers are never logged.
+The consuming application owns logging configuration and may therefore enable these diagnostics
+temporarily without changing the Harness API.
+
 The Adapter owns its default sync and async httpx clients. `await adapter.aclose()` closes both. Injected
 clients remain caller-owned; `close()` closes only an Adapter-owned sync client.
 

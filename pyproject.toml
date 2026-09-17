@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pia-harness"
-version = "0.3.0"
+version = "0.3.1"
 description = "Minimal multi-user conversation harness for PIA"
 readme = "README.md"
 license = "MIT"
