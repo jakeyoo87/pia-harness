@@ -50,6 +50,15 @@ class OrchestratorStatus(StrEnum):
     PERSISTENCE_FAILED = "PERSISTENCE_FAILED"
 
 
+class ConversationProgress(StrEnum):
+    WEB_SEARCH_STARTED = "WEB_SEARCH_STARTED"
+    WEB_SEARCH_RETRYING = "WEB_SEARCH_RETRYING"
+    COMPLETE = "COMPLETE"
+
+
+ProgressReporter = Callable[[ConversationProgress], Awaitable[None]]
+
+
 @dataclass(frozen=True, slots=True)
 class ConversationInput:
     user_key: str
@@ -123,11 +132,29 @@ class ConversationOrchestrator:
         token_budget: ModelTokenBudget,
         model_id: str,
         explicit_memory_failure_notice: str,
+        generate_answer_with_progress: Callable[
+            [AssembledPromptContext, ProgressReporter], Awaitable[GeneratedAnswer]
+        ]
+        | None = None,
+        progress: Callable[
+            [str, str, ConversationProgress], Awaitable[None]
+        ]
+        | None = None,
     ) -> None:
         if not callable(generate_answer):
             raise ValueError("generate_answer must be callable")
         if not callable(deliver):
             raise ValueError("deliver must be callable")
+        if (generate_answer_with_progress is None) != (progress is None):
+            raise ValueError(
+                "generate_answer_with_progress and progress must be provided together"
+            )
+        if generate_answer_with_progress is not None and not callable(
+            generate_answer_with_progress
+        ):
+            raise ValueError("generate_answer_with_progress must be callable")
+        if progress is not None and not callable(progress):
+            raise ValueError("progress must be callable")
         if not isinstance(system_prompt, str) or not system_prompt.strip():
             raise ValueError("system_prompt is required")
         if not isinstance(model_id, str) or not model_id:
@@ -146,6 +173,8 @@ class ConversationOrchestrator:
         self._memory_reviewer = memory_reviewer
         self._compactor = compactor
         self._generate_answer = generate_answer
+        self._generate_answer_with_progress = generate_answer_with_progress
+        self._progress = progress
         self._deliver = deliver
         self._system_prompt = system_prompt
         self._token_budget = token_budget
@@ -282,6 +311,7 @@ class ConversationOrchestrator:
     ) -> None:
         memory_failed = False
         compaction_failed = False
+        progress_started = False
         try:
             async with state.commit_lock:
                 session = validate_active_session(
@@ -312,7 +342,23 @@ class ConversationOrchestrator:
                     clear_pending=True,
                 )
                 return
-            answer = await self._generate_answer(assembled)
+            if self._generate_answer_with_progress is None:
+                answer = await self._generate_answer(assembled)
+            else:
+                async def report_progress(event: ConversationProgress) -> None:
+                    nonlocal progress_started
+                    if not isinstance(event, ConversationProgress):
+                        raise ValueError("progress event is invalid")
+                    if await self._is_current(state, generation_id):
+                        if event is ConversationProgress.WEB_SEARCH_STARTED:
+                            progress_started = True
+                        await self._report_progress(
+                            user_key, batch[-1].value.turn_id, event
+                        )
+
+                answer = await self._generate_answer_with_progress(
+                    assembled, report_progress
+                )
             _validate_generated_answer(answer)
             if not await self._claim_commit(state, generation_id, len(batch)):
                 return
@@ -362,6 +408,28 @@ class ConversationOrchestrator:
                 ),
                 clear_pending=False,
             )
+        finally:
+            if progress_started:
+                await self._report_progress(
+                    user_key,
+                    batch[-1].value.turn_id,
+                    ConversationProgress.COMPLETE,
+                )
+
+    async def _report_progress(
+        self,
+        user_key: str,
+        progress_id: str,
+        event: ConversationProgress,
+    ) -> None:
+        if self._progress is None:
+            return
+        try:
+            await self._progress(user_key, progress_id, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
 
     async def _assemble_with_overflow(
         self,

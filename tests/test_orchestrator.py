@@ -10,6 +10,7 @@ from pia_harness import (
     ConversationAbandoned,
     ConversationContext,
     ConversationOrchestrator,
+    ConversationProgress,
     GeneratedAnswer,
     MemoryAction,
     MemoryDocument,
@@ -200,6 +201,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         counter=None,
         deliver=None,
         failure_notice="memory update failed",
+        generate_with_progress=None,
+        progress=None,
     ):
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
@@ -217,6 +220,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             token_budget=self.token_budget,
             model_id="model",
             explicit_memory_failure_notice=failure_notice,
+            generate_answer_with_progress=generate_with_progress,
+            progress=progress,
         )
 
     async def test_explicit_memory_failure_notice_is_required_and_validated(self) -> None:
@@ -227,6 +232,101 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             self.orchestrator(generate, failure_notice=None)
         with self.assertRaises(ValueError):
             self.orchestrator(generate, failure_notice="   ")
+        with self.assertRaises(ValueError):
+            self.orchestrator(generate, generate_with_progress=generate)
+        with self.assertRaises(ValueError):
+            self.orchestrator(generate, progress=generate)
+
+    async def test_progress_wraps_delivery_and_is_best_effort(self) -> None:
+        ordered: list[tuple] = []
+
+        async def generate(context):
+            raise AssertionError("legacy generator must not run")
+
+        async def generate_with_progress(context, report):
+            await report(ConversationProgress.WEB_SEARCH_STARTED)
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def progress(user_key, progress_id, event):
+            ordered.append(("progress", user_key, progress_id, event))
+
+        async def deliver(user_key, text):
+            ordered.append(("deliver", user_key, text))
+
+        result = await self.orchestrator(
+            generate,
+            deliver=deliver,
+            generate_with_progress=generate_with_progress,
+            progress=progress,
+        ).submit(user_key="user", message="question", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual("progress", ordered[0][0])
+        self.assertEqual("user", ordered[0][1])
+        self.assertIsInstance(ordered[0][2], str)
+        self.assertEqual(
+            ConversationProgress.WEB_SEARCH_STARTED, ordered[0][3]
+        )
+        self.assertEqual(("deliver", "user", "answer"), ordered[1])
+        self.assertEqual(
+            ("progress", "user", ordered[0][2], ConversationProgress.COMPLETE),
+            ordered[2],
+        )
+
+        async def failing_progress(user_key, progress_id, event):
+            raise RuntimeError("progress unavailable")
+
+        result = await self.orchestrator(
+            generate,
+            generate_with_progress=generate_with_progress,
+            progress=failing_progress,
+        ).submit(user_key="other", message="question", accepted_at=self.now)
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+
+    async def test_superseded_progress_is_completed_with_its_own_turn_id(self) -> None:
+        first_started = asyncio.Event()
+        events: list[tuple[str, ConversationProgress]] = []
+
+        async def generate(context):
+            raise AssertionError("legacy generator must not run")
+
+        async def generate_with_progress(context, report):
+            await report(ConversationProgress.WEB_SEARCH_STARTED)
+            if context.parts[-1].content == "A":
+                first_started.set()
+                await asyncio.Event().wait()
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def progress(user_key, progress_id, event):
+            events.append((progress_id, event))
+
+        orchestrator = self.orchestrator(
+            generate,
+            generate_with_progress=generate_with_progress,
+            progress=progress,
+        )
+        first = asyncio.create_task(
+            orchestrator.submit(
+                user_key="user", message="A", accepted_at=self.now
+            )
+        )
+        await first_started.wait()
+        second = asyncio.create_task(
+            orchestrator.submit(
+                user_key="user", message="B", accepted_at=self.now
+            )
+        )
+        first_result, second_result = await asyncio.gather(first, second)
+
+        self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
+        progress_ids = {progress_id for progress_id, _ in events}
+        self.assertEqual(2, len(progress_ids))
+        for progress_id in progress_ids:
+            self.assertIn(
+                (progress_id, ConversationProgress.WEB_SEARCH_STARTED), events
+            )
+            self.assertIn((progress_id, ConversationProgress.COMPLETE), events)
 
     async def test_new_message_interrupts_and_only_combined_answer_commits(self) -> None:
         first_started = asyncio.Event()

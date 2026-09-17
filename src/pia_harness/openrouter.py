@@ -32,7 +32,12 @@ from .memory import (
     MemoryReviewOutput,
     MemoryReviewRequest,
 )
-from .orchestrator import GeneratedAnswer, MemoryAction
+from .orchestrator import (
+    ConversationProgress,
+    GeneratedAnswer,
+    MemoryAction,
+    ProgressReporter,
+)
 from .session import MEMORY_MAX_CHARS, CompletedTurn
 
 
@@ -261,7 +266,9 @@ class OpenRouterModelAdapter:
         return max(counts)
 
     async def generate_answer(
-        self, context: AssembledPromptContext
+        self,
+        context: AssembledPromptContext,
+        progress: ProgressReporter | None = None,
     ) -> GeneratedAnswer:
         if not isinstance(context, AssembledPromptContext):
             raise ValueError("context must be an AssembledPromptContext")
@@ -272,10 +279,13 @@ class OpenRouterModelAdapter:
         )
         if not needs_web_search:
             return answer
+        await _report_progress(progress, ConversationProgress.WEB_SEARCH_STARTED)
         search_payload = self._search_payload(context.parts)
         searched = await self._retry_async(
             lambda: self._search_answer_once(context, search_payload),
             stage="web_search_answer",
+            progress=progress,
+            retry_progress=ConversationProgress.WEB_SEARCH_RETRYING,
         )
         return GeneratedAnswer(
             text=searched.text,
@@ -451,6 +461,8 @@ class OpenRouterModelAdapter:
         operation: Callable[[], Awaitable[_Result]],
         *,
         stage: str,
+        progress: ProgressReporter | None = None,
+        retry_progress: ConversationProgress | None = None,
     ) -> _Result:
         for attempt in range(self.max_attempts):
             started = time.monotonic()
@@ -461,6 +473,8 @@ class OpenRouterModelAdapter:
                 if not error.retryable or attempt + 1 >= self.max_attempts:
                     raise
                 self._log_retry(stage, attempt)
+                if retry_progress is not None:
+                    await _report_progress(progress, retry_progress)
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
         raise AssertionError("retry loop did not return or raise")
 
@@ -633,6 +647,19 @@ class OpenRouterModelAdapter:
                 retryable=True,
             ) from None
         return _response_payload(response)
+
+
+async def _report_progress(
+    reporter: ProgressReporter | None, event: ConversationProgress
+) -> None:
+    if reporter is None:
+        return
+    try:
+        await reporter(event)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
 
 
 def _answer_messages(

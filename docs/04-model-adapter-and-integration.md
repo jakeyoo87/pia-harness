@@ -99,6 +99,12 @@ actions. The Adapter reports validated `GeneratedAnswer.web_search_requests`; it
 `usage.server_tool_use_details` spelling, and rejects conflicting counts. Missing usage means zero observed
 requests, so the search stage fails as described below.
 
+`generate_answer` accepts an optional per-call progress reporter. It emits `WEB_SEARCH_STARTED` before
+the plain-text search request and `WEB_SEARCH_RETRYING` immediately before the one bounded retry. Reporter
+failure is ignored, cancellation still propagates, and no prompt, query, URL, provider detail, or user
+identifier is included. Applications that need channel progress wire the optional Orchestrator progress
+ports; existing callers use the unchanged one-argument callable.
+
 Search results are untrusted data and never enter the structured Memory-action call. When the structured
 call requests search, any simultaneous `DELETE_ALL` is still downgraded to `NONE`, while targeted `UPDATE`
 and `FORGET` retain the existing Reviewer path. A combined search and complete-Memory deletion request
