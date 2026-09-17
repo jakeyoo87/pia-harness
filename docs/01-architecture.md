@@ -64,7 +64,7 @@ contract and can be tested with fakes.
 | `memory.py` | Review scheduling, explicit current-input Review, output validation, Memory CAS |
 | `compaction.py` | Trigger policy, protected tail, rolling Summary replacement, covered-Turn deletion |
 | `orchestrator.py` | Per-user generation ownership, interruption, commit serialization, delivery and failure statuses |
-| `openrouter.py` | Model-agnostic OpenRouter rendering, structured output, safe errors, token usage and bounded retry |
+| `openrouter.py` | Model-agnostic OpenRouter rendering, structured output, optional two-stage Web Search, safe errors, token usage and bounded retry |
 | `scripts/smoke_openrouter_model.py` | Approved live compatibility measurement using fixed synthetic inputs |
 
 The package root exports the intended domain and component API. Internal helpers and Orchestrator state

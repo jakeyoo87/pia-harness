@@ -44,6 +44,9 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
+Tagged versions such as `v0.3.0` also publish a wheel on GitHub Releases. Consuming applications should
+pin that wheel with its SHA-256.
+
 The only runtime dependency is bounded in `pyproject.toml`: httpx for the optional OpenRouter Adapter.
 
 ## Minimal construction

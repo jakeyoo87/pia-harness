@@ -147,6 +147,10 @@ in-process per-user confirmation marker. A later confirmed action is honored onl
 present. Restart or reset loses the marker and safely requires confirmation again. Successful deletion
 writes an empty Memory document at the newest input boundary; it does not remove the item.
 
+When the OpenRouter Adapter is configured with Web Search and the Answer requests search, it returns
+`NONE` instead of `DELETE_ALL`, so neither stage arms nor confirms complete deletion. `UPDATE` and
+`FORGET` are unchanged. See [Model Adapter and integration](04-model-adapter-and-integration.md).
+
 ## Interruption and commit ownership
 
 Per-user coordination has three phases:

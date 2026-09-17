@@ -93,15 +93,17 @@ in one request. Keeping the decisions separate also prevents searched content fr
 actions. The Adapter reports validated `GeneratedAnswer.web_search_requests`; it accepts the documented
 `usage.server_tool_use` and the currently observed Chat Completions
 `usage.server_tool_use_details` spelling, and rejects conflicting counts. Missing usage means zero observed
-requests.
+requests, so the search stage fails as described below.
 
 Search results are untrusted data and never enter the structured Memory-action call. When the structured
 call requests search, any simultaneous `DELETE_ALL` is still downgraded to `NONE`, while targeted `UPDATE`
 and `FORGET` retain the existing Reviewer path. A combined search and complete-Memory deletion request
 therefore requires a separate non-search deletion message.
 
-When search is observed through usage or a `url_citation` annotation, the Answer must contain at least one
-URL and every HTTP or HTTPS URL occurrence must exactly match a returned HTTPS citation URL. This covers
+The search stage must report at least one search in usage and return at least one `url_citation`;
+otherwise it is retryable invalid output. The structured stage has no tool, but if its response still
+reports search through usage or a `url_citation` annotation, the same URL rule applies to its Answer.
+Such an Answer must contain at least one URL and every HTTP or HTTPS URL occurrence must exactly match a returned HTTPS citation URL. This covers
 Markdown targets, bare URLs and autolinks without parsing each presentation form; only trailing whitespace,
 closing delimiters or sentence punctuation is allowed. Missing, invented, insecure or citation-prefix links
 are retryable invalid output. The Harness does not add a sources Schema, rewrite citations, persist search
@@ -190,7 +192,9 @@ Non-retryable:
 - cancellation.
 
 Two attempts can mean two billed requests, and a durable sync call can occupy the commit path for two
-timeouts plus one second. Choose the application timeout accordingly; do not add unbounded retry,
+timeouts plus one second. With Web Search configured, a searched Answer runs the structured stage
+and the search stage, each with its own attempts and timeout, so it can take up to four requests and
+their timeouts. Choose the application timeout accordingly; do not add unbounded retry,
 exponential backoff, jitter, fallback, `Retry-After` handling, or a circuit breaker without a separate
 design.
 
@@ -289,6 +293,10 @@ context_limit = 1,050,000
 response_tokens = 4,096
 ```
 
+After the citation rule was tightened to check every answer URL, the synthetic search scenario passed
+again with one search and a citation-matching link. Per-scenario latency was not recorded; measure the
+search scenarios at the application's own timeout before relying on it.
+
 This smoke used only synthetic prompts. It proves compatibility at that time, not future search quality,
 source access, or stable pricing.
 
@@ -312,12 +320,13 @@ link, and one timeless question that must finish after the structured first stag
 
 It rejects known moving/router aliases, continues after an individual failure, performs no internal
 retry, and fails the aggregate if successful Answer/Summary results report multiple response model IDs.
-Memory outputs do not expose a model ID, so model consistency is observable for six of eight calls.
+Memory outputs do not expose a model ID, so model consistency is observable for six of eight base calls,
+or eight of ten with Web Search.
 
 The key is read only from `OPENROUTER_API_KEY`; it is never accepted in `argv`. Run live smoke only with
 explicit approval and synthetic data. Exit codes:
 
-- `0`: all eight scenarios pass and observed model is consistent;
+- `0`: all executed scenarios (eight, or ten with Web Search) pass and observed model is consistent;
 - `1`: provider/model/Adapter mismatch;
 - `2`: invalid local configuration.
 
