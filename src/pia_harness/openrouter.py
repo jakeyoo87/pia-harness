@@ -37,6 +37,7 @@ from .orchestrator import (
     GeneratedAnswer,
     MemoryAction,
     ProgressReporter,
+    ToolCall,
 )
 from .session import MEMORY_MAX_CHARS, CompletedTurn
 
@@ -52,6 +53,7 @@ WEB_SEARCH_ENGINES = frozenset(
 WEB_SEARCH_CONTEXT_SIZES = frozenset({"low", "medium", "high"})
 _URL_SCHEME = re.compile(r"https?://", re.IGNORECASE)
 _URL_TERMINATORS = frozenset(")]>}.,;:!?\"'，。！？、")
+_TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 _Result = TypeVar("_Result")
 
@@ -144,11 +146,24 @@ _SUMMARY_SCHEMA = {
 }
 
 
-def _answer_schema(include_search_decision: bool) -> dict[str, Any]:
+def _answer_schema(
+    include_search_decision: bool, tool_names: tuple[str, ...] = ()
+) -> dict[str, Any]:
     schema = json.loads(json.dumps(_ANSWER_SCHEMA))
     if include_search_decision:
         schema["properties"]["needs_web_search"] = {"type": "boolean"}
         schema["required"].append("needs_web_search")
+    if tool_names:
+        schema["properties"]["tool_call"] = {
+            "type": ["object", "null"],
+            "properties": {
+                "name": {"type": "string", "enum": list(tool_names)},
+                "arguments_json": {"type": "string", "minLength": 2, "maxLength": 8192},
+            },
+            "required": ["name", "arguments_json"],
+            "additionalProperties": False,
+        }
+        schema["required"].append("tool_call")
     return schema
 
 
@@ -196,6 +211,34 @@ class OpenRouterWebSearchConfig:
             raise ValueError("web search context size is invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class OpenRouterToolDefinition:
+    name: str
+    description: str
+    arguments_schema: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or _TOOL_NAME.fullmatch(self.name) is None:
+            raise ValueError("tool name is invalid")
+        if (
+            not isinstance(self.description, str)
+            or not self.description.strip()
+            or len(self.description) > 1000
+        ):
+            raise ValueError("tool description is invalid")
+        if (
+            not isinstance(self.arguments_schema, Mapping)
+            or self.arguments_schema.get("type") != "object"
+        ):
+            raise ValueError("tool arguments schema must be an object")
+        try:
+            rendered = _compact_json(self.arguments_schema)
+        except (TypeError, ValueError):
+            raise ValueError("tool arguments schema is invalid") from None
+        if len(rendered) > 8192:
+            raise ValueError("tool arguments schema is too large")
+
+
 class OpenRouterModelAdapter:
     def __init__(
         self,
@@ -206,6 +249,7 @@ class OpenRouterModelAdapter:
         timeout_seconds: float,
         max_attempts: int = 1,
         web_search: OpenRouterWebSearchConfig | None = None,
+        tools: tuple[OpenRouterToolDefinition, ...] = (),
         sync_client: httpx.Client | None = None,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -238,11 +282,19 @@ class OpenRouterModelAdapter:
             web_search, OpenRouterWebSearchConfig
         ):
             raise ValueError("web_search must be an OpenRouterWebSearchConfig")
+        if (
+            not isinstance(tools, tuple)
+            or len(tools) > 16
+            or any(not isinstance(tool, OpenRouterToolDefinition) for tool in tools)
+            or len({tool.name for tool in tools}) != len(tools)
+        ):
+            raise ValueError("tools are invalid")
 
         self.model_id = model_id.strip()
         self.token_budget = token_budget
         self.max_attempts = max_attempts
         self.web_search = web_search
+        self.tools = tools
         self._headers = {
             "Authorization": f"Bearer {api_key.strip()}",
             "Content-Type": "application/json",
@@ -314,6 +366,8 @@ class OpenRouterModelAdapter:
         expected = {"answer", "memory_action", "delete_all_confirmed"}
         if self.web_search is not None:
             expected.add("needs_web_search")
+        if self.tools:
+            expected.add("tool_call")
         _exact_keys(output, expected)
         answer = _nonempty_string(output["answer"])
         try:
@@ -328,6 +382,36 @@ class OpenRouterModelAdapter:
         needs_web_search = output.get("needs_web_search", False)
         if not isinstance(needs_web_search, bool):
             raise _invalid_output(TypeError("needs_web_search is not boolean"))
+        tool_call = None
+        if self.tools and output["tool_call"] is not None:
+            raw_tool = output["tool_call"]
+            if not isinstance(raw_tool, dict):
+                raise _invalid_output(TypeError("tool_call is not an object"))
+            _exact_keys(raw_tool, {"name", "arguments_json"})
+            name = raw_tool["name"]
+            arguments_json = raw_tool["arguments_json"]
+            if (
+                not isinstance(name, str)
+                or name not in {tool.name for tool in self.tools}
+                or not isinstance(arguments_json, str)
+                or not 2 <= len(arguments_json) <= 8192
+            ):
+                raise _invalid_output(ValueError("tool_call is invalid"))
+            try:
+                arguments = json.loads(arguments_json)
+            except (TypeError, ValueError):
+                raise OpenRouterModelError("openrouter.invalid_output", retryable=True) from None
+            if not isinstance(arguments, dict):
+                raise OpenRouterModelError("openrouter.invalid_output", retryable=True)
+            tool_call = ToolCall(name, arguments_json)
+        if tool_call is not None and (
+            action is not MemoryAction.NONE
+            or confirmed
+            or needs_web_search
+            or web_search_requests > 0
+            or citation_urls
+        ):
+            raise OpenRouterModelError("openrouter.invalid_output", retryable=True)
         search_used = web_search_requests > 0 or bool(citation_urls)
         if search_used:
             _validate_cited_answer(answer, citation_urls)
@@ -354,6 +438,7 @@ class OpenRouterModelAdapter:
             memory_action=action,
             delete_all_confirmed=confirmed,
             web_search_requests=web_search_requests,
+            tool_call=tool_call,
         ), needs_web_search
 
     async def _search_answer_once(
@@ -535,10 +620,15 @@ class OpenRouterModelAdapter:
     ) -> dict[str, Any]:
         return self._base_payload(
             messages=_answer_messages(
-                parts, include_search_decision=self.web_search is not None
+                parts,
+                include_search_decision=self.web_search is not None,
+                tools=self.tools,
             ),
             schema_name="pia_answer",
-            schema=_answer_schema(self.web_search is not None),
+            schema=_answer_schema(
+                self.web_search is not None,
+                tuple(tool.name for tool in self.tools),
+            ),
             output_token_limit=self.token_budget.response_tokens,
         )
 
@@ -663,11 +753,29 @@ async def _report_progress(
 
 
 def _answer_messages(
-    parts: tuple[PromptContextPart, ...], *, include_search_decision: bool = False
+    parts: tuple[PromptContextPart, ...], *, include_search_decision: bool = False,
+    tools: tuple[OpenRouterToolDefinition, ...] = (),
 ) -> list[dict[str, str]]:
     instruction = ANSWER_INSTRUCTION
     if include_search_decision:
         instruction += f"\n\n{WEB_SEARCH_DECISION_INSTRUCTION}"
+    if tools:
+        tool_specs = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "arguments_schema": tool.arguments_schema,
+            }
+            for tool in tools
+        ]
+        instruction += (
+            "\n\nYou may request at most one host tool by returning tool_call with "
+            "an allowed name and arguments_json containing a JSON object. "
+            "Return tool_call=null for a normal answer. A tool call requires "
+            "memory_action=NONE and needs_web_search=false when that field is present. "
+            "Never claim a tool already ran; the host decides whether to execute it. "
+            "Tool specifications: " + _compact_json(tool_specs)
+        )
     return _context_messages(parts, instruction)
 
 

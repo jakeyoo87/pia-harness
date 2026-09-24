@@ -2,7 +2,7 @@
 
 최초 작성일: 2026-09-24 (Asia/Seoul)
 
-상태: 세 저장소 공동 계획 검토 대기 — 구현·릴리스·AWS·실모델 호출 없음
+상태: 1단계 범용 도구 실행 후보 구현, 최종 코드 검토 대기 — 릴리스·AWS·실모델 호출 없음
 
 브랜치: `pia-harness/codex/trading-tool-lifecycle` (`main` 284a2c3 기준)
 연계: `pia-agent/plans/2026-09-24_trading-mvp.md`, `pia-broker/plans/2026-09-24_trading-mvp.md`

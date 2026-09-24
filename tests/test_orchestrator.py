@@ -19,6 +19,8 @@ from pia_harness import (
     ModelTokenBudget,
     OrchestratorStatus,
     PromptContextAssembler,
+    ToolCall,
+    ToolResult,
     new_turn_id,
 )
 
@@ -203,6 +205,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         failure_notice="memory update failed",
         generate_with_progress=None,
         progress=None,
+        execute_tool=None,
     ):
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
@@ -222,6 +225,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             explicit_memory_failure_notice=failure_notice,
             generate_answer_with_progress=generate_with_progress,
             progress=progress,
+            execute_tool=execute_tool,
         )
 
     async def test_explicit_memory_failure_notice_is_required_and_validated(self) -> None:
@@ -1094,6 +1098,161 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.ABANDONED, confirmed.status)
         self.assertEqual(delivered, self.delivered)
         self.assertEqual("remembered", self.store.memories["user"].memory_text)
+
+    async def test_tool_runs_after_generation_and_persists_only_host_text(self) -> None:
+        calls = []
+
+        async def generate(context):
+            return GeneratedAnswer(
+                "model draft is not delivered",
+                "model",
+                10,
+                tool_call=ToolCall("quote", '{"symbol":"005930"}'),
+            )
+
+        async def execute_tool(user_key, call, inputs):
+            calls.append((user_key, call, inputs))
+            return ToolResult("current price: 70000", "[tool request]", "[tool answer]")
+
+        orchestrator = self.orchestrator(generate, execute_tool=execute_tool)
+        result = await orchestrator.submit(
+            user_key="user", message="price for 005930", accepted_at=self.now
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([("user", "current price: 70000")], self.delivered)
+        self.assertEqual(1, len(calls))
+        self.assertEqual("quote", calls[0][1].name)
+        self.assertEqual("price for 005930", calls[0][2][0].message)
+        self.assertEqual("[tool request]", self.store.turns[0].user_message)
+        self.assertEqual("[tool answer]", self.store.turns[0].assistant_message)
+
+    async def test_tool_failure_clears_pending_without_delivery(self) -> None:
+        calls = 0
+
+        async def generate(context):
+            if context.parts[-1].content == "price":
+                return GeneratedAnswer(
+                    "unused", "model", 10, tool_call=ToolCall("quote", "{}")
+                )
+            return GeneratedAnswer("ordinary", "model", 10)
+
+        async def execute_tool(user_key, call, inputs):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("synthetic tool failure")
+
+        orchestrator = self.orchestrator(generate, execute_tool=execute_tool)
+        failed = await orchestrator.submit(
+            user_key="user", message="price", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.TOOL_FAILED, failed.status)
+        self.assertEqual([], self.delivered)
+        self.assertEqual([], self.store.turns)
+
+        following = await orchestrator.submit(
+            user_key="user", message="hello", accepted_at=self.now + timedelta(seconds=1)
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, following.status)
+        self.assertEqual(1, calls)
+        self.assertEqual("hello", self.store.turns[0].user_message)
+
+    async def test_tool_requires_executor_and_excludes_memory_action(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer(
+                "unused", "model", 10, tool_call=ToolCall("quote", "{}")
+            )
+
+        no_executor = self.orchestrator(generate)
+        missing = await no_executor.submit(
+            user_key="user", message="price", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, missing.status)
+
+        async def invalid_generate(context):
+            return GeneratedAnswer(
+                "unused",
+                "model",
+                10,
+                memory_action=MemoryAction.UPDATE,
+                tool_call=ToolCall("quote", "{}"),
+            )
+
+        async def execute_tool(user_key, call, inputs):
+            raise AssertionError("invalid answer must not execute")
+
+        invalid = self.orchestrator(invalid_generate, execute_tool=execute_tool)
+        rejected = await invalid.submit(
+            user_key="other", message="price", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, rejected.status)
+
+    async def test_superseded_model_tool_call_never_executes(self) -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        generation_tasks = []
+        calls = []
+
+        async def generate(context):
+            generation_tasks.append(asyncio.current_task())
+            if context.parts[-1].content == "first":
+                started.set()
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    await release.wait()
+                return GeneratedAnswer(
+                    "late", "model", 10, tool_call=ToolCall("quote", "{}")
+                )
+            release.set()
+            return GeneratedAnswer("current", "model", 10)
+
+        async def execute_tool(user_key, call, inputs):
+            calls.append(call)
+            return ToolResult("result", "[request]", "[result]")
+
+        orchestrator = self.orchestrator(generate, execute_tool=execute_tool)
+        first = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="first", accepted_at=self.now)
+        )
+        await started.wait()
+        second = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="second", accepted_at=self.now)
+        )
+        first_result, second_result = await asyncio.gather(first, second)
+        await asyncio.gather(*generation_tasks, return_exceptions=True)
+
+        self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
+        self.assertEqual([], calls)
+        self.assertEqual([("user", "current")], self.delivered)
+
+    async def test_external_cancel_does_not_abandon_owned_tool_commit(self) -> None:
+        tool_started = asyncio.Event()
+        release_tool = asyncio.Event()
+
+        async def generate(context):
+            return GeneratedAnswer(
+                "unused", "model", 10, tool_call=ToolCall("quote", "{}")
+            )
+
+        async def execute_tool(user_key, call, inputs):
+            tool_started.set()
+            await release_tool.wait()
+            return ToolResult("quote returned", "[request]", "[result]")
+
+        orchestrator = self.orchestrator(generate, execute_tool=execute_tool)
+        submission = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="quote", accepted_at=self.now)
+        )
+        await tool_started.wait()
+        orchestrator._states["user"].active_task.cancel()
+        release_tool.set()
+        result = await submission
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([("user", "quote returned")], self.delivered)
+        self.assertEqual("[result]", self.store.turns[0].assistant_message)
 
 
 if __name__ == "__main__":

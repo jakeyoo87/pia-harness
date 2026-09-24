@@ -20,6 +20,7 @@ from pia_harness import (
     ModelTokenBudget,
     OpenRouterModelAdapter,
     OpenRouterModelError,
+    OpenRouterToolDefinition,
     OpenRouterWebSearchConfig,
     PromptContextKind,
     PromptContextPart,
@@ -133,6 +134,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         *,
         max_attempts: int | None = None,
         web_search: OpenRouterWebSearchConfig | None = None,
+        tools: tuple[OpenRouterToolDefinition, ...] = (),
     ) -> OpenRouterModelAdapter:
         # Omitting the argument exercises the Adapter default, which is what the
         # smoke tool relies on to make exactly one call per scenario.
@@ -153,8 +155,85 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             sync_client=sync_client,
             async_client=async_client,
             web_search=web_search,
+            tools=tools,
             **chosen,
         )
+
+    async def test_no_tools_preserves_original_answer_schema(self) -> None:
+        adapter = self.adapter(lambda request: chat_response(answer_content()))
+        payload = adapter._answer_payload(answer_parts())
+        schema = payload["response_format"]["json_schema"]["schema"]
+        self.assertEqual(
+            {"answer", "memory_action", "delete_all_confirmed"},
+            set(schema["properties"]),
+        )
+        self.assertNotIn("tool_call", payload["messages"][0]["content"])
+
+    async def test_optional_tool_call_uses_structured_answer_envelope(self) -> None:
+        requests: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            requests.append(payload)
+            return chat_response(
+                json.dumps(
+                    {
+                        "answer": "도구 실행 전 임시 문구",
+                        "memory_action": "NONE",
+                        "delete_all_confirmed": False,
+                        "tool_call": {
+                            "name": "QUOTE",
+                            "arguments_json": '{"symbol":"005930"}',
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        tool = OpenRouterToolDefinition(
+            "QUOTE",
+            "Look up a current quote",
+            {
+                "type": "object",
+                "properties": {"symbol": {"type": "string"}},
+                "required": ["symbol"],
+                "additionalProperties": False,
+            },
+        )
+        adapter = self.adapter(handler, tools=(tool,))
+        answer = await adapter.generate_answer(
+            AssembledPromptContext(answer_parts(), 10, 900)
+        )
+
+        self.assertEqual("QUOTE", answer.tool_call.name)
+        self.assertEqual('{"symbol":"005930"}', answer.tool_call.arguments_json)
+        schema = requests[0]["response_format"]["json_schema"]["schema"]
+        self.assertIn("tool_call", schema["required"])
+        self.assertEqual(["QUOTE"], schema["properties"]["tool_call"]["properties"]["name"]["enum"])
+        self.assertIn("Look up a current quote", requests[0]["messages"][0]["content"])
+
+    async def test_tool_and_web_search_cannot_be_selected_together(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return chat_response(
+                json.dumps(
+                    {
+                        "answer": "temporary",
+                        "memory_action": "NONE",
+                        "delete_all_confirmed": False,
+                        "needs_web_search": True,
+                        "tool_call": {"name": "QUOTE", "arguments_json": "{}"},
+                    }
+                )
+            )
+
+        tool = OpenRouterToolDefinition("QUOTE", "Look up a quote", {"type": "object"})
+        adapter = self.adapter(
+            handler,
+            tools=(tool,),
+            web_search=OpenRouterWebSearchConfig("exa", None, None, "low"),
+        )
+        with self.assertRaises(OpenRouterModelError):
+            await adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
 
     async def test_web_search_is_answer_only_and_maps_safe_usage(self) -> None:
         requests: list[dict[str, Any]] = []
