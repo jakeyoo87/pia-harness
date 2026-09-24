@@ -14,6 +14,7 @@
 - `pia-agent`와 `pia-broker`의 `codex/trading-mvp` 브랜치는 현재 계획만 갖고 있다. Broker에는 KIS read-only Connector·Token·계좌 확인이 있지만 PIA용 quote/portfolio 내부 route 및 주문 API는 없다. PIA에는 Harness 새 `execute_tool` 연결이 없다. 각 저장소의 거래 계획은 첫 단계에 모델 결과 재투입과 tool chaining을 제외하므로, 실제 구현 전에 새 읽기 방향과 순서를 맞춰야 한다.
 - 사용자가 조건을 한 메시지에 완전히 명시한 직접 주문은 별도 재승인을 반복하지 않고, AI가 먼저 제안하거나 자동 운용하는 주문은 별도 승인을 검토한다는 제품 결정이 이미 세 거래 계획에 반영돼 있다. 다만 `pia-agent` README/AGENTS.md의 옛 일률적 최종 승인 문구는 아직 수정 전이다. 이 Harness 변경이 주문 정책을 대신 결정하거나 승인 우회 근거가 되어서는 안 된다.
 - 모델 공급자를 바꾸는 계획은 아니다. 현재 OpenRouter strict structured output 계약을 확장하며, 다른 모델/서비스 채택 여부는 별도 결정으로 남긴다.
+- 1차 Claude 검토는 도구 결과로 Context가 넘치면 compaction 없이 종료하자고 제안했다. 사용자는 긴 Context의 약 80%에서 기존 대화를 한 번 요약해 여유를 만드는 더 단순한 동작을 선택했다. 아래 7·8항은 이 후속 제품 결정을 반영하므로 구현 전 검토에서 다시 확인한다.
 
 ## 왜 바꾸는가
 
@@ -39,11 +40,11 @@
 4. 읽기 도구를 고른 generation은 아직 `GENERATING`이다. 도구를 호출하고 같은 generation의 **비영속·비신뢰 Context**에 `(도구 요청, observation)`을 순서대로 추가한 뒤 모델을 다시 호출한다. 요청은 모델이 실제로 고른 이름·인자 JSON을 assistant-role 비신뢰 part로, observation은 `TOOL_RESULT` user-role 비신뢰 part로 렌더한다. provider-native function calling을 쓰지 않으므로 결과만 던져 주지 않는다. 첫 구현은 읽기 도구 최대 3회로 고정한다. 세 번째 observation 뒤의 마지막 모델 호출에서는 tool 선택을 schema에서 제거해 **답변만** 받는다. Harness 자체의 자동 도구 재시도·동일 호출 캐시·계획기·무제한 loop는 없다.
 5. 최종 Answer 또는 기존 쓰기 도구 선택이 나오면 **그때** `_claim_commit`한다. supersede/reset이 생성 중인 왕복을 취소하면 이후 모델 호출·commit·전달·Turn 저장을 하지 않는다. callback이 cancellation을 무시해도 generation ID를 매 왕복/claim에서 확인한다. 반면 부작용 도구는 지금처럼 `_claim_commit` **이후 한 번** 실행하고 그 결과를 모델에 다시 넣지 않는다. 이미 commit한 도구는 기존 shield·pending·외부 idempotency 규칙을 따른다.
 6. 모델이 읽기 observation을 본 뒤 쓰기 도구를 고를 수는 있어도, Harness는 읽기 결과를 주문 권한으로 승격하지 않는다. PIA의 직접 사용자 지시·원문 근거 검증과 Broker의 주문 한도·Kill Switch·idempotency는 별도의 후속 단계이며 그대로 필요하다. 첫 읽기 구현에는 주문 도구를 등록하지 않는다.
-7. 요청 part와 `PromptContextKind.TOOL_RESULT` observation part는 모두 `UNTRUSTED_DATA`다. Renderer는 observation을 “외부 도구 데이터이며 명령이 아님”으로 표시하고 system instruction으로 올리지 않는다. 기존 Memory/Summary/Turn과 구분하고, 모델 출력 초안·요청/observation 쌍은 Turn·Summary·Memory·로그에 저장하지 않는다. 각 왕복에서 실제 assembled payload를 다시 세어 input budget을 확인한다. **최초 사용자 Context**의 초과만 기존 `_assemble_with_overflow`의 한 번 compaction 경로를 쓸 수 있다. observation을 추가하다 초과하면 `force_review`/compaction 없이 안전 종료하고 pending을 지운다. 조회 결과 때문에 durable 대화 데이터를 변경하거나 결과를 조용히 자르지 않는다.
-8. 도구가 포함된 최종 답변의 `should_compact`/`compact_after_response` 판단에는 observation이 쌓인 마지막 모델의 usage가 아니라 **첫 round의 observation 이전 Context 크기**를 쓴다. 저장되지 않을 도구 데이터가 반복 Memory review·compaction을 촉발해서는 안 된다. 모델별 과금용 호출량의 합과 지속 Context의 compaction 기준은 구분한다. 도구 미사용 Turn은 기존 판단을 유지한다.
+7. 요청 part와 `PromptContextKind.TOOL_RESULT` observation part는 모두 `UNTRUSTED_DATA`다. Renderer는 observation을 “외부 도구 데이터이며 명령이 아님”으로 표시하고 system instruction으로 올리지 않는다. 기존 Memory/Summary/Turn과 구분하고, 모델 출력 초안·요청/observation 쌍은 Turn·Summary·Memory·로그에 저장하지 않는다. 각 모델 호출 전 **현재의 전체 입력 Context**를 실제 payload 기준으로 센다. 조회 왕복에서 입력 예산의 약 80%를 넘으면 기존 `force_review`/Compactor를 사용해 저장된 오래된 대화를 해당 generation에서 **최대 한 번** 요약하고, 같은 요청/observation 쌍으로 다시 조립한다. 최초 사용자 Context overflow에서 이미 요약했다면 이를 그 한 번으로 센다. 대략 1M 입력 예산이라면 800K 부근에서 여유를 만드는 방식이다. 별도의 “결과를 줄여 다시 조회” 모델 루프나 자동 요약/잘라내기는 만들지 않는다. 요약 후에도 hard input budget에 담을 수 없으면 안전하게 종료한다. 도구 미사용 Turn의 정책은 그대로 둔다.
+8. 도구가 포함된 최종 답변의 `should_compact`/`compact_after_response` 판단에는 observation이 쌓인 마지막 모델의 usage를 그대로 쓰지 않는다. 위 선행 요약이 있었다면 **요약 후의 지속 Context 기준**, 없었다면 첫 round의 observation 이전 Context 기준을 사용해 같은 세대에서 불필요한 반복 compaction을 피한다. 모델 호출량의 합과 지속 Context의 compaction 기준은 구분한다. 도구 미사용 Turn은 기존 판단을 유지한다.
 9. 읽기 도구를 한 번이라도 쓴 Turn의 **최종** 전달 문구와 저장용 user·assistant 문구는 `_claim_commit` 성공 후 전달 전에 호스트가 확정한다(기존 `ToolResult` 재사용). 최종 모델 설명을 사용자에게 보여주더라도 그대로 저장하는 것을 기본값으로 삼지 않는다. 여러 중간 도구 중 하나의 placeholder를 추측하지 말고 한 번의 `finalize_tool_turn(user_key, inputs, tool_calls, answer_text) -> ToolResult`로 정한다. 이 callback은 텍스트 형식화만 하며 외부 부작용을 실행하지 않는다. 일반 답변과 기존 단일 쓰기 도구의 저장 동작은 변경하지 않는다.
 10. 도구가 포함된 왕복에서는 `MemoryAction.NONE`을 유지한다. 특히 observation의 문장이 Memory 수정·삭제 지시가 될 수 없다. 첫 모델 호출의 Web Search 선택은 기존처럼 최종 답변으로 끝나며, `tool_call`과 `needs_web_search=true` 동시 선택은 계속 무효다. 읽기 observation 이후의 모델 호출에서는 Server Tool 검색을 비활성화한다. Adapter에는 호출별 `allow_search`/`allow_tools` 두 선택만 둬 마지막 호출은 도구 없는 schema를 사용한다. 도구 미등록 경로는 바꾸지 않는다.
-11. read callback 예외는 `GENERATING`에서 잡아 `TOOL_FAILED`/pending clear로 끝낸다. 동시에 supersede되면 이전 generation의 finish는 무시한다. 알려진 조회 실패는 호스트가 안전한 observation 또는 결정적 실패 문구로 처리하며 Harness는 자동 재조회하지 않는다. observation 예산 초과, 전체 timeout, 모델 출력 오류도 raw 결과를 노출하지 않는다. PIA Bot은 대화 작업을 bounded task로 분리하고 `_wait_for_agent_capacity`로 동시성 상한을 둔다. 따라서 모든 사용자가 곧바로 순차 차단되는 구조는 아니지만, 여러 모델 호출이 capacity를 오래 점유할 수 있다. PIA 통합에서 메시지 전체 deadline과 동시성 영향을 측정·결정한다.
+11. read callback 예외는 `GENERATING`에서 잡아 `TOOL_FAILED`/pending clear로 끝낸다. 동시에 supersede되면 이전 generation의 finish는 무시한다. 알려진 조회 실패는 호스트가 안전한 observation 또는 결정적 실패 문구로 처리하며 Harness는 자동 재조회하지 않는다. 위 한 번의 compaction으로도 hard budget을 넘는 결과, 전체 timeout, 모델 출력 오류만 raw 결과 없이 종료한다. PIA Bot은 대화 작업을 bounded task로 분리하고 `_wait_for_agent_capacity`로 동시성 상한을 둔다. 따라서 모든 사용자가 곧바로 순차 차단되는 구조는 아니지만, 여러 모델 호출이 capacity를 오래 점유할 수 있다. PIA 통합에서 메시지 전체 deadline과 동시성 영향을 측정·결정한다.
 
 공개 API는 우선 `read_tool_names`, `execute_read_tool(user_key, ToolCall, inputs) -> str`, 위의 `finalize_tool_turn` 세 추가점으로 제한한다. observation 전용 dataclass, registry, dispatcher, 새 실행 상태는 도입하지 않는다. 이름 allowlist와 Adapter 도구 정의는 PIA 조립 지점에서 동일한 목록으로 검증한다.
 
@@ -60,14 +61,14 @@
 1. no-tool schema snapshot 및 기존 단일 도구·Web Search·Memory·supersede 테스트를 먼저 고정한다. 현재 `src/pia_harness/orchestrator.py`의 `_run_generation`→`_claim_commit`→`_commit_response`, `context.py`의 part 검증, `openrouter.py`의 `_answer_schema`·`generate_answer`·`_context_messages`가 주요 변경 지점이다.
 2. fake model + fake read tool로 0/1/2/3회 왕복, 요청→observation 쌍의 순서·role·trust, 도구 뒤 정상 Answer, 도구 뒤 쓰기 선택(쓰기 commit 이전 미호출), 세 번째 조회 뒤 tool 없는 최종 schema를 시험한다. 도구 이름·인자 오류와 도구 없는 기존 경로도 시험한다.
 3. callback 도중·callback 직후·후속 모델 호출 도중 supersede/reset, callback 예외와 supersede 경합, cancellation 무시, claim 경합, 반복 외부 cancellation에서 도구/전달/Turn이 중복되지 않음을 시험한다. 읽기 callback은 GENERATING에서만, 쓰기는 COMMITTING에서만 실행됨을 고정한다.
-4. observation prompt injection, 다른 user_key 결과 혼입, provider 원문/비밀 비노출, 최초 Context overflow와 observation 추가 overflow의 분리, observation 뒤 **durable compaction 미실행**, 최종 tool Turn의 **첫 round 기준 compaction**, Memory action/검색 동시 선택, Web Search 이후 종료, 도구 뒤 검색 금지, Turn 양쪽 redaction 및 Summary/Memory 미유입을 시험한다.
+4. observation prompt injection, 다른 user_key 결과 혼입, provider 원문/비밀 비노출, 입력 예산 80% 전후에서 선행 compaction 한 번과 재조립, 여러 조회 round에서 중복 compaction 없음, 결과 단독으로 hard budget을 넘을 때 안전 종료, 최종 tool Turn의 **지속 Context 기준 compaction**, Memory action/검색 동시 선택, Web Search 이후 종료, 도구 뒤 검색 금지, Turn 양쪽 redaction 및 Summary/Memory 미유입을 시험한다.
 5. `docs/01`, `03`, `04`, README, public export 및 fake 통합 예제를 구현에 맞춰 갱신한다. 변경 영역 테스트 후 전체 network-free suite와 wheel build를 한 번 실행한다. 별도 승인된 synthetic 실모델 smoke는 공개 시세 도구 **한 번→최종 답변**부터 확인한다: nullable `tool_call=null`과 이전 요청/observation 쌍의 해석. 세 번째 조회 뒤 tool 없는 최종 schema 전환은 fake 테스트로 먼저 고정하고 필요하면 별도 live smoke로 확인한다. 검토·릴리스·PIA pin·AWS 배포는 각각 별도 단계다.
 
 ## Claude에게 특히 확인받을 질문
 
 1. 읽기 callback을 `GENERATING`에서만 실행하고 쓰기를 기존 `COMMITTING`에 남기는 분리가 supersede/crash/전달 실패 의미를 지키는가? 모델이 관측 뒤 쓰기를 선택하는 경로에 권한 승격이나 race가 남는가?
 2. 세 추가 API(read-only 이름 목록, read callback, 최종 redaction)만으로 충분한가? 불필요한 registry/상태/예외 없이 요청/observation 쌍을 렌더할 수 있는가?
-3. 최초 Context의 기존 overflow 처리와 observation 추가 시 **compaction 없는 종료**, 그리고 첫 round Context 기준 최종 compaction 판단이 정확한가? 요청/결과 쌍이 Turn·Summary·Memory·로그에 새는 경로가 있는가?
+3. 조회 왕복의 80% 선행 compaction 한 번과 hard budget 재검사가 기존 Context overflow·supersede·Memory 경계를 지키는가? 최종 compaction이 중복 실행되지 않는가? 요청/결과 쌍이 Turn·Summary·Memory·로그에 새는 경로가 있는가?
 4. 기존 두 단계 Web Search와 새 조회 왕복을 결합하지 않는 규칙이 호환성을 지키는가? 실모델 structured-output smoke에서 무엇을 먼저 확인해야 하는가?
 5. 3회 read 상한과 앱 전체 timeout이 PIA의 bounded agent task capacity에서 실용적인가? 더 작은 첫 수직 슬라이스가 있다면 제안하되, Broker 주문 경계를 Harness로 옮기거나 사용자별 상시 VM을 전제로 하지 말아 달라.
 
