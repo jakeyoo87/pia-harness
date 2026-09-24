@@ -61,6 +61,11 @@ are host-formatted results; unexpected callback errors return `TOOL_FAILED` with
 External exactly-once execution is not a Harness guarantee; effectful tools require application-owned
 stable IDs and idempotency in the later write-tool stage.
 
+The existing eight-scenario live smoke does not exercise the new nullable-object `tool_call` schema.
+Before an application enables host tools against a real model, run a separately approved synthetic
+smoke for both `tool_call=null` and one valid tool request, with no user data or external tool side
+effect. Automated tests remain network-free.
+
 Memory Review output:
 
 ```json

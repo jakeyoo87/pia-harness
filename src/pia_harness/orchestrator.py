@@ -397,37 +397,30 @@ class ConversationOrchestrator:
                     compaction_failed=compaction_failed,
                 )
             )
-            try:
-                result, delivery_succeeded = await asyncio.shield(commit_task)
-            except asyncio.CancelledError:
-                # An external cancellation must not abandon an owned commit.
-                # Supersede only cancels while the phase is GENERATING.
+            # Repeated external cancellation must not cancel the owned commit.
+            # Supersede only cancels while the phase is GENERATING.
+            while not commit_task.done():
                 try:
-                    result, delivery_succeeded = await commit_task
-                except ConversationAbandoned:
-                    await self._finish_generation(
-                        user_key,
-                        state,
-                        generation_id,
-                        batch,
-                        ConversationResult(OrchestratorStatus.ABANDONED),
-                        clear_pending=True,
-                    )
-                    return
-                except (asyncio.CancelledError, Exception):
-                    await self._finish_generation(
-                        user_key,
-                        state,
-                        generation_id,
-                        batch,
-                        ConversationResult(
-                            OrchestratorStatus.TOOL_FAILED
-                            if answer.tool_call is not None
-                            else OrchestratorStatus.GENERATION_FAILED
-                        ),
-                        clear_pending=True,
-                    )
-                    return
+                    await asyncio.shield(commit_task)
+                except asyncio.CancelledError:
+                    continue
+            try:
+                result, delivery_succeeded = commit_task.result()
+            except asyncio.CancelledError:
+                await self._finish_generation(
+                    user_key,
+                    state,
+                    generation_id,
+                    batch,
+                    ConversationResult(
+                        OrchestratorStatus.TOOL_FAILED
+                        if answer.tool_call is not None
+                        else OrchestratorStatus.GENERATION_FAILED,
+                        turn_id=batch[-1].value.turn_id,
+                    ),
+                    clear_pending=True,
+                )
+                return
             await self._finish_generation(
                 user_key,
                 state,

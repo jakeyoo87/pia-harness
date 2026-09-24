@@ -176,8 +176,9 @@ generation owns the user state, even when provider cancellation was ignored.
 Within one user's commit lock, Memory Review, confirmed Memory clearing, Compaction, delivery, and
 completed-Turn persistence cannot interleave with another commit. Different users use separate states and
 can proceed concurrently.
-After commit ownership is claimed, an external task cancellation waits for the shielded commit result
-instead of abandoning an in-flight host tool and leaving the user's state stuck in COMMITTING.
+After commit ownership is claimed, even repeated external task cancellation keeps waiting through a
+shield for the owned commit result instead of abandoning an in-flight host tool or leaving the user's
+state stuck in COMMITTING.
 
 Pending messages combined after interruption are stored as one completed Turn under the newest input's
 Turn ID, separated by `MESSAGE_SEPARATOR`. Only the newest submitter receives the delivered result; earlier

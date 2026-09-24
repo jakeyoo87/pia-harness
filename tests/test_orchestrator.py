@@ -1227,7 +1227,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], calls)
         self.assertEqual([("user", "current")], self.delivered)
 
-    async def test_external_cancel_does_not_abandon_owned_tool_commit(self) -> None:
+    async def test_repeated_external_cancel_does_not_abandon_owned_tool_commit(self) -> None:
         tool_started = asyncio.Event()
         release_tool = asyncio.Event()
 
@@ -1246,7 +1246,12 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             orchestrator.submit(user_key="user", message="quote", accepted_at=self.now)
         )
         await tool_started.wait()
-        orchestrator._states["user"].active_task.cancel()
+        active_task = orchestrator._states["user"].active_task
+        active_task.cancel()
+        await asyncio.sleep(0)
+        active_task.cancel()
+        await asyncio.sleep(0)
+        self.assertFalse(active_task.done())
         release_tool.set()
         result = await submission
 
