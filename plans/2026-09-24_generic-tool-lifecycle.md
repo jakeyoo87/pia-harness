@@ -19,8 +19,8 @@ Harness는 도구 이름·설명·입력 schema와 호출 callback을 **호스�
 - 호스트가 도구를 설정한 경우 Adapter의 **일반 Answer 한 번**이 `answer + memory_action + optional tool_call`을 strict structured output으로 반환한다. 도구는 하나만 선택한다. 도구 없는 답변은 기존 경로를 사용한다.
 - 호스트가 허용한 이름과 간단한 argument schema/설명을 trusted system instruction에 넣는다. Provider schema는 과도한 조건부 분기를 피하는 고정 envelope(`name`, bounded `arguments_json` 문자열 또는 null)로 두고, Harness는 envelope와 허용 이름을 검증한다. 호스트가 arguments JSON·schema·의미·권한을 재검증한다. 실제 schema 표현과 토큰 예산은 구현 전 fake Adapter 테스트로 확인한다.
 - tool_call이 있으면 `MemoryAction.NONE`만 허용한다. `needs_web_search=true`와 tool_call이 동시에 나오면 우선순위를 추정하지 않고 출력 검증 실패로 처리한다. 도구의 유무와 결과는 모델의 자연어 성공 주장으로 판정하지 않는다. 도구 있는 `answer` 초안은 사용자에게 전달·저장하지 않는다.
-- `submit(source_id=...)`는 선택적 opaque 입력 식별자를 각 pending `ConversationInput`에 보존한다. 현재의 sortable timestamp+UUID `turn_id`와 `created_at` 검증은 그대로 유지한다. source ID는 모델 프롬프트/Turn/Memory에 넣지 않으며, 호스트 callback의 입력 metadata로만 전달한다. 호스트가 쓰기 도구에 안정 source ID를 요구할 수 있다.
-- 호스트가 generation마다 주는 선택적 짧은 `ephemeral_tool_context(user_key, inputs)`를 Context 예산에 포함한다. 이 provider는 GENERATING 중 취소될 수 있으므로 **읽기 전용**이며 초안을 소비·갱신하지 않는다. 값은 비영속·비신뢰 데이터로 별도 표시하고 trusted SYSTEM이나 tool 지침으로 승격하지 않는다. 모델에게 현재 진행 중인 앱 도구 초안을 알려주지만 Turn·Summary·Memory에는 저장하지 않는다. 값 부재 시 기존 Context 구조가 정확히 유지된다.
+- **주문 단계에서만** `submit(source_id=...)`를 추가해 opaque 입력 식별자를 각 pending `ConversationInput`에 보존한다. 현재의 sortable timestamp+UUID `turn_id`와 `created_at` 검증은 그대로 유지한다. source ID는 모델 프롬프트/Turn/Memory에 넣지 않으며, 호스트 callback의 입력 metadata로만 전달한다. 읽기 도구 첫 구현에는 필요 없다.
+- 다중 턴 주문 초안용 `ephemeral_tool_context`는 첫 주문 버전에서 구현하지 않는다. 부족한 조건은 모델이 묻고 사용자가 한 메시지로 완전한 주문을 다시 말한다. 후속 UX 단계에서 필요성이 확인되면 읽기 전용·비영속·비신뢰 Context로 별도 설계한다.
 - 호스트의 async `execute_tool(user_key, tool_call, inputs)`는 한 번의 commit 시도에서 한 번 호출한다. `inputs`는 결합된 각 사용자 입력의 원문·source ID·수신 시각을 순서대로 담는다. Harness는 raw 값이나 도구 인자를 로그에 남기지 않는다.
 - callback 결과는 `delivery_text`, `persisted_user_text`, `persisted_assistant_text`를 분리한다. 일반 답변은 기존 원문 Turn 계약을 유지하고 도구 Turn만 호스트가 두 저장 문구를 치환한다. 세 문구는 비어 있지 않아야 하며 Harness는 도구 결과 원문을 Memory/Compaction/Turn에 자동 추가하지 않는다.
 
@@ -43,7 +43,7 @@ Context 조립 → 일반 Answer/도구 선택 → 모델 출력 검증
 ## 검증·릴리스 순서
 
 1. `GeneratedAnswer`/Adapter의 옵션 없는 기존 schema snapshot과 token preflight 비회귀를 먼저 고정한다.
-2. fake 모델·fake tool로 정상 read/write, schema 거부, tool+Web Search 동시 요청, supersede, commit 중 새 입력, callback 프로그래밍 오류 시 `TOOL_FAILED`/pending clear, 알려진 외부 timeout의 정상 ToolResult, 프로세스 재생성에 준하는 동일 source ID 재호출, 전달 실패, Turn 저장 실패, 두 방향 redaction, ephemeral context의 읽기 전용·비신뢰·비영속·예산 계산, Memory/Compaction 비유입을 시험한다. 실제 증권사·AWS·사용자 데이터는 쓰지 않는다.
+2. 첫 읽기 단계는 fake 모델·fake tool로 정상 도구 실행, schema 거부, tool+Web Search 동시 요청, supersede, commit 중 새 입력, callback 프로그래밍 오류 시 `TOOL_FAILED`/pending clear, 전달 실패, Turn 저장 실패, 두 방향 redaction, Memory/Compaction 비유입을 시험한다. 주문 단계에서만 source ID 재전달과 알려진 외부 timeout의 정상 ToolResult를 추가 검증한다. 실제 증권사·AWS·사용자 데이터는 쓰지 않는다.
 3. `docs/01`, `03`, `04`, README와 public export를 갱신한다. 기존 앱에 미등록이면 동작이 바뀌지 않아야 한다.
 4. 독립 검토 후 범용 Harness 버전을 릴리스하고, PIA가 정확한 wheel+SHA로 pin한 뒤 통합한다. 실모델 smoke·배포는 각각 별도 승인이다.
 
@@ -51,6 +51,6 @@ Context 조립 → 일반 Answer/도구 선택 → 모델 출력 검증
 
 - 이 계약이 정말 Harness 범용 생명주기 책임에만 머무르는가? 도구 이름/인자·결과의 도메인 처리가 새지 않는가?
 - `_claim_commit` 이후 execute 시점과 at-least-once + host idempotency가 supersede·delivery failure·crash에서 안전한가? `TOOL_FAILED`의 pending clear와 앱 실패 안내가 기존 Orchestrator 결과와 충돌하는가?
-- ephemeral tool context가 기존 trust boundary와 token budget을 지키면서 다중 턴 도구 초안을 모델에 전달하는 최소 방법인가?
+- 다중 턴 초안 Context를 첫 주문 버전에서 제거해도 범용 읽기/쓰기 도구 계약이 충분한가?
 - 사용자·assistant 양쪽 persisted text override가 Memory/Compaction으로 민감값이 가는 경로를 닫는가?
 - OpenRouter strict schema, 기존 MemoryAction/Web Search, token budget에 대한 옵션 없는 비회귀가 가능한가? MVP에 과한 추상화는 무엇인가?
