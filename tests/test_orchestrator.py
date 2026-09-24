@@ -21,6 +21,8 @@ from pia_harness import (
     PromptContextAssembler,
     ToolCall,
     ToolResult,
+    ReadToolDefinition,
+    ReadToolResult,
     new_turn_id,
 )
 
@@ -74,9 +76,7 @@ class FakeStore:
             ),
         )
 
-    def load_unreviewed_turns(
-        self, *, user_key, session_id, after_turn_id, now=None
-    ):
+    def load_unreviewed_turns(self, *, user_key, session_id, after_turn_id, now=None):
         return tuple(
             turn
             for turn in self.turns
@@ -179,7 +179,7 @@ class FakeCompactor:
         self.calls.append(("check", values))
         return self.due
 
-    def compact_after_response(self, **values):
+    def compact(self, **values):
         self.calls.append(("compact", values))
         if self.abandon:
             self.abandon = False
@@ -206,6 +206,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         generate_with_progress=None,
         progress=None,
         execute_tool=None,
+        read_tools=(),
+        choose_next=None,
+        build_tool_call=None,
     ):
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
@@ -226,9 +229,14 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             generate_answer_with_progress=generate_with_progress,
             progress=progress,
             execute_tool=execute_tool,
+            read_tools=read_tools,
+            choose_next=choose_next,
+            build_tool_call=build_tool_call,
         )
 
-    async def test_explicit_memory_failure_notice_is_required_and_validated(self) -> None:
+    async def test_explicit_memory_failure_notice_is_required_and_validated(
+        self,
+    ) -> None:
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
@@ -268,9 +276,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("progress", ordered[0][0])
         self.assertEqual("user", ordered[0][1])
         self.assertIsInstance(ordered[0][2], str)
-        self.assertEqual(
-            ConversationProgress.WEB_SEARCH_STARTED, ordered[0][3]
-        )
+        self.assertEqual(ConversationProgress.WEB_SEARCH_STARTED, ordered[0][3])
         self.assertEqual(("deliver", "user", "answer"), ordered[1])
         self.assertEqual(
             ("progress", "user", ordered[0][2], ConversationProgress.COMPLETE),
@@ -310,15 +316,11 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             progress=progress,
         )
         first = asyncio.create_task(
-            orchestrator.submit(
-                user_key="user", message="A", accepted_at=self.now
-            )
+            orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
         )
         await first_started.wait()
         second = asyncio.create_task(
-            orchestrator.submit(
-                user_key="user", message="B", accepted_at=self.now
-            )
+            orchestrator.submit(user_key="user", message="B", accepted_at=self.now)
         )
         first_result, second_result = await asyncio.gather(first, second)
 
@@ -332,7 +334,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn((progress_id, ConversationProgress.COMPLETE), events)
 
-    async def test_new_message_interrupts_and_only_combined_answer_commits(self) -> None:
+    async def test_new_message_interrupts_and_only_combined_answer_commits(
+        self,
+    ) -> None:
         first_started = asyncio.Event()
         cancelled = asyncio.Event()
         seen = []
@@ -474,7 +478,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(combined, self.store.turns[0].user_message)
         self.assertIn(f"- remembered:{combined}", second_result.final_text)
 
-    async def test_generated_forget_allows_clear_without_duplicate_revisit(self) -> None:
+    async def test_generated_forget_allows_clear_without_duplicate_revisit(
+        self,
+    ) -> None:
         async def generate(context):
             return GeneratedAnswer(
                 "answer", "model", 10, memory_action=MemoryAction.FORGET
@@ -512,9 +518,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, requested.status)
         self.assertEqual("remembered", self.store.memories["user"].memory_text)
-        self.assertTrue(
-            orchestrator._states["user"].delete_all_confirmation_pending
-        )
+        self.assertTrue(orchestrator._states["user"].delete_all_confirmation_pending)
 
         confirmed = await orchestrator.submit(
             user_key="user",
@@ -535,7 +539,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("user", orchestrator._states)
 
-    async def test_delete_all_confirmation_without_pending_marker_is_not_honored(self) -> None:
+    async def test_delete_all_confirmation_without_pending_marker_is_not_honored(
+        self,
+    ) -> None:
         self.store.memories["user"] = MemoryDocument(
             "user",
             "remembered",
@@ -561,9 +567,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertEqual("remembered", self.store.memories["user"].memory_text)
-        self.assertTrue(
-            orchestrator._states["user"].delete_all_confirmation_pending
-        )
+        self.assertTrue(orchestrator._states["user"].delete_all_confirmation_pending)
         # The answer said "cleared", so a silent no-op would leave the user
         # believing Memory was deleted.
         self.assertTrue(result.memory_failed)
@@ -610,11 +614,11 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertTrue(result.memory_failed)
-        self.assertEqual(
-            "answer\n\n- 기억에 반영하지 못했어요.", result.final_text
-        )
+        self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
 
-    async def test_failure_notice_is_never_dropped_for_a_full_change_budget(self) -> None:
+    async def test_failure_notice_is_never_dropped_for_a_full_change_budget(
+        self,
+    ) -> None:
         # A rejected confirmation runs the ordinary revisit Review, which can fill
         # the three-item budget on its own and would otherwise hide the failure of
         # the deletion the user just asked for.
@@ -659,7 +663,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("삭제를 확인하지 못했어요.", result.final_text)
         self.assertEqual(3, result.final_text.count("\n- "))
 
-    async def test_stale_explicit_review_reports_failure_like_an_exception(self) -> None:
+    async def test_stale_explicit_review_reports_failure_like_an_exception(
+        self,
+    ) -> None:
         # A lost compare-and-set writes nothing, so it must reach the caller and the
         # user exactly as a raised reviewer failure does.
         class StaleExplicit(FakeMemoryReviewer):
@@ -680,9 +686,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertTrue(result.memory_failed)
-        self.assertEqual(
-            "answer\n\n- 기억에 반영하지 못했어요.", result.final_text
-        )
+        self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
         self.assertEqual(["explicit"], self.memory.calls)
 
     async def test_invalid_generated_memory_action_fails_before_commit(self) -> None:
@@ -700,6 +704,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_generated_web_search_usage_fails_before_commit(self) -> None:
         for index, value in enumerate((True, -1, "1")):
             with self.subTest(value=value):
+
                 async def generate(context, value=value):
                     return GeneratedAnswer(
                         "answer", "model", 10, web_search_requests=value
@@ -769,7 +774,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(self.store.turns))
         self.assertEqual("짧은 질문", self.store.turns[0].user_message)
 
-    async def test_delivery_and_persistence_failures_have_simple_boundaries(self) -> None:
+    async def test_delivery_and_persistence_failures_have_simple_boundaries(
+        self,
+    ) -> None:
         attempts = []
 
         async def generate(context):
@@ -851,7 +858,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
         )
         await delivering.wait()
-        resetting = asyncio.create_task(orchestrator.reset(user_key="user", now=self.now))
+        resetting = asyncio.create_task(
+            orchestrator.reset(user_key="user", now=self.now)
+        )
         await asyncio.sleep(0.01)
         queued = asyncio.create_task(
             orchestrator.submit(user_key="user", message="B", accepted_at=self.now)
@@ -953,22 +962,20 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             user_key="overflow-review", message="question", accepted_at=self.now
         )
         self.assertEqual(OrchestratorStatus.ABANDONED, forced.status)
-        self.assertFalse(
-            any(call[0] == "compact" for call in self.compactor.calls)
-        )
+        self.assertFalse(any(call[0] == "compact" for call in self.compactor.calls))
 
         self.memory = FakeMemoryReviewer()
         self.compactor = FakeCompactor()
         self.compactor.abandon = True
-        compacted = await self.orchestrator(
-            generate, counter=lambda parts: 901
-        ).submit(
+        compacted = await self.orchestrator(generate, counter=lambda parts: 901).submit(
             user_key="overflow-compact", message="question", accepted_at=self.now
         )
         self.assertEqual(OrchestratorStatus.ABANDONED, compacted.status)
         self.assertEqual([], self.delivered)
 
-    async def test_confirmed_delete_abandonment_clears_confirmation_marker(self) -> None:
+    async def test_confirmed_delete_abandonment_clears_confirmation_marker(
+        self,
+    ) -> None:
         self.store.memories["user"] = MemoryDocument(
             "user",
             "remembered",
@@ -1001,7 +1008,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("user", orchestrator._states)
         self.assertEqual("remembered", self.store.memories["user"].memory_text)
 
-    async def test_delivery_and_post_delivery_append_abandonment_clear_batch(self) -> None:
+    async def test_delivery_and_post_delivery_append_abandonment_clear_batch(
+        self,
+    ) -> None:
         seen = []
         delivery_calls = 0
 
@@ -1067,7 +1076,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
-    async def test_confirmed_delete_write_abandonment_sends_no_failure_notice(self) -> None:
+    async def test_confirmed_delete_write_abandonment_sends_no_failure_notice(
+        self,
+    ) -> None:
         self.store.memories["user"] = MemoryDocument(
             "user",
             "remembered",
@@ -1086,7 +1097,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             )
 
         orchestrator = self.orchestrator(generate)
-        await orchestrator.submit(user_key="user", message="delete", accepted_at=self.now)
+        await orchestrator.submit(
+            user_key="user", message="delete", accepted_at=self.now
+        )
         delivered = list(self.delivered)
         # The veto must fire in the clearing write itself, not in earlier context loading.
         self.store.abandon_on = "replace_memory"
@@ -1151,7 +1164,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], self.store.turns)
 
         following = await orchestrator.submit(
-            user_key="user", message="hello", accepted_at=self.now + timedelta(seconds=1)
+            user_key="user",
+            message="hello",
+            accepted_at=self.now + timedelta(seconds=1),
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, following.status)
         self.assertEqual(1, calls)
@@ -1227,7 +1242,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], calls)
         self.assertEqual([("user", "current")], self.delivered)
 
-    async def test_repeated_external_cancel_does_not_abandon_owned_tool_commit(self) -> None:
+    async def test_repeated_external_cancel_does_not_abandon_owned_tool_commit(
+        self,
+    ) -> None:
         tool_started = asyncio.Event()
         release_tool = asyncio.Event()
 
@@ -1258,6 +1275,112 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertEqual([("user", "quote returned")], self.delivered)
         self.assertEqual("[result]", self.store.turns[0].assistant_message)
+
+    async def test_jev_search_result_returns_to_router_and_persists(self) -> None:
+        decisions = []
+        queries = []
+
+        async def generate(context):
+            raise AssertionError("a verified Search answer needs no second LLM")
+
+        async def choose_next(context, tools):
+            decisions.append(tuple(part.kind.value for part in context.parts))
+            return "search" if len(decisions) == 1 else "answer"
+
+        async def build_call(context, tool):
+            return ToolCall(tool.name, '{"query":"market news"}')
+
+        async def execute_search(user_key, call, inputs):
+            queries.append((user_key, call, inputs))
+            return ReadToolResult(
+                "News with source https://example.com",
+                "News [source](https://example.com)",
+            )
+
+        tool = ReadToolDefinition(
+            "search",
+            "Find sourced public information",
+            {"type": "object"},
+            execute_search,
+        )
+        result = await self.orchestrator(
+            generate,
+            read_tools=(tool,),
+            choose_next=choose_next,
+            build_tool_call=build_call,
+        ).submit(user_key="member", message="시장 뉴스", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(
+            [("member", "News [source](https://example.com)")], self.delivered
+        )
+        self.assertEqual(1, len(queries))
+        self.assertEqual("TOOL_RESULT", decisions[1][-1])
+        self.assertIn(
+            "Tool request (data): search", self.store.turns[0].assistant_message
+        )
+        self.assertIn("News with source", self.store.turns[0].assistant_message)
+
+    async def test_compaction_happens_before_answer_generation(self) -> None:
+        self.compactor.due = True
+
+        async def generate(context):
+            self.assertEqual(
+                1, len([call for call in self.compactor.calls if call[0] == "compact"])
+            )
+            return GeneratedAnswer("answer", "model", 10)
+
+        result = await self.orchestrator(generate).submit(
+            user_key="user", message="question", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(
+            1, len([call for call in self.compactor.calls if call[0] == "compact"])
+        )
+
+    async def test_superseded_read_tool_cannot_commit(self) -> None:
+        tool_started = asyncio.Event()
+
+        async def generate(context):
+            return GeneratedAnswer("current answer", "model", 10)
+
+        async def choose_next(context, tools):
+            current = next(
+                part.content
+                for part in context.parts
+                if part.kind.value == "CURRENT_USER"
+            )
+            return "answer" if "new" in current else "search"
+
+        async def build_call(context, tool):
+            return ToolCall(tool.name, "{}")
+
+        async def execute_search(user_key, call, inputs):
+            tool_started.set()
+            await asyncio.Event().wait()
+            return ReadToolResult("stale result")
+
+        tool = ReadToolDefinition(
+            "search", "Search", {"type": "object"}, execute_search
+        )
+        orchestrator = self.orchestrator(
+            generate,
+            read_tools=(tool,),
+            choose_next=choose_next,
+            build_tool_call=build_call,
+        )
+        first = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="old", accepted_at=self.now)
+        )
+        await tool_started.wait()
+        second = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="new", accepted_at=self.now)
+        )
+        first_result, second_result = await asyncio.gather(first, second)
+        self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
+        self.assertEqual([("user", "current answer")], self.delivered)
+        self.assertEqual(1, len(self.store.turns))
 
 
 if __name__ == "__main__":

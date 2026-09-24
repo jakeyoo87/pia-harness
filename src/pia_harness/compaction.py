@@ -38,7 +38,7 @@ class SummaryOutput:
 
 @dataclass(frozen=True, slots=True)
 class CompactionPolicy:
-    trigger_ratio: float = 0.90
+    trigger_ratio: float = 0.80
     protected_tail_ratio: float = 0.125
 
     def __post_init__(self) -> None:
@@ -104,7 +104,7 @@ class TokenCompactor:
             usage=usage,
         )
 
-    def compact_after_response(
+    def compact(
         self,
         *,
         user_key: str,
@@ -184,12 +184,8 @@ class TokenCompactor:
             model_id=output.model_id,
             updated_at=(now or datetime.now(UTC)),
         )
-        expected = (
-            None if context.summary is None else context.summary.through_turn_id
-        )
-        if not self._store.replace_summary(
-            summary, expected_through_turn_id=expected
-        ):
+        expected = None if context.summary is None else context.summary.through_turn_id
+        if not self._store.replace_summary(summary, expected_through_turn_id=expected):
             return None
 
         self._store.delete_turns_through(
@@ -223,12 +219,8 @@ def _split_turns(
     return tuple(turns[:tail_start]), tuple(turns[tail_start:])
 
 
-def _turn_tokens(
-    turn: CompletedTurn, estimate_tokens: Callable[[str], int]
-) -> int:
-    return estimate_tokens(turn.user_message) + estimate_tokens(
-        turn.assistant_message
-    )
+def _turn_tokens(turn: CompletedTurn, estimate_tokens: Callable[[str], int]) -> int:
+    return estimate_tokens(turn.user_message) + estimate_tokens(turn.assistant_message)
 
 
 def _source_tokens(

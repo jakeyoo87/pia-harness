@@ -35,19 +35,23 @@ def completed_turn(created_at: datetime) -> CompletedTurn:
 
 
 class MemoryReviewPolicyTest(unittest.TestCase):
-    def test_revisit_gap_has_an_exact_one_hour_boundary_and_no_count_trigger(self) -> None:
+    def test_revisit_gap_has_an_exact_twelve_hour_boundary_and_no_count_trigger(
+        self,
+    ) -> None:
         policy = MemoryReviewPolicy()
         now = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
         self.assertFalse(policy.should_review(turns=(), request_at=now))
         self.assertFalse(
             policy.should_review(
-                turns=(completed_turn(now - timedelta(minutes=59, seconds=59)),),
+                turns=(
+                    completed_turn(now - timedelta(hours=11, minutes=59, seconds=59)),
+                ),
                 request_at=now,
             )
         )
         self.assertTrue(
             policy.should_review(
-                turns=(completed_turn(now - timedelta(hours=1)),),
+                turns=(completed_turn(now - timedelta(hours=12)),),
                 request_at=now,
             )
         )
@@ -113,7 +117,7 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
     def test_due_review_replaces_memory_and_returns_changes_after_write(self) -> None:
         user_key = "memory-due"
         session_id, turn = self.session_and_turn(
-            user_key, created_at=self.now - timedelta(hours=1)
+            user_key, created_at=self.now - timedelta(hours=12)
         )
         requests = []
 
@@ -163,6 +167,54 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
         self.assertEqual(turn.turn_id, result.memory.last_reviewed_turn_id)
         self.assertEqual((), result.change_summary)
 
+    def test_jev_decision_skips_writer_and_advances_boundary(self) -> None:
+        user_key = "memory-jev-unchanged"
+        session_id, turn = self.session_and_turn(user_key)
+        decisions = []
+        writes = []
+
+        def decide(request):
+            decisions.append(request)
+            return False
+
+        def write(request):
+            writes.append(request)
+            raise AssertionError("writer must not run")
+
+        result = AutomaticMemoryReviewer(
+            self.store,
+            write,
+            decide_change=decide,
+            instruction="Host-provided Memory rules",
+        ).force_review(user_key=user_key, session_id=session_id, now=self.now)
+
+        self.assertEqual(MemoryReviewStatus.UNCHANGED, result.status)
+        self.assertEqual(turn.turn_id, result.memory.last_reviewed_turn_id)
+        self.assertEqual("Host-provided Memory rules", decisions[0].instruction)
+        self.assertEqual([], writes)
+
+    def test_jev_change_decision_invokes_writer_once(self) -> None:
+        user_key = "memory-jev-replace"
+        session_id, _turn = self.session_and_turn(user_key)
+        writes = []
+
+        def write(request):
+            writes.append(request)
+            return MemoryReviewOutput(
+                MemoryReviewAction.REPLACE,
+                "- 사용자는 장기투자를 선호한다.",
+                ("장기투자 선호를 기록했어요.",),
+            )
+
+        result = AutomaticMemoryReviewer(
+            self.store,
+            write,
+            decide_change=lambda request: True,
+        ).force_review(user_key=user_key, session_id=session_id, now=self.now)
+
+        self.assertEqual(MemoryReviewStatus.REPLACED, result.status)
+        self.assertEqual(1, len(writes))
+
     def test_clear_requires_explicit_permission(self) -> None:
         user_key = "memory-clear"
         session_id, first = self.session_and_turn(user_key)
@@ -190,7 +242,9 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
                 now=self.now + timedelta(minutes=1),
             )
         self.assertEqual("remembered", self.store.get_memory(user_key).memory_text)
-        self.assertEqual(first.turn_id, self.store.get_memory(user_key).last_reviewed_turn_id)
+        self.assertEqual(
+            first.turn_id, self.store.get_memory(user_key).last_reviewed_turn_id
+        )
 
         result = reviewer.review_explicit_input(
             user_key=user_key,
@@ -209,7 +263,9 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
         self.assertEqual("", result.memory.memory_text)
         self.assertEqual(second.turn_id, result.memory.last_reviewed_turn_id)
 
-    def test_explicit_current_input_creates_memory_before_turn_persistence(self) -> None:
+    def test_explicit_current_input_creates_memory_before_turn_persistence(
+        self,
+    ) -> None:
         user_key = "memory-current-first"
         session = self.store.get_or_create_active_session(user_key, now=self.now)
         current = self.current_input(user_key, session.session_id)
@@ -252,7 +308,9 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
         )
         self.assertEqual(1, len(requests))
 
-    def test_explicit_input_includes_prior_turns_and_detects_a_late_append(self) -> None:
+    def test_explicit_input_includes_prior_turns_and_detects_a_late_append(
+        self,
+    ) -> None:
         user_key = "memory-current-race"
         session = self.store.get_or_create_active_session(user_key, now=self.now)
         first = self.append(
@@ -288,7 +346,9 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
         self.assertEqual(MemoryReviewStatus.STALE, result.status)
         self.assertIsNone(self.store.get_memory(user_key))
 
-    def test_explicit_input_replay_stale_and_invalid_values_skip_the_reviewer(self) -> None:
+    def test_explicit_input_replay_stale_and_invalid_values_skip_the_reviewer(
+        self,
+    ) -> None:
         user_key = "memory-current-validation"
         session = self.store.get_or_create_active_session(user_key, now=self.now)
         current = self.current_input(user_key, session.session_id)
@@ -411,7 +471,9 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
         invalid_outputs = (
             MemoryReviewOutput("INVALID"),
             MemoryReviewOutput(MemoryReviewAction.REPLACE, ""),
-            MemoryReviewOutput(MemoryReviewAction.REPLACE, "x" * (MEMORY_MAX_CHARS + 1)),
+            MemoryReviewOutput(
+                MemoryReviewAction.REPLACE, "x" * (MEMORY_MAX_CHARS + 1)
+            ),
             MemoryReviewOutput(
                 MemoryReviewAction.REPLACE,
                 "valid",
@@ -422,7 +484,9 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
                 "valid",
                 ("x" * 201,),
             ),
-            MemoryReviewOutput(MemoryReviewAction.UNCHANGED, change_summary=("change",)),
+            MemoryReviewOutput(
+                MemoryReviewAction.UNCHANGED, change_summary=("change",)
+            ),
         )
         for output in invalid_outputs:
             with self.subTest(output=output):
@@ -459,9 +523,7 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
 
         def review(request):
             self.assertTrue(
-                self.store.replace_memory(
-                    winner, expected_last_reviewed_turn_id=None
-                )
+                self.store.replace_memory(winner, expected_last_reviewed_turn_id=None)
             )
             return MemoryReviewOutput(
                 MemoryReviewAction.REPLACE,
@@ -581,14 +643,10 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
             "memory-keep", "other", other_turn.turn_id, self.now
         )
         self.assertTrue(
-            self.store.replace_memory(
-                first_memory, expected_last_reviewed_turn_id=None
-            )
+            self.store.replace_memory(first_memory, expected_last_reviewed_turn_id=None)
         )
         self.assertTrue(
-            self.store.replace_memory(
-                other_memory, expected_last_reviewed_turn_id=None
-            )
+            self.store.replace_memory(other_memory, expected_last_reviewed_turn_id=None)
         )
 
         self.store.delete_all_for_user("memory-delete")

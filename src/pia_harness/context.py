@@ -15,6 +15,8 @@ class PromptContextKind(StrEnum):
     USER_TURN = "USER_TURN"
     ASSISTANT_TURN = "ASSISTANT_TURN"
     CURRENT_USER = "CURRENT_USER"
+    TOOL_REQUEST = "TOOL_REQUEST"
+    TOOL_RESULT = "TOOL_RESULT"
 
 
 class PromptTrust(StrEnum):
@@ -34,6 +36,14 @@ class AssembledPromptContext:
     parts: tuple[PromptContextPart, ...]
     estimated_input_tokens: int
     input_budget: int
+
+
+@dataclass(frozen=True, slots=True)
+class ToolObservation:
+    name: str
+    arguments_json: str
+    result_text: str
+    answer_candidate: str | None = None
 
 
 class PromptContextValidationError(RuntimeError):
@@ -75,6 +85,7 @@ class PromptContextAssembler:
         conversation: ConversationContext,
         current_user_message: str,
         token_budget: ModelTokenBudget,
+        tool_observations: tuple[ToolObservation, ...] = (),
     ) -> AssembledPromptContext:
         user_key = _required_text("user_key", user_key)
         session_id = _required_text("session_id", session_id)
@@ -101,6 +112,7 @@ class PromptContextAssembler:
             memory=memory,
             conversation=conversation,
             current_user_message=current_user_message,
+            tool_observations=tool_observations,
         )
         estimated_input_tokens = self._count_input_tokens(parts)
         if (
@@ -126,6 +138,7 @@ def _parts(
     memory: MemoryDocument | None,
     conversation: ConversationContext,
     current_user_message: str,
+    tool_observations: tuple[ToolObservation, ...],
 ) -> tuple[PromptContextPart, ...]:
     parts = [
         PromptContextPart(
@@ -172,6 +185,29 @@ def _parts(
             PromptTrust.UNTRUSTED_DATA,
         )
     )
+    for observation in tool_observations:
+        if not isinstance(observation, ToolObservation):
+            raise PromptContextValidationError("tool observation is invalid")
+        if (
+            not observation.name
+            or not observation.arguments_json
+            or not observation.result_text
+        ):
+            raise PromptContextValidationError("tool observation is incomplete")
+        parts.extend(
+            (
+                PromptContextPart(
+                    PromptContextKind.TOOL_REQUEST,
+                    f"{observation.name} {observation.arguments_json}",
+                    PromptTrust.UNTRUSTED_DATA,
+                ),
+                PromptContextPart(
+                    PromptContextKind.TOOL_RESULT,
+                    observation.result_text,
+                    PromptTrust.UNTRUSTED_DATA,
+                ),
+            )
+        )
     return tuple(parts)
 
 

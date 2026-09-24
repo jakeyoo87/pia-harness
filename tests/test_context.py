@@ -15,6 +15,7 @@ from pia_harness import (
     PromptContextKind,
     PromptContextValidationError,
     PromptTrust,
+    ToolObservation,
     RollingSummary,
     new_turn_id,
 )
@@ -73,6 +74,25 @@ class PromptContextAssemblerTest(unittest.TestCase):
         values.update(overrides)
         return PromptContextAssembler(counter).assemble(**values)
 
+    def test_current_tool_request_and_result_follow_user_input(self) -> None:
+        result = self.assemble(
+            lambda parts: sum(len(part.content) for part in parts),
+            tool_observations=(
+                ToolObservation("search", '{"query":"news"}', "cited answer"),
+            ),
+        )
+        self.assertEqual(
+            (
+                PromptContextKind.CURRENT_USER,
+                PromptContextKind.TOOL_REQUEST,
+                PromptContextKind.TOOL_RESULT,
+            ),
+            tuple(part.kind for part in result.parts[-3:]),
+        )
+        self.assertTrue(
+            all(part.trust is PromptTrust.UNTRUSTED_DATA for part in result.parts[-3:])
+        )
+
     def test_full_context_has_exact_order_content_and_trust(self) -> None:
         counted = []
 
@@ -109,10 +129,7 @@ class PromptContextAssemblerTest(unittest.TestCase):
         )
         self.assertEqual(PromptTrust.TRUSTED_INSTRUCTION, result.parts[0].trust)
         self.assertTrue(
-            all(
-                part.trust is PromptTrust.UNTRUSTED_DATA
-                for part in result.parts[1:]
-            )
+            all(part.trust is PromptTrust.UNTRUSTED_DATA for part in result.parts[1:])
         )
         self.assertEqual((result.parts,), tuple(counted))
         self.assertEqual(123, result.estimated_input_tokens)
@@ -188,16 +205,8 @@ class PromptContextAssemblerTest(unittest.TestCase):
         )
         cases = (
             {"memory": wrong_memory},
-            {
-                "conversation": ConversationContext(
-                    wrong_summary_user, (self.first,)
-                )
-            },
-            {
-                "conversation": ConversationContext(
-                    wrong_summary_session, (self.first,)
-                )
-            },
+            {"conversation": ConversationContext(wrong_summary_user, (self.first,))},
+            {"conversation": ConversationContext(wrong_summary_session, (self.first,))},
             {"conversation": ConversationContext(None, (wrong_turn_user,))},
             {"conversation": ConversationContext(None, (wrong_turn_session,))},
         )
@@ -284,7 +293,6 @@ class PromptContextAssemblerTest(unittest.TestCase):
                     ModelTokenBudget(*values)
 
     def test_counter_failure_propagates_and_budget_default_is_shared(self) -> None:
-
         def fail(parts):
             raise RuntimeError("counter unavailable")
 

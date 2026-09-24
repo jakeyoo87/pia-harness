@@ -16,7 +16,9 @@ from .context import (
     PromptContextPart,
     PromptContextValidationError,
     PromptTrust,
+    ToolObservation,
 )
+from .jev import JevDecisionAdapter, JevDecisionError
 from .memory import (
     MAX_CHANGE_SUMMARY_CHARS,
     MAX_CHANGE_SUMMARY_ITEMS,
@@ -48,6 +50,8 @@ from .orchestrator import (
     MemoryAction,
     OrchestratorStatus,
     ProgressReporter,
+    ReadToolDefinition,
+    ReadToolResult,
     ToolCall,
     ToolResult,
 )
@@ -94,6 +98,8 @@ __all__ = [
     "ConversationStore",
     "CurrentMemoryInput",
     "GeneratedAnswer",
+    "JevDecisionAdapter",
+    "JevDecisionError",
     "MemoryAction",
     "MemoryDocument",
     "MemoryReviewAction",
@@ -115,6 +121,8 @@ __all__ = [
     "PromptContextValidationError",
     "PromptTrust",
     "ProgressReporter",
+    "ReadToolDefinition",
+    "ReadToolResult",
     "RollingSummary",
     "SessionConflictError",
     "SessionStoreError",
@@ -124,6 +132,7 @@ __all__ = [
     "SummaryValidationError",
     "TokenCompactor",
     "ToolCall",
+    "ToolObservation",
     "ToolResult",
     "TurnConflictError",
     "TurnTooLargeError",

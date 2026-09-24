@@ -14,6 +14,7 @@ from pia_harness import (
     CompletedTurn,
     ConversationProgress,
     CurrentMemoryInput,
+    GeneratedAnswer,
     MemoryAction,
     MemoryReviewAction,
     MemoryReviewRequest,
@@ -169,6 +170,31 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("tool_call", payload["messages"][0]["content"])
 
+    async def test_selected_tool_arguments_are_generated_without_execution(
+        self,
+    ) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return chat_response(
+                json.dumps({"arguments_json": '{"query":"market news"}'})
+            )
+
+        adapter = self.adapter(handler)
+        tool = OpenRouterToolDefinition(
+            "search", "Find public sources", {"type": "object"}
+        )
+        call = await adapter.generate_tool_call(
+            AssembledPromptContext(answer_parts(), 10, 900), tool
+        )
+        self.assertEqual("search", call.name)
+        self.assertEqual({"query": "market news"}, json.loads(call.arguments_json))
+        self.assertEqual(
+            "pia_tool_arguments", requests[0]["response_format"]["json_schema"]["name"]
+        )
+        self.assertNotIn("tools", requests[0])
+
     async def test_optional_tool_call_uses_structured_answer_envelope(self) -> None:
         requests: list[dict[str, Any]] = []
 
@@ -209,7 +235,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual('{"symbol":"005930"}', answer.tool_call.arguments_json)
         schema = requests[0]["response_format"]["json_schema"]["schema"]
         self.assertIn("tool_call", schema["required"])
-        self.assertEqual(["QUOTE"], schema["properties"]["tool_call"]["properties"]["name"]["enum"])
+        self.assertEqual(
+            ["QUOTE"], schema["properties"]["tool_call"]["properties"]["name"]["enum"]
+        )
         self.assertIn("Look up a current quote", requests[0]["messages"][0]["content"])
 
     async def test_tool_and_web_search_cannot_be_selected_together(self) -> None:
@@ -233,7 +261,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             web_search=OpenRouterWebSearchConfig("exa", None, None, "low"),
         )
         with self.assertRaises(OpenRouterModelError):
-            await adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+            await adapter.generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900)
+            )
 
     async def test_web_search_is_answer_only_and_maps_safe_usage(self) -> None:
         requests: list[dict[str, Any]] = []
@@ -360,6 +390,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             handler,
             web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
         )
+
         async def report(event: ConversationProgress) -> None:
             progress.append(event)
 
@@ -414,9 +445,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             handler,
             web_search=OpenRouterWebSearchConfig("exa", None, None, "low"),
         )
-        await adapter.generate_answer(
-            AssembledPromptContext(answer_parts(), 10, 900)
-        )
+        await adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
 
         self.assertEqual(
             {
@@ -502,8 +531,11 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             f"[출처]({cited_url}) https://example.com/cited-extra",
         )
         for answer in invalid:
-            with self.subTest(answer=answer), self.assertRaisesRegex(
-                OpenRouterModelError, "openrouter.invalid_output"
+            with (
+                self.subTest(answer=answer),
+                self.assertRaisesRegex(
+                    OpenRouterModelError, "openrouter.invalid_output"
+                ),
             ):
                 await generate(answer, cited_url)
 
@@ -516,13 +548,13 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         for answer in valid:
             with self.subTest(answer=answer):
                 expected = (
-                    "https://example.com/Foo_(bar)"
-                    if "Foo_" in answer
-                    else cited_url
+                    "https://example.com/Foo_(bar)" if "Foo_" in answer else cited_url
                 )
                 self.assertEqual(answer, (await generate(answer, expected)).text)
 
-    async def test_answer_uses_one_structured_call_and_maps_action_and_usage(self) -> None:
+    async def test_answer_uses_one_structured_call_and_maps_action_and_usage(
+        self,
+    ) -> None:
         requests: list[httpx.Request] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -547,9 +579,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         adapter = self.adapter(handler)
         parts = answer_parts()
-        result = await adapter.generate_answer(
-            AssembledPromptContext(parts, 10, 900)
-        )
+        result = await adapter.generate_answer(AssembledPromptContext(parts, 10, 900))
 
         self.assertEqual("핵심만 답할게요.", result.text)
         self.assertIs(MemoryAction.UPDATE, result.memory_action)
@@ -590,7 +620,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(expected, adapter.count_input_tokens(parts))
 
-    async def test_answer_without_usage_uses_estimate_without_inventing_usage(self) -> None:
+    async def test_answer_without_usage_uses_estimate_without_inventing_usage(
+        self,
+    ) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return chat_response(
                 json.dumps(
@@ -605,11 +637,11 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         adapter = self.adapter(handler)
         parts = answer_parts()
-        result = await adapter.generate_answer(
-            AssembledPromptContext(parts, 10, 900)
-        )
+        result = await adapter.generate_answer(AssembledPromptContext(parts, 10, 900))
         self.assertIsNone(result.usage)
-        self.assertGreater(result.estimated_total_tokens, adapter.count_input_tokens(parts))
+        self.assertGreater(
+            result.estimated_total_tokens, adapter.count_input_tokens(parts)
+        )
 
     async def test_every_memory_action_parses_without_keyword_logic(self) -> None:
         for action in MemoryAction:
@@ -632,7 +664,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertIs(action, result.memory_action)
 
-    def test_memory_review_has_no_completion_cap_and_converts_changes_to_tuple(self) -> None:
+    def test_memory_review_has_no_completion_cap_and_converts_changes_to_tuple(
+        self,
+    ) -> None:
         seen: list[dict[str, Any]] = []
         replacement = "가" * 4_000
 
@@ -678,14 +712,13 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("UNCHANGED", memory_system)
         self.assertIn("JSON null", memory_system)
         self.assertIn("primary language", normalized_memory_system)
-        self.assertIn(
-            "when the source is Korean, use Korean", normalized_memory_system
-        )
+        self.assertIn("when the source is Korean, use Korean", normalized_memory_system)
         self.assertIn("Memory Review data", seen[0]["messages"][1]["content"])
         self.assertEqual(
             4_000,
-            seen[0]["response_format"]["json_schema"]["schema"]
-            ["properties"]["memory_text"]["maxLength"],
+            seen[0]["response_format"]["json_schema"]["schema"]["properties"][
+                "memory_text"
+            ]["maxLength"],
         )
 
     def test_memory_review_maps_every_domain_action(self) -> None:
@@ -707,7 +740,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             max_characters=4_000,
             allow_clear=True,
         )
-        self.assertIs(MemoryReviewAction.UNCHANGED, adapter.review_memory(request).action)
+        self.assertIs(
+            MemoryReviewAction.UNCHANGED, adapter.review_memory(request).action
+        )
         self.assertIs(MemoryReviewAction.REPLACE, adapter.review_memory(request).action)
         self.assertIs(MemoryReviewAction.CLEAR, adapter.review_memory(request).action)
 
@@ -862,7 +897,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 AssembledPromptContext(answer_parts(), 10, 900)
             )
 
-    async def test_errors_do_not_retain_secrets_prompts_or_response_bodies(self) -> None:
+    async def test_errors_do_not_retain_secrets_prompts_or_response_bodies(
+        self,
+    ) -> None:
         secret_body = "provider-body-must-not-escape"
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -881,7 +918,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("앞으로 핵심만 답해줘", rendered)
         self.assertNotIn(secret_body, rendered)
 
-    async def test_transport_timeout_refusal_and_invalid_envelope_are_safe(self) -> None:
+    async def test_transport_timeout_refusal_and_invalid_envelope_are_safe(
+        self,
+    ) -> None:
         failures = (
             (
                 lambda request: (_ for _ in ()).throw(
@@ -930,7 +969,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(FAKE_KEY, rendered)
                 self.assertNotIn("secret", rendered)
 
-    async def test_default_is_one_attempt_and_retry_reuses_the_exact_payload(self) -> None:
+    async def test_default_is_one_attempt_and_retry_reuses_the_exact_payload(
+        self,
+    ) -> None:
         calls: list[bytes] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -946,9 +987,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         calls.clear()
         sleeper = AsyncMock()
         with patch("pia_harness.openrouter.asyncio.sleep", sleeper):
-            result = await self.adapter(
-                handler, max_attempts=2
-            ).generate_answer(context)
+            result = await self.adapter(handler, max_attempts=2).generate_answer(
+                context
+            )
         self.assertIs(MemoryAction.NONE, result.memory_action)
         self.assertEqual(2, len(calls))
         self.assertEqual(calls[0], calls[1])
@@ -969,9 +1010,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                         return chat_response("ignored", status=status)
                     return chat_response(answer_content())
 
-                with patch(
-                    "pia_harness.openrouter.asyncio.sleep", new=AsyncMock()
-                ):
+                with patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()):
                     result = await self.adapter(
                         handler, max_attempts=2
                     ).generate_answer(context)
@@ -991,9 +1030,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             patch("pia_harness.openrouter.asyncio.sleep", sleeper),
             self.assertRaisesRegex(OpenRouterModelError, "openrouter.http_error"),
         ):
-            await self.adapter(
-                handler, max_attempts=2
-            ).generate_answer(
+            await self.adapter(handler, max_attempts=2).generate_answer(
                 AssembledPromptContext(answer_parts(), 10, 900)
             )
         self.assertEqual(2, calls)
@@ -1013,9 +1050,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     return chat_response("ignored", status=status)
 
                 with self.assertRaises(OpenRouterModelError):
-                    await self.adapter(
-                        handler, max_attempts=2
-                    ).generate_answer(context)
+                    await self.adapter(handler, max_attempts=2).generate_answer(context)
                 self.assertEqual(1, calls)
 
         calls = 0
@@ -1028,9 +1063,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(
             OpenRouterModelError, "openrouter.output_truncated"
         ):
-            await self.adapter(
-                truncated, max_attempts=2
-            ).generate_answer(context)
+            await self.adapter(truncated, max_attempts=2).generate_answer(context)
         self.assertEqual(1, calls)
 
         calls = 0
@@ -1047,12 +1080,8 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 },
             )
 
-        with self.assertRaisesRegex(
-            OpenRouterModelError, "openrouter.invalid_usage"
-        ):
-            await self.adapter(
-                invalid_usage, max_attempts=2
-            ).generate_answer(context)
+        with self.assertRaisesRegex(OpenRouterModelError, "openrouter.invalid_usage"):
+            await self.adapter(invalid_usage, max_attempts=2).generate_answer(context)
         self.assertEqual(1, calls)
 
     def test_sync_memory_review_retries_invalid_output_once(self) -> None:
@@ -1074,12 +1103,8 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             )
 
         with patch("pia_harness.openrouter.time.sleep") as sleeper:
-            output = self.adapter(
-                handler, max_attempts=2
-            ).review_memory(
-                MemoryReviewRequest(
-                    "review", "old", (completed_turn(),), 4_000, False
-                )
+            output = self.adapter(handler, max_attempts=2).review_memory(
+                MemoryReviewRequest("review", "old", (completed_turn(),), 4_000, False)
             )
         self.assertIs(MemoryReviewAction.REPLACE, output.action)
         self.assertEqual(2, calls)
@@ -1101,9 +1126,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         adapter = self.adapter(handler, max_attempts=2)
         with patch("pia_harness.openrouter.asyncio.sleep", new=blocked_sleep):
             task = asyncio.create_task(
-                adapter.generate_answer(
-                    AssembledPromptContext(answer_parts(), 10, 900)
-                )
+                adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
             )
             await sleeping.wait()
             task.cancel()
@@ -1162,9 +1185,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 handler,
                 max_attempts=2,
                 web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
-            ).generate_answer(
-                AssembledPromptContext(answer_parts(), 10, 900), report
-            )
+            ).generate_answer(AssembledPromptContext(answer_parts(), 10, 900), report)
         self.assertEqual(f"[출처]({cited_url})", result.text)
         self.assertEqual(1, structured_calls)
         self.assertEqual(2, search_calls)
@@ -1248,9 +1269,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()),
                     self.assertRaisesRegex(OpenRouterModelError, event),
                 ):
-                    await self.adapter(
-                        handler, max_attempts=2
-                    ).generate_answer(context)
+                    await self.adapter(handler, max_attempts=2).generate_answer(context)
                 self.assertEqual(expected, calls)
 
     def test_sync_summary_retries_invalid_output_once(self) -> None:
@@ -1280,8 +1299,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             logs,
         )
         self.assertIn(
-            "model.retry_scheduled stage=summary next_attempt=2 "
-            "delay_seconds=1.0",
+            "model.retry_scheduled stage=summary next_attempt=2 delay_seconds=1.0",
             logs,
         )
 
@@ -1323,9 +1341,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         adapter = self.adapter(handler)
         task = asyncio.create_task(
-            adapter.generate_answer(
-                AssembledPromptContext(answer_parts(), 10, 900)
-            )
+            adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
         )
         await started.wait()
         task.cancel()
@@ -1343,7 +1359,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sync_client.is_closed)
         self.assertFalse(async_client.is_closed)
 
-    async def test_owned_clients_close_and_constructor_rejects_invalid_values(self) -> None:
+    async def test_owned_clients_close_and_constructor_rejects_invalid_values(
+        self,
+    ) -> None:
         adapter = OpenRouterModelAdapter(
             api_key=FAKE_KEY,
             model_id="vendor/exact-model",

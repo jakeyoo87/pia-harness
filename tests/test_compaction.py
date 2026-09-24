@@ -59,7 +59,7 @@ class TokenCompactionTest(unittest.TestCase):
             summarize,
             estimate_tokens=len,
             policy=self.policy,
-        ).compact_after_response(
+        ).compact(
             user_key=user_key,
             session_id=session_id,
             token_budget=token_budget or self.token_budget,
@@ -72,13 +72,13 @@ class TokenCompactionTest(unittest.TestCase):
     def test_policy_uses_usable_budget_and_matching_provider_usage(self) -> None:
         policy = CompactionPolicy()
         token_budget = ModelTokenBudget(262144)
-        self.assertEqual(232243, policy.trigger_tokens(token_budget))
+        self.assertEqual(206438, policy.trigger_tokens(token_budget))
         self.assertTrue(
             policy.should_compact(
                 token_budget=token_budget,
                 model_id="nemotron",
                 estimated_context_tokens=1,
-                usage=ContextUsage("nemotron", 232243),
+                usage=ContextUsage("nemotron", 206438),
             )
         )
         self.assertFalse(
@@ -97,7 +97,7 @@ class TokenCompactionTest(unittest.TestCase):
         # input budget. Reading both from the same base would change behavior
         # without changing any ratio.
         self.assertEqual(32_768, policy.tail_budget(token_budget))
-        self.assertEqual(232_243, policy.trigger_tokens(token_budget))
+        self.assertEqual(206_438, policy.trigger_tokens(token_budget))
         self.assertNotEqual(
             policy.tail_budget(token_budget),
             floor(token_budget.input_tokens * policy.protected_tail_ratio),
@@ -297,7 +297,7 @@ class TokenCompactionTest(unittest.TestCase):
             policy=self.policy,
         )
         with self.assertRaises(StoreContractError):
-            compactor.compact_after_response(
+            compactor.compact(
                 user_key="misordered",
                 session_id=session.session_id,
                 token_budget=self.token_budget,
