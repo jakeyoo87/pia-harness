@@ -48,6 +48,7 @@ class OrchestratorStatus(StrEnum):
     GENERATION_FAILED = "GENERATION_FAILED"
     DELIVERY_FAILED = "DELIVERY_FAILED"
     PERSISTENCE_FAILED = "PERSISTENCE_FAILED"
+    TOOL_FAILED = "TOOL_FAILED"
 
 
 class ConversationProgress(StrEnum):
@@ -68,6 +69,19 @@ class ConversationInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolCall:
+    name: str
+    arguments_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResult:
+    delivery_text: str
+    persisted_user_text: str
+    persisted_assistant_text: str
+
+
+@dataclass(frozen=True, slots=True)
 class GeneratedAnswer:
     text: str
     model_id: str
@@ -76,6 +90,7 @@ class GeneratedAnswer:
     memory_action: MemoryAction = MemoryAction.NONE
     delete_all_confirmed: bool = False
     web_search_requests: int = 0
+    tool_call: ToolCall | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +155,10 @@ class ConversationOrchestrator:
             [str, str, ConversationProgress], Awaitable[None]
         ]
         | None = None,
+        execute_tool: Callable[
+            [str, ToolCall, tuple[ConversationInput, ...]], Awaitable[ToolResult]
+        ]
+        | None = None,
     ) -> None:
         if not callable(generate_answer):
             raise ValueError("generate_answer must be callable")
@@ -155,6 +174,8 @@ class ConversationOrchestrator:
             raise ValueError("generate_answer_with_progress must be callable")
         if progress is not None and not callable(progress):
             raise ValueError("progress must be callable")
+        if execute_tool is not None and not callable(execute_tool):
+            raise ValueError("execute_tool must be callable")
         if not isinstance(system_prompt, str) or not system_prompt.strip():
             raise ValueError("system_prompt is required")
         if not isinstance(model_id, str) or not model_id:
@@ -175,6 +196,7 @@ class ConversationOrchestrator:
         self._generate_answer = generate_answer
         self._generate_answer_with_progress = generate_answer_with_progress
         self._progress = progress
+        self._execute_tool = execute_tool
         self._deliver = deliver
         self._system_prompt = system_prompt
         self._token_budget = token_budget
@@ -360,17 +382,45 @@ class ConversationOrchestrator:
                     assembled, report_progress
                 )
             _validate_generated_answer(answer)
+            if answer.tool_call is not None and self._execute_tool is None:
+                raise ValueError("tool execution is unavailable")
             if not await self._claim_commit(state, generation_id, len(batch)):
                 return
-            result, delivery_succeeded = await self._commit_response(
-                user_key=user_key,
-                state=state,
-                batch=batch,
-                session=session,
-                answer=answer,
-                memory_failed=memory_failed,
-                compaction_failed=compaction_failed,
+            commit_task = asyncio.create_task(
+                self._commit_response(
+                    user_key=user_key,
+                    state=state,
+                    batch=batch,
+                    session=session,
+                    answer=answer,
+                    memory_failed=memory_failed,
+                    compaction_failed=compaction_failed,
+                )
             )
+            # Repeated external cancellation must not cancel the owned commit.
+            # Supersede only cancels while the phase is GENERATING.
+            while not commit_task.done():
+                try:
+                    await asyncio.shield(commit_task)
+                except asyncio.CancelledError:
+                    continue
+            try:
+                result, delivery_succeeded = commit_task.result()
+            except asyncio.CancelledError:
+                await self._finish_generation(
+                    user_key,
+                    state,
+                    generation_id,
+                    batch,
+                    ConversationResult(
+                        OrchestratorStatus.TOOL_FAILED
+                        if answer.tool_call is not None
+                        else OrchestratorStatus.GENERATION_FAILED,
+                        turn_id=batch[-1].value.turn_id,
+                    ),
+                    clear_pending=True,
+                )
+                return
             await self._finish_generation(
                 user_key,
                 state,
@@ -682,7 +732,34 @@ class ConversationOrchestrator:
                 except Exception:
                     compaction_failed = True
 
-            final_text = _final_text(answer.text, changes)
+            persisted_user_text = combined
+            persisted_assistant_text = answer.text
+            delivery_text = answer.text
+            if answer.tool_call is not None:
+                assert self._execute_tool is not None
+                try:
+                    tool_result = await self._execute_tool(
+                        user_key,
+                        answer.tool_call,
+                        tuple(item.value for item in batch),
+                    )
+                    _validate_tool_result(tool_result)
+                except ConversationAbandoned:
+                    raise
+                except Exception:
+                    return ConversationResult(
+                        OrchestratorStatus.TOOL_FAILED,
+                        turn_id=batch[-1].value.turn_id,
+                        memory_failed=memory_failed,
+                        compaction_failed=compaction_failed,
+                    ), True
+                delivery_text = tool_result.delivery_text
+                persisted_user_text = tool_result.persisted_user_text
+                persisted_assistant_text = tool_result.persisted_assistant_text
+
+            final_text = _final_text(delivery_text, changes)
+            if answer.tool_call is None:
+                persisted_assistant_text = final_text
             try:
                 await self._deliver(user_key, final_text)
             except ConversationAbandoned:
@@ -712,8 +789,8 @@ class ConversationOrchestrator:
                     user_key=user_key,
                     session_id=session.session_id,
                     turn_id=batch[-1].value.turn_id,
-                    user_message=combined,
-                    assistant_message=final_text,
+                    user_message=persisted_user_text,
+                    assistant_message=persisted_assistant_text,
                     created_at=batch[-1].value.accepted_at,
                 )
             except ConversationAbandoned:
@@ -838,6 +915,36 @@ def _validate_generated_answer(answer: GeneratedAnswer) -> None:
         or answer.estimated_total_tokens < 0
     ):
         raise ValueError("estimated_total_tokens must be a non-negative integer")
+    if answer.tool_call is not None:
+        tool = answer.tool_call
+        if (
+            not isinstance(tool, ToolCall)
+            or not isinstance(tool.name, str)
+            or not tool.name
+            or len(tool.name) > 64
+            or not isinstance(tool.arguments_json, str)
+            or not tool.arguments_json
+            or len(tool.arguments_json) > 8192
+        ):
+            raise ValueError("generated tool call is invalid")
+        if (
+            answer.memory_action is not MemoryAction.NONE
+            or answer.delete_all_confirmed
+            or answer.web_search_requests
+        ):
+            raise ValueError("tool call must not combine with other actions")
+
+
+def _validate_tool_result(result: ToolResult) -> None:
+    if not isinstance(result, ToolResult) or any(
+        not isinstance(value, str) or not value.strip()
+        for value in (
+            result.delivery_text,
+            result.persisted_user_text,
+            result.persisted_assistant_text,
+        )
+    ):
+        raise ValueError("tool result is invalid")
 
 
 def _resolve_unfinished(

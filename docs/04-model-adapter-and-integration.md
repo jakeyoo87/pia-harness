@@ -46,6 +46,26 @@ Answer output:
 }
 ```
 
+When the caller registers `OpenRouterToolDefinition` values, the same structured Answer also requires
+`tool_call` as either `null` or one `{name, arguments_json}` object. Tool definitions are rendered as
+trusted application configuration in the system instruction. `arguments_json` must decode to a JSON
+object, but the consuming application validates its domain schema and permissions. The Adapter never
+executes a tool. With no registered tools, the request schema and prompt remain unchanged.
+
+The Orchestrator accepts an optional async `execute_tool(user_key, tool_call, inputs)` callback. A
+winning generation invokes it once after claiming commit ownership and before delivery. It returns
+`ToolResult(delivery_text, persisted_user_text, persisted_assistant_text)`. Tool model draft text is
+not delivered, and only the host-supplied persisted texts enter the completed Turn. The initial
+read-tool stage supports one tool per Answer and no second model pass over the result. Known failures
+are host-formatted results; unexpected callback errors return `TOOL_FAILED` with pending input cleared.
+External exactly-once execution is not a Harness guarantee; effectful tools require application-owned
+stable IDs and idempotency in the later write-tool stage.
+
+The existing eight-scenario live smoke does not exercise the new nullable-object `tool_call` schema.
+Before an application enables host tools against a real model, run a separately approved synthetic
+smoke for both `tool_call=null` and one valid tool request, with no user data or external tool side
+effect. Automated tests remain network-free.
+
 Memory Review output:
 
 ```json
@@ -109,6 +129,9 @@ Search results are untrusted data and never enter the structured Memory-action c
 call requests search, any simultaneous `DELETE_ALL` is still downgraded to `NONE`, while targeted `UPDATE`
 and `FORGET` retain the existing Reviewer path. A combined search and complete-Memory deletion request
 therefore requires a separate non-search deletion message.
+
+When host tools are registered, simultaneous `tool_call` and `needs_web_search=true` is invalid
+structured output. Neither path runs from that result; the Adapter does not guess a priority.
 
 The search stage must report at least one search in usage and return at least one `url_citation`;
 otherwise it is retryable invalid output. The structured stage has no tool, but if its response still

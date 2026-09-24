@@ -11,17 +11,21 @@ accept current input
 → load long-term Memory and boundary-aware Conversation Context
 → assemble trusted system prompt + untrusted data
 → if input budget overflows: force Memory Review, compact once, reassemble once
-→ generate structured Answer + MemoryAction
+→ generate structured Answer + MemoryAction (optionally one host tool request)
 → claim commit ownership
+→ execute the selected host tool, when configured
 → apply due or explicit Memory work
 → compact after response when the trigger is reached
 → append successful Memory change notices or required failure notice
 → deliver through the caller's channel callable
-→ append the completed combined Turn
+→ append the completed combined Turn (host-controlled stored text for a tool Turn)
 ```
 
 The Adapter can retry inside one model operation, but the Orchestrator sees one final success or error.
 No model output causes persistence or delivery until the winning generation claims commit ownership.
+No tool callback runs before that claim. A tool request cannot combine with a Memory action or Web
+Search. The host owns tool arguments, authorization, timeout, result wording, and any external
+idempotency; Harness owns only the call's position in the conversation lifecycle.
 
 ## Context assembly
 
@@ -172,10 +176,16 @@ generation owns the user state, even when provider cancellation was ignored.
 Within one user's commit lock, Memory Review, confirmed Memory clearing, Compaction, delivery, and
 completed-Turn persistence cannot interleave with another commit. Different users use separate states and
 can proceed concurrently.
+After commit ownership is claimed, even repeated external task cancellation keeps waiting through a
+shield for the owned commit result instead of abandoning an in-flight host tool or leaving the user's
+state stuck in COMMITTING.
 
 Pending messages combined after interruption are stored as one completed Turn under the newest input's
 Turn ID, separated by `MESSAGE_SEPARATOR`. Only the newest submitter receives the delivered result; earlier
 superseded submitters receive `SUPERSEDED`.
+For a tool Turn, the host returns separate delivery text and persisted user/assistant text. This lets
+an application deliver account-specific results without adding their raw values to later Memory Review
+or Compaction. Ordinary Answers keep the existing raw combined Turn behavior.
 
 ## Delivery and failure boundaries
 
@@ -197,6 +207,12 @@ Final delivery happens before completed-Turn persistence. This is intentional:
 | `GENERATION_FAILED` | assembly or model generation failed before commit/delivery |
 | `DELIVERY_FAILED` | final text could not be delivered; pending input remains eligible |
 | `PERSISTENCE_FAILED` | delivery succeeded but completed Turn append failed |
+| `TOOL_FAILED` | host tool callback raised unexpectedly; no delivery or Turn append, and pending input is cleared |
+
+The host should return a safe `ToolResult` for expected failures, including an ambiguous external
+outcome. Harness does not retry a tool call. If delivery fails after a successful tool callback,
+the pending input remains eligible for regeneration; an effectful host tool must therefore provide
+its own stable idempotency before it is enabled. This first read-tool stage does not add source IDs.
 
 `memory_failed` and `compaction_failed` report non-blocking side-operation failures. A required localized
 explicit-Memory failure notice is appended when an explicit update, forget, or confirmed clear fails or

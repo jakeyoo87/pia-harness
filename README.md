@@ -14,6 +14,7 @@ configuration, secrets, channel delivery, and deployment.
 | Long-term Memory | One user document up to 4,000 characters, one-hour revisit Review, explicit update/forget, CAS writes |
 | Orchestration | Hermes-style interruption during generation, serialized commit, bounded overflow recovery |
 | Model access | Model-agnostic OpenRouter Adapter for structured Answer/Memory/Summary, bounded retry, and optional model-decided two-stage Web Search |
+| Host tools | Optional single structured tool request per Answer, executed after commit ownership through an application callback; host-controlled delivery and stored text |
 | Diagnostics | Eight-scenario base smoke plus two optional Web Search scenarios |
 
 The current implementation is single-process. Distributed coordination, Telegram, AWS infrastructure,
@@ -120,7 +121,7 @@ observed response model. Exit `1` is a model/Adapter mismatch; exit `2` is inval
 
 ## Non-goals
 
-- No channel, Telegram, member authentication, portfolio, Risk Check, or order execution
+- No channel, Telegram, member authentication, portfolio, Risk Check, or built-in order execution; applications own tool implementations and authorization
 - No database client or adapter, physical key schema, AWS table/IAM provisioning, or Secrets Manager lookup
 - No model selection, fallback hierarchy, dynamic Models API discovery, or reasoning policy
 - No queue, worker, outbox, distributed lock, Memory history, vector search, or administration UI

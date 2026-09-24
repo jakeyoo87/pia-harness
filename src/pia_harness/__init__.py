@@ -34,6 +34,7 @@ from .memory import (
 from .openrouter import (
     OpenRouterModelAdapter,
     OpenRouterModelError,
+    OpenRouterToolDefinition,
     OpenRouterWebSearchConfig,
 )
 from .orchestrator import (
@@ -47,6 +48,8 @@ from .orchestrator import (
     MemoryAction,
     OrchestratorStatus,
     ProgressReporter,
+    ToolCall,
+    ToolResult,
 )
 from .persistence import (
     ConversationAbandoned,
@@ -103,6 +106,7 @@ __all__ = [
     "ModelTokenBudget",
     "OpenRouterModelAdapter",
     "OpenRouterModelError",
+    "OpenRouterToolDefinition",
     "OpenRouterWebSearchConfig",
     "OrchestratorStatus",
     "PromptContextAssembler",
@@ -119,6 +123,8 @@ __all__ = [
     "SummaryRequest",
     "SummaryValidationError",
     "TokenCompactor",
+    "ToolCall",
+    "ToolResult",
     "TurnConflictError",
     "TurnTooLargeError",
     "conservative_token_estimate",

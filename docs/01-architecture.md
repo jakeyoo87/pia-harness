@@ -41,7 +41,7 @@ Application store ─implements─> ConversationStore protocol
                            ├─ PromptContextAssembler ← token counter
                            ├─ AutomaticMemoryReviewer ← review callable
                            ├─ TokenCompactor ← summarize callable
-                           └─ generate + application delivery callables
+                           └─ generate + optional host tool + application delivery callables
                                       ▲
                                   user input
 
@@ -84,6 +84,8 @@ are not integration contracts.
   provider output is parsed. The injected store implements that persistence contract.
 - The Orchestrator is the only component that combines concurrency, Memory, Compaction, delivery, and
   completed-Turn persistence.
+- When enabled, it also invokes one host-defined tool only after the winning generation claims commit.
+  Tool names and descriptions are injected; the library owns no product tool or authorization policy.
 - The consuming application owns all user-visible channel behavior and runtime configuration values.
 
 ## Trust boundary
@@ -96,6 +98,10 @@ The following always remain untrusted data:
 - rolling Conversation Summary;
 - historical user and assistant Turns;
 - current user input.
+
+An application's tool description is trusted configuration, but model-selected tool arguments and
+all conversation content remain untrusted. The host callback validates arguments, identity, and
+authority before any domain action. Tool output is not automatically fed back to the model.
 
 The Adapter preserves historical user/assistant roles but labels Memory and Summary as data in user
 messages. It rejects a non-system Context part marked trusted or a misplaced system part. Memory and
