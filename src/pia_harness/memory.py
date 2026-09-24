@@ -108,7 +108,7 @@ class AutomaticMemoryReviewer:
         *,
         policy: MemoryReviewPolicy | None = None,
         decide_change: Callable[[MemoryReviewRequest], bool] | None = None,
-        instruction: str = MEMORY_REVIEW_INSTRUCTION,
+        instruction: str,
     ) -> None:
         if decide_change is not None and not callable(decide_change):
             raise ValueError("decide_change must be callable")
@@ -286,7 +286,9 @@ class AutomaticMemoryReviewer:
         )
         output = (
             MemoryReviewOutput(MemoryReviewAction.UNCHANGED)
-            if self._decide_change is not None and not self._decide_change(request)
+            if current_input is None
+            and self._decide_change is not None
+            and not self._decide_change(request)
             else self._review(request)
         )
         action, memory_text, change_summary = _validated_output(

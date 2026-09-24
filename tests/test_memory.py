@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pia_harness import (
     MEMORY_MAX_CHARS,
     MEMORY_REVIEW_INSTRUCTION,
-    AutomaticMemoryReviewer,
+    AutomaticMemoryReviewer as _AutomaticMemoryReviewer,
     CompletedTurn,
     CurrentMemoryInput,
     MemoryDocument,
@@ -32,6 +32,11 @@ def completed_turn(created_at: datetime) -> CompletedTurn:
         created_at=created_at,
         expires_at=int((created_at + timedelta(days=30)).timestamp()),
     )
+
+
+def AutomaticMemoryReviewer(store, review, **kwargs):
+    kwargs.setdefault("instruction", MEMORY_REVIEW_INSTRUCTION)
+    return _AutomaticMemoryReviewer(store, review, **kwargs)
 
 
 class MemoryReviewPolicyTest(unittest.TestCase):
@@ -214,6 +219,43 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
 
         self.assertEqual(MemoryReviewStatus.REPLACED, result.status)
         self.assertEqual(1, len(writes))
+
+    def test_explicit_memory_request_does_not_depend_on_jev_unchanged(self) -> None:
+        user_key = "memory-explicit-jev"
+        session_id, _turn = self.session_and_turn(user_key)
+        decisions = []
+        writes = []
+
+        def decide(request):
+            decisions.append(request)
+            return False
+
+        def write(request):
+            writes.append(request)
+            return MemoryReviewOutput(
+                MemoryReviewAction.REPLACE,
+                "- 사용자는 장기투자를 선호한다.",
+            )
+
+        reviewer = AutomaticMemoryReviewer(self.store, write, decide_change=decide)
+        result = reviewer.review_explicit_input(
+            user_key=user_key,
+            session_id=session_id,
+            current_input=self.current_input(
+                user_key, session_id, created_at=self.now + timedelta(minutes=1)
+            ),
+            now=self.now + timedelta(minutes=1),
+        )
+        self.assertEqual(MemoryReviewStatus.REPLACED, result.status)
+        self.assertEqual(1, len(writes))
+        self.assertEqual([], decisions)
+
+    def test_host_instruction_is_required(self) -> None:
+        with self.assertRaises(TypeError):
+            _AutomaticMemoryReviewer(
+                self.store,
+                lambda request: MemoryReviewOutput(MemoryReviewAction.UNCHANGED),
+            )
 
     def test_clear_requires_explicit_permission(self) -> None:
         user_key = "memory-clear"

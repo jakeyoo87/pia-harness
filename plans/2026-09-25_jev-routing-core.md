@@ -18,3 +18,8 @@
 - Search is a registered tool interface only. Provider choice remains open.
 - Model-produced tool arguments never authorize an effectful action; that contract is deferred with actual execution tools.
 - No real Jev, Search, AWS, or Broker call in automated tests.
+
+## Review follow-up
+
+- Require the host Memory instruction; explicit remember/forget requests always run the writer, while automatic reviews may skip it after Jev's unchanged decision.
+- Give the read-only Jev loop one configurable 120-second overall time budget. Do not add a fixed tool-call count or separate duplicate-call heuristic. An expired loop clears its pending input without invoking a tool again.

@@ -209,6 +209,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         read_tools=(),
         choose_next=None,
         build_tool_call=None,
+        read_routing_timeout_seconds=120.0,
     ):
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
@@ -232,6 +233,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             read_tools=read_tools,
             choose_next=choose_next,
             build_tool_call=build_tool_call,
+            read_routing_timeout_seconds=read_routing_timeout_seconds,
         )
 
     async def test_explicit_memory_failure_notice_is_required_and_validated(
@@ -1381,6 +1383,53 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
         self.assertEqual([("user", "current answer")], self.delivered)
         self.assertEqual(1, len(self.store.turns))
+
+    async def test_read_routing_deadline_stops_repeated_choices(self) -> None:
+        choices = []
+
+        async def generate(context):
+            raise AssertionError("routing did not select answer")
+
+        async def choose_next(context, tools):
+            choices.append("search")
+            return "search"
+
+        async def build_call(context, tool):
+            return ToolCall(tool.name, "{}")
+
+        async def execute_search(user_key, call, inputs):
+            await asyncio.sleep(0)
+            return ReadToolResult("short observation")
+
+        tool = ReadToolDefinition(
+            "search", "Search", {"type": "object"}, execute_search
+        )
+        orchestrator = self.orchestrator(
+            generate,
+            read_tools=(tool,),
+            choose_next=choose_next,
+            build_tool_call=build_call,
+            read_routing_timeout_seconds=0.01,
+        )
+        result = await orchestrator.submit(
+            user_key="user", message="question", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertGreater(len(choices), 1)
+        self.assertEqual([], self.delivered)
+        self.assertEqual([], self.store.turns)
+        self.assertNotIn("user", orchestrator._states)
+
+    async def test_no_tool_timeout_keeps_the_existing_pending_behavior(self) -> None:
+        async def generate(context):
+            raise TimeoutError("model unavailable")
+
+        orchestrator = self.orchestrator(generate)
+        result = await orchestrator.submit(
+            user_key="user", message="question", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual(1, len(orchestrator._states["user"].pending))
 
 
 if __name__ == "__main__":

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, TypeVar
 
 from .budget import ModelTokenBudget
 from .compaction import ContextUsage, TokenCompactor, conservative_token_estimate
@@ -33,6 +34,8 @@ from .persistence import (
 from .session import ActiveSession, MemoryDocument, as_utc, new_turn_id
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
+READ_ROUTING_TIMEOUT_SECONDS = 120.0
+_T = TypeVar("_T")
 
 
 class MemoryAction(StrEnum):
@@ -184,6 +187,7 @@ class ConversationOrchestrator:
             [AssembledPromptContext, ReadToolDefinition], Awaitable[ToolCall]
         ]
         | None = None,
+        read_routing_timeout_seconds: float = READ_ROUTING_TIMEOUT_SECONDS,
     ) -> None:
         if not callable(generate_answer):
             raise ValueError("generate_answer must be callable")
@@ -222,6 +226,13 @@ class ConversationOrchestrator:
                 raise ValueError("read tool names must be unique")
         elif choose_next is not None or build_tool_call is not None:
             raise ValueError("Jev routing requires registered read tools")
+        if (
+            isinstance(read_routing_timeout_seconds, bool)
+            or not isinstance(read_routing_timeout_seconds, (int, float))
+            or not math.isfinite(read_routing_timeout_seconds)
+            or read_routing_timeout_seconds <= 0
+        ):
+            raise ValueError("read routing timeout must be positive and finite")
         if not isinstance(system_prompt, str) or not system_prompt.strip():
             raise ValueError("system_prompt is required")
         if not isinstance(model_id, str) or not model_id:
@@ -245,6 +256,7 @@ class ConversationOrchestrator:
         self._read_tools = read_tools
         self._choose_next = choose_next
         self._build_tool_call = build_tool_call
+        self._read_routing_timeout_seconds = float(read_routing_timeout_seconds)
         self._deliver = deliver
         self._system_prompt = system_prompt
         self._token_budget = token_budget
@@ -421,10 +433,16 @@ class ConversationOrchestrator:
             if self._read_tools:
                 assert self._choose_next is not None
                 assert self._build_tool_call is not None
+                deadline = (
+                    asyncio.get_running_loop().time()
+                    + self._read_routing_timeout_seconds
+                )
                 while True:
                     if not await self._is_current(state, generation_id):
                         return
-                    choice = await self._choose_next(assembled, self._read_tools)
+                    choice = await _before_deadline(
+                        deadline, self._choose_next(assembled, self._read_tools)
+                    )
                     if choice == "answer":
                         break
                     tool = next(
@@ -432,16 +450,23 @@ class ConversationOrchestrator:
                     )
                     if tool is None:
                         raise ValueError("Jev selected an unregistered tool")
-                    call = await self._build_tool_call(assembled, tool)
+                    call = await _before_deadline(
+                        deadline, self._build_tool_call(assembled, tool)
+                    )
                     _validate_read_tool_call(call, tool.name)
                     if not await self._is_current(state, generation_id):
                         return
                     try:
-                        tool_result = await tool.execute(
-                            user_key, call, tuple(item.value for item in batch)
+                        tool_result = await _before_deadline(
+                            deadline,
+                            tool.execute(
+                                user_key, call, tuple(item.value for item in batch)
+                            ),
                         )
                         _validate_read_tool_result(tool_result)
                     except ConversationAbandoned:
+                        raise
+                    except TimeoutError:
                         raise
                     except Exception:
                         await self._finish_generation(
@@ -471,13 +496,16 @@ class ConversationOrchestrator:
                         overflow_result,
                         review_failed,
                         compact_failed,
-                    ) = await self._assemble_with_overflow(
-                        user_key,
-                        state,
-                        generation_id,
-                        batch,
-                        session,
-                        tool_observations,
+                    ) = await _before_deadline(
+                        deadline,
+                        self._assemble_with_overflow(
+                            user_key,
+                            state,
+                            generation_id,
+                            batch,
+                            session,
+                            tool_observations,
+                        ),
                     )
                     memory_failed = memory_failed or review_failed
                     compaction_failed = compaction_failed or compact_failed
@@ -585,6 +613,19 @@ class ConversationOrchestrator:
                 ),
                 clear_pending=True,
                 clear_confirmation=True,
+            )
+        except TimeoutError:
+            await self._finish_generation(
+                user_key,
+                state,
+                generation_id,
+                batch,
+                ConversationResult(
+                    OrchestratorStatus.GENERATION_FAILED,
+                    memory_failed=memory_failed,
+                    compaction_failed=compaction_failed,
+                ),
+                clear_pending=bool(self._read_tools),
             )
         except asyncio.CancelledError:
             return
@@ -1146,6 +1187,11 @@ def _final_text(answer: str, changes: list[str]) -> str:
     if not changes:
         return answer
     return f"{answer}\n\n" + "\n".join(f"- {item}" for item in changes)
+
+
+async def _before_deadline(deadline: float, operation: Awaitable[_T]) -> _T:
+    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+    return await asyncio.wait_for(operation, timeout=remaining)
 
 
 async def _durable_call(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
