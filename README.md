@@ -1,128 +1,79 @@
 # pia-harness
 
-Reusable conversation, long-term Memory, context, orchestration, persistence contracts, and OpenRouter
-model components for PIA. The consuming application supplies user identity, storage implementation,
-configuration, secrets, channel delivery, and deployment.
+PIA가 사용하는 범용 대화·Context·도구 실행 Harness다. 이 README는 사용자와 함께 **다시 검토 중인 목표 설계**를 기록한다. 아래 그림은 모두 구현 완료를 뜻하지 않는다.
 
-## Current capabilities
+현재 `main`에는 모델 Answer당 선택적 host tool **한 번**의 실행이 있고, 도구 결과를 모델에 되돌리는 다단계 Loop는 없다. 완료 Turn도 아직 사용자·assistant 문구 한 쌍이며, 모델 답변 후 Compaction 확인도 존재한다. 아래 목표 설계에서 달라지는 부분은 구현·검토 후 `docs/`의 현재 동작 문서와 함께 갱신한다.
 
-| Area | Current behavior |
-| --- | --- |
-| Sessions and Turns | One active session per opaque user key and completed Turn lifecycle through an application store |
-| Context | User-isolated Memory, rolling Summary, recent Turns, and current input assembled under one token budget |
-| Compaction | 90% trigger, protected recent tail, latest Turn preservation, one rolling Summary per session |
-| Long-term Memory | One user document up to 4,000 characters, one-hour revisit Review, explicit update/forget, CAS writes |
-| Orchestration | Hermes-style interruption during generation, serialized commit, bounded overflow recovery |
-| Model access | Model-agnostic OpenRouter Adapter for structured Answer/Memory/Summary, bounded retry, and optional model-decided two-stage Web Search |
-| Host tools | Optional single structured tool request per Answer, executed after commit ownership through an application callback; host-controlled delivery and stored text |
-| Diagnostics | Eight-scenario base smoke plus two optional Web Search scenarios |
+## 1. Harness Flow Overview
 
-The current implementation is single-process. Distributed coordination, Telegram, AWS infrastructure,
-and deployment belong to the consuming application.
+목표 설계. 사용자의 요청이 시작점이며, 모델은 답변하거나 host가 제공한 도구를 선택한다.
 
-## Documentation
-
-Start with [the documentation index](docs/README.md).
-
-- [Architecture](docs/01-architecture.md)
-- [Persistence and data](docs/02-persistence-and-data.md)
-- [Conversation lifecycle](docs/03-conversation-lifecycle.md)
-- [Model Adapter and integration](docs/04-model-adapter-and-integration.md)
-
-`docs/` describes the current merged implementation. `plans/` preserves design decisions, review
-records, and historical constraints. Source and tests are authoritative if documentation drifts.
-
-## Requirements and installation
-
-- Python 3.12 or newer
-- OpenRouter API key only when using `OpenRouterModelAdapter`
-
-Install from a checkout:
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
+```text
+사용자 요청
+    ↓
+Context 구성
+    ↓
+◇ 모델 판단
+    ├─ 최종 답변 → 전달 · 완료 Turn 저장
+    │
+    ├─ 읽기 도구 → 도구 실행 → 결과를 Context에 추가
+    │                         → Context 다시 구성 → 모델 재판단
+    │
+    └─ 실행 도구 → 이번 실행권 확정 → 도구 한 번 실행
+                                   → 실제 결과 전달 · 완료 Turn 저장
 ```
 
-Tagged versions such as `v0.3.0` also publish a wheel on GitHub Releases. Consuming applications should
-pin that wheel with its SHA-256.
+읽기 도구의 왕복은 모델이 최종 답변을 낼 때까지 이어진다. 임의의 고정 도구 호출 횟수는 두지 않는다. Harness는 도구의 도메인 의미·권한·실제 API 구현을 소유하지 않는다.
 
-The only runtime dependency is bounded in `pyproject.toml`: httpx for the optional OpenRouter Adapter.
+## 2. 같은 사용자가 처리 중 새 메시지를 보낼 때
 
-## Minimal construction
+현재 구현된 동작. 이 그림은 **이전 메시지를 처리 중인 사용자에게서 새 메시지가 도착한 경우만** 설명한다. 단계 확인은 모델이 아니라 Harness 내부 상태를 읽는 코드다.
 
-The caller implements `ConversationStore`, creates one shared budget, and passes its store plus the
-Adapter's callables into the existing components:
-
-```python
-from pia_harness import OpenRouterWebSearchConfig
-
-store = ApplicationConversationStore(...)
-budget = ModelTokenBudget(context_limit=1_050_000, response_tokens=4_096)
-adapter = OpenRouterModelAdapter(
-    api_key=openrouter_key,
-    model_id="vendor/exact-model-id",
-    token_budget=budget,
-    timeout_seconds=15,
-    max_attempts=2,
-    # Optional; policy and values belong to the consuming application.
-    # web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
-)
-
-assembler = PromptContextAssembler(adapter.count_input_tokens)
-memory_reviewer = AutomaticMemoryReviewer(store, adapter.review_memory)
-compactor = TokenCompactor(store, adapter.summarize)
+```text
+같은 사용자의 이전 메시지 처리 중
+                ↓
+          새 메시지 도착
+                ↓
+        ◇ 현재 처리 단계? — 코드의 if문
+          ├─ 답변 생성 중
+          │    → 이전 생성 취소
+          │    → 미완료 입력과 새 입력을 합쳐 다시 생성
+          │
+          └─ 실행 확정 후
+               → 진행 중인 작업은 마침
+               → 새 메시지는 다음 작업으로 대기
 ```
 
-The consuming application then creates `ConversationOrchestrator` with those three components, the same
-`store` and `budget`, `adapter.generate_answer`, `adapter.model_id`, a channel-specific async `deliver`
-callable, its system prompt, and a required localized explicit-Memory failure notice. See the
-[integration guide](docs/04-model-adapter-and-integration.md) for the complete example and ownership
-boundary.
+처리 중인 작업이 없으면 바로 새 답변 생성을 시작한다. 사용자별 생성·commit 상태는 Harness 프로세스 메모리에서 관리하고, 완료된 대화 데이터는 host가 제공한 저장소에 둔다.
 
-Always call `await adapter.aclose()` when shutting down an Adapter that owns its HTTP clients.
+## 3. Context 구성과 Turn 연속성
 
-## Verification
+목표 설계. 현재의 System·Memory·Summary·Turn 조립에 다단계 도구 결과의 연속성과 **모델 호출 직전 한 곳에서의 크기 확인**을 더한다.
 
-Run the full DB- and network-free suite:
-
-```bash
-python -m unittest discover -s tests -v
+```text
+새 사용자 요청
+      ↓
+Context 구성
+  System 지침
+  Memory
+  Summary
+  이전 완료 Turns  (사용자 요청 + 도구 요청·결과 + 최종 답변)
+  이번 사용자 요청 + 이번 Turn의 도구 결과(있다면)
+      ↓
+◇ 모델 호출 직전 입력 크기 확인 — 코드의 if문
+  ├─ 충분함 → 모델 호출
+  └─ 너무 큼 → 오래된 Turns를 Summary로 요약 — LLM 사용
+               → Context 다시 구성 → 크기 재확인
+      ↓
+모델 판단
+  ├─ 읽기 도구 요청 → 결과를 이번 Context에 추가
+  │                  → Context 구성으로 돌아감
+  └─ 최종 답변 → 이번 Turn 전체 저장
+                  → 다음 요청의 '이전 완료 Turns'에서 읽음
 ```
 
-Run only model and Orchestrator tests:
+System 지침은 host가 제공하는 규칙이고, Memory·Summary·대화·도구 결과는 모델이 참고할 데이터다. 도구 요청·결과는 완료된 Turn과 함께 다음 대화 Context로 이어진다. 크기 **판정**은 코드가 하고, 실제 Summary **생성**에만 LLM을 사용한다. 목표 설계에서는 최종 답변 뒤 별도 Compaction 검사를 하지 않고 다음 모델 호출 직전에 확인한다.
 
-```bash
-python -m unittest tests.test_openrouter_model tests.test_openrouter_model_smoke \
-  tests.test_orchestrator -v
-```
+## 문서 상태
 
-Run the live smoke tool only with approval and an exact model ID. The API key must already be present in
-the process environment and must never be passed as an argument or committed:
-
-```bash
-PYTHONPATH=src python scripts/smoke_openrouter_model.py \
-  --model vendor/exact-model-id \
-  --context-limit 1050000 \
-  --response-tokens 4096 \
-  --timeout-seconds 15
-```
-
-Add `--web-search-engine exa --web-search-context-size low` to run the two additional synthetic
-search/no-search scenarios. A structured Answer first decides whether search is needed; only a positive
-decision starts a second cited-text call with the tool. Memory Review and Summary never receive it.
-Optional `--web-search-max-results` and `--web-search-max-total-results` flags override the provider
-defaults only when explicitly supplied.
-
-The tool performs eight fixed base calls and, when Web Search is configured, two additional Answer calls.
-It never retries internally, emits JSON lines, and exits `0` only when every scenario passes with one
-observed response model. Exit `1` is a model/Adapter mismatch; exit `2` is invalid local configuration.
-
-## Non-goals
-
-- No channel, Telegram, member authentication, portfolio, Risk Check, or built-in order execution; applications own tool implementations and authorization
-- No database client or adapter, physical key schema, AWS table/IAM provisioning, or Secrets Manager lookup
-- No model selection, fallback hierarchy, dynamic Models API discovery, or reasoning policy
-- No queue, worker, outbox, distributed lock, Memory history, vector search, or administration UI
-- No live calls in automated tests
+이 세 그림은 지금까지 사용자와 리뷰한 범위만 담는다. 후속 상세 설계는 하나씩 검토한 뒤 추가한다. 현재 구현의 정확한 계약은 [docs/](docs/README.md)와 소스·테스트를 따른다. 다단계 Context·Turn 저장 변경은 [계획](plans/2026-09-24_bounded-multistep-read-tools.md)에 있으며 아직 구현·릴리스·PIA 배포되지 않았다.
