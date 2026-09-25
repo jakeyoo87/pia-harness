@@ -86,13 +86,6 @@ class ToolCall:
 
 
 @dataclass(frozen=True, slots=True)
-class ToolResult:
-    delivery_text: str
-    persisted_user_text: str
-    persisted_assistant_text: str
-
-
-@dataclass(frozen=True, slots=True)
 class ToolLink:
     """A readable source a tool found, such as one news search candidate."""
 
@@ -132,7 +125,6 @@ class GeneratedAnswer:
     model_id: str
     estimated_total_tokens: int
     usage: ContextUsage | None = None
-    tool_call: ToolCall | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,10 +186,6 @@ class ConversationOrchestrator:
         explicit_memory_failure_notice: str,
         progress: Callable[[str, str, ConversationProgress], Awaitable[None]]
         | None = None,
-        execute_tool: Callable[
-            [str, ToolCall, tuple[ConversationInput, ...]], Awaitable[ToolResult]
-        ]
-        | None = None,
         read_tools: tuple[ReadToolDefinition, ...] = (),
         read_url: Callable[[str], Awaitable[str]] | None = None,
         choose_next: Callable[
@@ -216,42 +204,21 @@ class ConversationOrchestrator:
             raise ValueError("deliver must be callable")
         if progress is not None and not callable(progress):
             raise ValueError("progress must be callable")
-        if execute_tool is not None and not callable(execute_tool):
-            raise ValueError("execute_tool must be callable")
         if not callable(choose_next):
             raise ValueError("Jev next-action selection is required")
         if read_url is not None and not callable(read_url):
             raise ValueError("read_url must be callable")
-        if not isinstance(read_tools, tuple) or any(
-            not isinstance(tool, ReadToolDefinition)
-            or not isinstance(tool.name, str)
-            or _TOOL_NAME.fullmatch(tool.name) is None
-            or tool.name == "answer"
-            or not isinstance(tool.description, str)
-            or not tool.description.strip()
-            or (
-                tool.arguments_schema is not None
-                and (
-                    not isinstance(tool.arguments_schema, Mapping)
-                    or tool.arguments_schema.get("type") != "object"
-                )
-            )
-            or (
-                tool.progress is not None
-                and not isinstance(tool.progress, ConversationProgress)
-            )
-            or not callable(tool.execute)
-            for tool in read_tools
-        ):
-            raise ValueError("read tool definitions are invalid")
+        # Tool names become Jev option names, so they must not collide with
+        # "answer" or the "read:" options.
         names = [tool.name for tool in read_tools]
-        if len(set(names)) != len(names):
-            raise ValueError("read tool names must be unique")
-        needs_arguments = any(tool.arguments_schema is not None for tool in read_tools)
-        if needs_arguments and not callable(build_tool_call):
+        if any(
+            _TOOL_NAME.fullmatch(name) is None or name == "answer" for name in names
+        ) or len(set(names)) != len(names):
+            raise ValueError("read tool names are invalid")
+        if not callable(build_tool_call) and any(
+            tool.arguments_schema is not None for tool in read_tools
+        ):
             raise ValueError("tools with arguments require tool argument generation")
-        if not needs_arguments and build_tool_call is not None:
-            raise ValueError("tool argument generation requires a tool with arguments")
         if (
             isinstance(read_routing_timeout_seconds, bool)
             or not isinstance(read_routing_timeout_seconds, (int, float))
@@ -277,7 +244,6 @@ class ConversationOrchestrator:
         self._compactor = compactor
         self._generate_answer = generate_answer
         self._progress = progress
-        self._execute_tool = execute_tool
         self._read_tools = read_tools
         self._read_url = read_url
         self._choose_next = choose_next
@@ -439,10 +405,7 @@ class ConversationOrchestrator:
                     if tool.progress is not None and not progress_started:
                         progress_started = True
                         await self._report_progress(
-                            user_key,
-                            batch[-1].value.turn_id,
-                            tool.progress,
-                            timeout=deadline - asyncio.get_running_loop().time(),
+                            user_key, batch[-1].value.turn_id, tool.progress
                         )
                     try:
                         tool_result = await _before_deadline(
@@ -472,7 +435,7 @@ class ConversationOrchestrator:
                     observation = ToolObservation(
                         call.name,
                         call.arguments_json,
-                        _tool_result_text(tool_result, links, self._read_url),
+                        _tool_result_text(tool_result, links),
                     )
                 if not await self._is_current(state, generation_id):
                     return
@@ -509,10 +472,6 @@ class ConversationOrchestrator:
 
             answer = await self._generate_answer(assembled)
             _validate_generated_answer(answer)
-            if (self._read_tools or self._read_url) and answer.tool_call is not None:
-                raise ValueError("routed answers cannot request a second tool")
-            if answer.tool_call is not None and self._execute_tool is None:
-                raise ValueError("tool execution is unavailable")
             if not await self._claim_commit(state, generation_id, len(batch)):
                 return
             commit_task = asyncio.create_task(
@@ -535,23 +494,7 @@ class ConversationOrchestrator:
                     await asyncio.shield(commit_task)
                 except asyncio.CancelledError:
                     continue
-            try:
-                result, delivery_succeeded = commit_task.result()
-            except asyncio.CancelledError:
-                await self._finish_generation(
-                    user_key,
-                    state,
-                    generation_id,
-                    batch,
-                    ConversationResult(
-                        OrchestratorStatus.TOOL_FAILED
-                        if answer.tool_call is not None
-                        else OrchestratorStatus.GENERATION_FAILED,
-                        turn_id=batch[-1].value.turn_id,
-                    ),
-                    clear_pending=True,
-                )
-                return
+            result, delivery_succeeded = commit_task.result()
             await self._finish_generation(
                 user_key,
                 state,
@@ -604,10 +547,7 @@ class ConversationOrchestrator:
         finally:
             if progress_started:
                 await self._report_progress(
-                    user_key,
-                    batch[-1].value.turn_id,
-                    ConversationProgress.COMPLETE,
-                    timeout=PROGRESS_TIMEOUT_SECONDS,
+                    user_key, batch[-1].value.turn_id, ConversationProgress.COMPLETE
                 )
 
     def _next_action_options(self, links: list[_Link]) -> tuple[NextActionOption, ...]:
@@ -657,15 +597,13 @@ class ConversationOrchestrator:
         user_key: str,
         progress_id: str,
         event: ConversationProgress,
-        *,
-        timeout: float,
     ) -> None:
         # Progress is best effort; a stuck callback must not hold the Turn.
         if self._progress is None:
             return
         try:
             await asyncio.wait_for(
-                self._progress(user_key, progress_id, event), max(0.0, timeout)
+                self._progress(user_key, progress_id, event), PROGRESS_TIMEOUT_SECONDS
             )
         except asyncio.CancelledError:
             raise
@@ -866,38 +804,12 @@ class ConversationOrchestrator:
             if explicit_memory_failed:
                 _add_notice(changes, self._explicit_memory_failure_notice)
 
-            persisted_user_text = combined
-            persisted_assistant_text = answer.text
-            delivery_text = answer.text
-            if answer.tool_call is not None:
-                assert self._execute_tool is not None
-                try:
-                    tool_result = await self._execute_tool(
-                        user_key,
-                        answer.tool_call,
-                        tuple(item.value for item in batch),
-                    )
-                    _validate_tool_result(tool_result)
-                except ConversationAbandoned:
-                    raise
-                except Exception:
-                    return ConversationResult(
-                        OrchestratorStatus.TOOL_FAILED,
-                        turn_id=batch[-1].value.turn_id,
-                        memory_failed=memory_failed,
-                        compaction_failed=compaction_failed,
-                    ), True
-                delivery_text = tool_result.delivery_text
-                persisted_user_text = tool_result.persisted_user_text
-                persisted_assistant_text = tool_result.persisted_assistant_text
-
-            final_text = _final_text(delivery_text, changes)
-            if tool_observations:
-                persisted_assistant_text = _tool_turn_text(
-                    tool_observations, final_text
-                )
-            elif answer.tool_call is None:
-                persisted_assistant_text = final_text
+            final_text = _final_text(answer.text, changes)
+            persisted_assistant_text = (
+                _tool_turn_text(tool_observations, final_text)
+                if tool_observations
+                else final_text
+            )
             try:
                 await self._deliver(user_key, final_text)
             except ConversationAbandoned:
@@ -917,7 +829,7 @@ class ConversationOrchestrator:
                     user_key=user_key,
                     session_id=session.session_id,
                     turn_id=batch[-1].value.turn_id,
-                    user_message=persisted_user_text,
+                    user_message=combined,
                     assistant_message=persisted_assistant_text,
                     created_at=batch[-1].value.accepted_at,
                 )
@@ -1023,18 +935,6 @@ def _validate_generated_answer(answer: GeneratedAnswer) -> None:
         or answer.estimated_total_tokens < 0
     ):
         raise ValueError("estimated_total_tokens must be a non-negative integer")
-    if answer.tool_call is not None:
-        tool = answer.tool_call
-        if (
-            not isinstance(tool, ToolCall)
-            or not isinstance(tool.name, str)
-            or not tool.name
-            or len(tool.name) > 64
-            or not isinstance(tool.arguments_json, str)
-            or not tool.arguments_json
-            or len(tool.arguments_json) > 8192
-        ):
-            raise ValueError("generated tool call is invalid")
 
 
 def _validate_next_action_decision(
@@ -1051,18 +951,6 @@ def _validate_next_action_decision(
         raise ValueError("tool selection must defer the Memory action")
 
 
-def _validate_tool_result(result: ToolResult) -> None:
-    if not isinstance(result, ToolResult) or any(
-        not isinstance(value, str) or not value.strip()
-        for value in (
-            result.delivery_text,
-            result.persisted_user_text,
-            result.persisted_assistant_text,
-        )
-    ):
-        raise ValueError("tool result is invalid")
-
-
 def _validate_read_tool_call(call: ToolCall, expected_name: str) -> None:
     if not isinstance(call, ToolCall) or call.name != expected_name:
         raise ValueError("read tool call is invalid")
@@ -1075,21 +963,9 @@ def _validate_read_tool_call(call: ToolCall, expected_name: str) -> None:
 
 
 def _validate_read_tool_result(result: ReadToolResult) -> None:
-    if (
-        not isinstance(result, ReadToolResult)
-        or not isinstance(result.observation_text, str)
-        or not result.observation_text.strip()
-        or not isinstance(result.links, tuple)
-        or any(
-            not isinstance(link, ToolLink)
-            or not isinstance(link.title, str)
-            or not link.title.strip()
-            or not isinstance(link.url, str)
-            or not link.url.lower().startswith(("http://", "https://"))
-            or (link.published is not None and not isinstance(link.published, str))
-            or (link.summary is not None and not isinstance(link.summary, str))
-            for link in result.links
-        )
+    # Links become readable URLs, so only http(s) links are accepted.
+    if not result.observation_text.strip() or any(
+        not link.url.startswith(("http://", "https://")) for link in result.links
     ):
         raise ValueError("read tool result is invalid")
 
@@ -1103,11 +979,7 @@ def _message_links(message: str) -> list[_Link]:
     return links
 
 
-def _tool_result_text(
-    result: ReadToolResult,
-    links: list[_Link],
-    read_url: Callable[[str], Awaitable[str]] | None,
-) -> str:
+def _tool_result_text(result: ReadToolResult, links: list[_Link]) -> str:
     if not result.links:
         return result.observation_text
     known = {link.link.url for link in links}
@@ -1131,7 +1003,7 @@ def _tool_result_text(
         lines.append(f"{line} <{link.url}>")
     if not added:
         lines.append("No new candidates; every returned link was already listed.")
-    elif read_url is not None:
+    else:
         lines.append(
             "Candidates are titles and short descriptions only; their bodies are unread."
         )

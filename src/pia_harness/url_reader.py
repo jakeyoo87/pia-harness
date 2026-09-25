@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import math
 import re
 import socket
 from collections.abc import Awaitable, Callable
@@ -16,7 +15,7 @@ import httpx
 DEFAULT_MAX_CHARS = 6000
 DEFAULT_MAX_BYTES = 2_000_000
 MAX_REDIRECTS = 5
-_TEXT_TYPES = frozenset({"text/html", "application/xhtml+xml", "text/plain"})
+_HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 _META_CHARSET = re.compile(rb"""charset\s*=\s*["']?([A-Za-z0-9_.:-]+)""", re.IGNORECASE)
 _MIN_ARTICLE_CHARS = 200
 
@@ -37,16 +36,6 @@ class UrlReader:
         resolve: Resolver | None = None,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(timeout_seconds)
-            or timeout_seconds <= 0
-        ):
-            raise ValueError("timeout_seconds must be positive and finite")
-        for name, value in (("max_bytes", max_bytes), ("max_chars", max_chars)):
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer")
         self._max_bytes = max_bytes
         self._max_chars = max_chars
         self._resolve = resolve or _resolve
@@ -70,7 +59,7 @@ class UrlReader:
                     follow_redirects=False,
                     headers={
                         "User-Agent": "Mozilla/5.0 (compatible; pia-harness reader)",
-                        "Accept": "text/html,application/xhtml+xml,text/plain",
+                        "Accept": "text/html,application/xhtml+xml",
                     },
                 ) as response:
                     if response.is_redirect:
@@ -87,7 +76,7 @@ class UrlReader:
                         .strip()
                         .lower()
                     )
-                    if content_type not in _TEXT_TYPES:
+                    if content_type not in _HTML_TYPES:
                         raise UrlReadError("unsupported content type")
                     data = bytearray()
                     async for chunk in response.aiter_bytes():
@@ -98,10 +87,7 @@ class UrlReader:
                     charset = response.charset_encoding
             except httpx.HTTPError:
                 raise UrlReadError("request failed") from None
-            text = _decode(bytes(data), charset)
-            body = (
-                _normalize(text) if content_type == "text/plain" else _page_text(text)
-            )
+            body = _page_text(_decode(bytes(data), charset))
             if not body.strip():
                 raise UrlReadError("empty body")
             if len(body) > self._max_chars:

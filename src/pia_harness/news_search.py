@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import json
-import math
 import re
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -23,7 +22,6 @@ from .orchestrator import (
 
 NAVER_NEWS_SEARCH_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 NEWS_RESULT_COUNT = 5
-MAX_QUERY_CHARS = 100
 _TAG = re.compile(r"<[^>]+>")
 
 NEWS_SEARCH_DESCRIPTION = (
@@ -65,13 +63,6 @@ class NaverNewsSearch:
             raise ValueError("NAVER client ID is required")
         if not isinstance(client_secret, str) or not client_secret.strip():
             raise ValueError("NAVER client secret is required")
-        if (
-            isinstance(timeout_seconds, bool)
-            or not isinstance(timeout_seconds, (int, float))
-            or not math.isfinite(timeout_seconds)
-            or timeout_seconds <= 0
-        ):
-            raise ValueError("timeout_seconds must be positive and finite")
         self._headers = {
             "X-NCP-APIGW-API-KEY-ID": client_id.strip(),
             "X-NCP-APIGW-API-KEY": client_secret.strip(),
@@ -97,9 +88,19 @@ class NaverNewsSearch:
         inputs: tuple[ConversationInput, ...],
     ) -> ReadToolResult:
         del user_key, inputs
-        query, sort = _arguments(call.arguments_json)
-        if query is None:
-            return ReadToolResult("News search was not run: the query was invalid.")
+        # The Orchestrator already checked that arguments_json is a JSON object.
+        arguments = json.loads(call.arguments_json)
+        query = arguments.get("query")
+        sort = arguments.get("sort")
+        if (
+            not isinstance(query, str)
+            or not query.strip()
+            or sort not in ("sim", "date")
+        ):
+            return ReadToolResult(
+                "News search was not run: the query or sort was invalid."
+            )
+        query = query.strip()
         heading = (
             f"News search: query={json.dumps(query, ensure_ascii=False)}, sort={sort}"
         )
@@ -140,22 +141,6 @@ class NaverNewsSearch:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
-
-
-def _arguments(arguments_json: str) -> tuple[str | None, str]:
-    try:
-        arguments = json.loads(arguments_json)
-    except (TypeError, ValueError):
-        return None, "sim"
-    if not isinstance(arguments, dict):
-        return None, "sim"
-    query = arguments.get("query")
-    sort = arguments.get("sort")
-    if sort not in ("sim", "date"):
-        sort = "sim"
-    if not isinstance(query, str) or not query.strip():
-        return None, sort
-    return query.strip()[:MAX_QUERY_CHARS], sort
 
 
 def _link(item: Any) -> ToolLink | None:

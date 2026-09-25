@@ -161,7 +161,11 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
             raise AssertionError("invalid query must not be sent")
 
         search = self.search(handler)
-        for arguments in ('{"query":"  ","sort":"sim"}', '{"sort":"sim"}', "[]"):
+        for arguments in (
+            '{"query":"  ","sort":"sim"}',
+            '{"sort":"sim"}',
+            '{"query":"삼성전자","sort":"newest"}',
+        ):
             with self.subTest(arguments=arguments):
                 result = await search.execute(
                     "user", ToolCall("search", arguments), inputs()

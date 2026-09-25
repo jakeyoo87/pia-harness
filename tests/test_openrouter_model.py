@@ -18,10 +18,10 @@ from pia_harness import (
     ModelTokenBudget,
     OpenRouterModelAdapter,
     OpenRouterModelError,
-    OpenRouterToolDefinition,
     PromptContextKind,
     PromptContextPart,
     PromptTrust,
+    ReadToolDefinition,
     SummaryRequest,
 )
 
@@ -124,7 +124,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         handler: Any,
         *,
         max_attempts: int | None = None,
-        tools: tuple[OpenRouterToolDefinition, ...] = (),
     ) -> OpenRouterModelAdapter:
         # Omitting the argument exercises the Adapter default, which is what the
         # smoke tool relies on to make exactly one call per scenario.
@@ -144,11 +143,10 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             timeout_seconds=5,
             sync_client=sync_client,
             async_client=async_client,
-            tools=tools,
             **chosen,
         )
 
-    async def test_no_tools_uses_text_only_answer_schema(self) -> None:
+    async def test_answer_schema_is_text_only(self) -> None:
         adapter = self.adapter(lambda request: chat_response(answer_content()))
         payload = adapter._answer_payload(answer_parts())
         schema = payload["response_format"]["json_schema"]["schema"]
@@ -156,7 +154,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             {"answer"},
             set(schema["properties"]),
         )
-        self.assertNotIn("tool_call", payload["messages"][0]["content"])
 
     async def test_selected_tool_arguments_are_generated_without_execution(
         self,
@@ -170,8 +167,8 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             )
 
         adapter = self.adapter(handler)
-        tool = OpenRouterToolDefinition(
-            "search", "Find public sources", {"type": "object"}
+        tool = ReadToolDefinition(
+            "search", "Find public sources", None, arguments_schema={"type": "object"}
         )
         call = await adapter.generate_tool_call(
             AssembledPromptContext(answer_parts(), 10, 900), tool
@@ -182,49 +179,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             "pia_tool_arguments", requests[0]["response_format"]["json_schema"]["name"]
         )
         self.assertNotIn("tools", requests[0])
-
-    async def test_optional_tool_call_uses_structured_answer_envelope(self) -> None:
-        requests: list[dict[str, Any]] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            payload = json.loads(request.content)
-            requests.append(payload)
-            return chat_response(
-                json.dumps(
-                    {
-                        "answer": "도구 실행 전 임시 문구",
-                        "tool_call": {
-                            "name": "QUOTE",
-                            "arguments_json": '{"symbol":"005930"}',
-                        },
-                    },
-                    ensure_ascii=False,
-                )
-            )
-
-        tool = OpenRouterToolDefinition(
-            "QUOTE",
-            "Look up a current quote",
-            {
-                "type": "object",
-                "properties": {"symbol": {"type": "string"}},
-                "required": ["symbol"],
-                "additionalProperties": False,
-            },
-        )
-        adapter = self.adapter(handler, tools=(tool,))
-        answer = await adapter.generate_answer(
-            AssembledPromptContext(answer_parts(), 10, 900)
-        )
-
-        self.assertEqual("QUOTE", answer.tool_call.name)
-        self.assertEqual('{"symbol":"005930"}', answer.tool_call.arguments_json)
-        schema = requests[0]["response_format"]["json_schema"]["schema"]
-        self.assertIn("tool_call", schema["required"])
-        self.assertEqual(
-            ["QUOTE"], schema["properties"]["tool_call"]["properties"]["name"]["enum"]
-        )
-        self.assertIn("Look up a current quote", requests[0]["messages"][0]["content"])
 
     async def test_answer_uses_one_structured_call_and_maps_usage(
         self,
@@ -878,7 +832,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             {"max_attempts": 3},
             {"max_attempts": True},
             {"max_attempts": 1.5},
-            {"tools": ["not-a-tuple"]},
         )
         defaults = {
             "api_key": FAKE_KEY,

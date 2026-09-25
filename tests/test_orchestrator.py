@@ -23,7 +23,6 @@ from pia_harness import (
     OrchestratorStatus,
     PromptContextAssembler,
     ToolCall,
-    ToolResult,
     ReadToolDefinition,
     ReadToolResult,
     ToolLink,
@@ -196,7 +195,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         deliver=None,
         failure_notice="memory update failed",
         progress=None,
-        execute_tool=None,
         read_tools=(),
         read_url=None,
         choose_next=None,
@@ -224,7 +222,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             model_id="model",
             explicit_memory_failure_notice=failure_notice,
             progress=progress,
-            execute_tool=execute_tool,
             read_tools=read_tools,
             read_url=read_url,
             choose_next=choose_next or default_choose_next,
@@ -307,17 +304,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         ).submit(user_key="other", message="question", accepted_at=self.now)
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
-    async def test_stuck_progress_callback_cannot_outlive_the_routing_limit(
-        self,
-    ) -> None:
-        executed = []
-
+    async def test_stuck_progress_callback_does_not_hold_the_turn(self) -> None:
         async def generate(context):
-            raise AssertionError("the routing limit must end this Turn")
-
-        async def execute(user_key, call, inputs):
-            executed.append(call)
-            return ReadToolResult("searched")
+            return GeneratedAnswer("answer", "model", 10)
 
         async def stuck_progress(user_key, progress_id, event):
             await asyncio.Event().wait()
@@ -325,9 +314,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         orchestrator = self.orchestrator(
             generate,
             progress=stuck_progress,
-            read_tools=(self.progress_search(execute),),
+            read_tools=(self.progress_search(),),
             choose_next=self.search_then_answer(),
-            read_routing_timeout_seconds=0.05,
         )
         with patch.object(orchestrator_module, "PROGRESS_TIMEOUT_SECONDS", 0.01):
             result = await asyncio.wait_for(
@@ -343,9 +331,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             if "_run_generation" in repr(task.get_coro())
         ]
 
-        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
-        self.assertEqual([], executed)
-        self.assertNotIn("user", orchestrator._states)
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([("user", "answer")], self.delivered)
         self.assertEqual([], still_running)
 
     async def test_superseded_progress_is_completed_with_its_own_turn_id(self) -> None:
@@ -864,151 +851,39 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, final.status)
         self.assertEqual("D", seen[-1])
 
-    async def test_tool_runs_after_generation_and_persists_only_host_text(self) -> None:
-        calls = []
-
-        async def generate(context):
-            return GeneratedAnswer(
-                "model draft is not delivered",
-                "model",
-                10,
-                tool_call=ToolCall("quote", '{"symbol":"005930"}'),
-            )
-
-        async def execute_tool(user_key, call, inputs):
-            calls.append((user_key, call, inputs))
-            return ToolResult("current price: 70000", "[tool request]", "[tool answer]")
-
-        orchestrator = self.orchestrator(generate, execute_tool=execute_tool)
-        result = await orchestrator.submit(
-            user_key="user", message="price for 005930", accepted_at=self.now
-        )
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual([("user", "current price: 70000")], self.delivered)
-        self.assertEqual(1, len(calls))
-        self.assertEqual("quote", calls[0][1].name)
-        self.assertEqual("price for 005930", calls[0][2][0].message)
-        self.assertEqual("[tool request]", self.store.turns[0].user_message)
-        self.assertEqual("[tool answer]", self.store.turns[0].assistant_message)
-
-    async def test_tool_failure_clears_pending_without_delivery(self) -> None:
-        calls = 0
-
-        async def generate(context):
-            if context.parts[-1].content == "price":
-                return GeneratedAnswer(
-                    "unused", "model", 10, tool_call=ToolCall("quote", "{}")
-                )
-            return GeneratedAnswer("ordinary", "model", 10)
-
-        async def execute_tool(user_key, call, inputs):
-            nonlocal calls
-            calls += 1
-            raise RuntimeError("synthetic tool failure")
-
-        orchestrator = self.orchestrator(generate, execute_tool=execute_tool)
-        failed = await orchestrator.submit(
-            user_key="user", message="price", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.TOOL_FAILED, failed.status)
-        self.assertEqual([], self.delivered)
-        self.assertEqual([], self.store.turns)
-
-        following = await orchestrator.submit(
-            user_key="user",
-            message="hello",
-            accepted_at=self.now + timedelta(seconds=1),
-        )
-        self.assertEqual(OrchestratorStatus.DELIVERED, following.status)
-        self.assertEqual(1, calls)
-        self.assertEqual("hello", self.store.turns[0].user_message)
-
-    async def test_tool_requires_executor(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer(
-                "unused", "model", 10, tool_call=ToolCall("quote", "{}")
-            )
-
-        no_executor = self.orchestrator(generate)
-        missing = await no_executor.submit(
-            user_key="user", message="price", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, missing.status)
-
-    async def test_superseded_model_tool_call_never_executes(self) -> None:
-        started = asyncio.Event()
-        release = asyncio.Event()
-        generation_tasks = []
-        calls = []
-
-        async def generate(context):
-            generation_tasks.append(asyncio.current_task())
-            if context.parts[-1].content == "first":
-                started.set()
-                try:
-                    await release.wait()
-                except asyncio.CancelledError:
-                    await release.wait()
-                return GeneratedAnswer(
-                    "late", "model", 10, tool_call=ToolCall("quote", "{}")
-                )
-            release.set()
-            return GeneratedAnswer("current", "model", 10)
-
-        async def execute_tool(user_key, call, inputs):
-            calls.append(call)
-            return ToolResult("result", "[request]", "[result]")
-
-        orchestrator = self.orchestrator(generate, execute_tool=execute_tool)
-        first = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="first", accepted_at=self.now)
-        )
-        await started.wait()
-        second = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="second", accepted_at=self.now)
-        )
-        first_result, second_result = await asyncio.gather(first, second)
-        await asyncio.gather(*generation_tasks, return_exceptions=True)
-
-        self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
-        self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
-        self.assertEqual([], calls)
-        self.assertEqual([("user", "current")], self.delivered)
-
-    async def test_repeated_external_cancel_does_not_abandon_owned_tool_commit(
+    async def test_repeated_external_cancel_does_not_abandon_owned_commit(
         self,
     ) -> None:
-        tool_started = asyncio.Event()
-        release_tool = asyncio.Event()
+        delivery_started = asyncio.Event()
+        release_delivery = asyncio.Event()
 
         async def generate(context):
-            return GeneratedAnswer(
-                "unused", "model", 10, tool_call=ToolCall("quote", "{}")
-            )
+            return GeneratedAnswer("answer", "model", 10)
 
-        async def execute_tool(user_key, call, inputs):
-            tool_started.set()
-            await release_tool.wait()
-            return ToolResult("quote returned", "[request]", "[result]")
+        async def deliver(user_key, text):
+            delivery_started.set()
+            await release_delivery.wait()
+            self.delivered.append((user_key, text))
 
-        orchestrator = self.orchestrator(generate, execute_tool=execute_tool)
+        orchestrator = self.orchestrator(generate, deliver=deliver)
         submission = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="quote", accepted_at=self.now)
+            orchestrator.submit(
+                user_key="user", message="question", accepted_at=self.now
+            )
         )
-        await tool_started.wait()
+        await delivery_started.wait()
         active_task = orchestrator._states["user"].active_task
         active_task.cancel()
         await asyncio.sleep(0)
         active_task.cancel()
         await asyncio.sleep(0)
         self.assertFalse(active_task.done())
-        release_tool.set()
+        release_delivery.set()
         result = await submission
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual([("user", "quote returned")], self.delivered)
-        self.assertEqual("[result]", self.store.turns[0].assistant_message)
+        self.assertEqual([("user", "answer")], self.delivered)
+        self.assertEqual(1, len(self.store.turns))
 
     def news_search(self, results, queries=None):
         async def execute(user_key, call, inputs):
@@ -1204,10 +1079,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             raise AssertionError("no argument generation for this tool")
 
         with self.assertRaises(ValueError):
-            self.orchestrator(
-                generate, read_tools=(no_arguments,), build_tool_call=build_call
-            )
-        with self.assertRaises(ValueError):
             self.orchestrator(generate, read_tools=(self.news_search([]),))
 
         async def choose_next(context, options):
@@ -1216,7 +1087,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             return NextActionDecision("quote")
 
         result = await self.orchestrator(
-            generate, read_tools=(no_arguments,), choose_next=choose_next
+            generate,
+            read_tools=(no_arguments,),
+            choose_next=choose_next,
+            build_tool_call=build_call,
         ).submit(user_key="user", message="price", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)

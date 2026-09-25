@@ -37,7 +37,6 @@ from .news_search import NaverNewsSearch
 from .openrouter import (
     OpenRouterModelAdapter,
     OpenRouterModelError,
-    OpenRouterToolDefinition,
 )
 from .orchestrator import (
     MESSAGE_SEPARATOR,
@@ -54,7 +53,6 @@ from .orchestrator import (
     ReadToolResult,
     ToolCall,
     ToolLink,
-    ToolResult,
 )
 from .persistence import (
     ConversationAbandoned,
@@ -115,7 +113,6 @@ __all__ = [
     "ModelTokenBudget",
     "OpenRouterModelAdapter",
     "OpenRouterModelError",
-    "OpenRouterToolDefinition",
     "OrchestratorStatus",
     "PromptContextAssembler",
     "PromptContextKind",
@@ -134,7 +131,6 @@ __all__ = [
     "ToolCall",
     "ToolLink",
     "ToolObservation",
-    "ToolResult",
     "TurnConflictError",
     "TurnTooLargeError",
     "UrlReadError",
