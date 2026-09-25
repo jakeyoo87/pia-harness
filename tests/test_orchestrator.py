@@ -35,7 +35,6 @@ class FakeStore:
         self.memories = {}
         self.fail_append = False
         self.fail_replace = False
-        self.reset_count = 0
         self.abandon_on: str | None = None
 
     def _check(self, operation: str) -> None:
@@ -99,21 +98,6 @@ class FakeStore:
         )
         self.turns.append(turn)
         return turn
-
-    def reset_active_session(self, *, user_key, expected_session_id, now=None):
-        self._check("reset")
-        current = self.sessions.get(user_key)
-        if current is None or current.session_id != expected_session_id:
-            raise RuntimeError("session changed")
-        self.reset_count += 1
-        replacement = ActiveSession(
-            user_key,
-            f"session-{user_key}-{self.reset_count}",
-            now,
-        )
-        self.sessions[user_key] = replacement
-        self.memories.pop(user_key, None)
-        return replacement
 
 
 class FakeMemoryReviewer:
@@ -501,39 +485,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["explicit"], self.memory.calls)
         self.assertTrue(self.memory.explicit_inputs[0][1])
 
-    async def test_reset_clears_memory_and_old_turns_leave_context(self) -> None:
-        self.store.memories["user"] = MemoryDocument(
-            "user",
-            "remembered",
-            new_turn_id(self.now - timedelta(seconds=1)),
-            self.now,
-        )
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        orchestrator = self.orchestrator(generate)
-        delivered = await orchestrator.submit(
-            user_key="user", message="question", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.DELIVERED, delivered.status)
-        self.assertEqual("remembered", self.store.memories["user"].memory_text)
-        review_calls = list(self.memory.calls)
-        reset_result = await orchestrator.reset(
-            user_key="user", now=self.now + timedelta(seconds=1)
-        )
-        self.assertEqual("session-user-1", reset_result.session.session_id)
-        self.assertNotIn("user", self.store.memories)
-        self.assertEqual(1, len(self.store.turns))
-        self.assertEqual("session-user-0", self.store.turns[0].session_id)
-        self.assertEqual(
-            (),
-            self.store.load_context(
-                user_key="user", session_id=reset_result.session.session_id
-            ).turns,
-        )
-        self.assertEqual(review_calls, self.memory.calls)
-
     async def test_failure_notice_survives_automatic_change_summaries(self) -> None:
         self.memory.fail = False
         self.compactor.due = True
@@ -735,62 +686,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, after_failure.status)
         self.assertEqual("D", attempts[-1])
 
-    async def test_reset_supersedes_generation_and_preserves_future_use(self) -> None:
-        started = asyncio.Event()
-
-        async def generate(context):
-            if context.parts[-1].content == "A":
-                started.set()
-                await asyncio.Event().wait()
-            return GeneratedAnswer("answer", "model", 10)
-
-        orchestrator = self.orchestrator(generate)
-        pending = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
-        )
-        await started.wait()
-        reset_result = await orchestrator.reset(user_key="user", now=self.now)
-        self.assertEqual(OrchestratorStatus.SUPERSEDED, (await pending).status)
-        self.assertEqual("session-user-1", reset_result.session.session_id)
-
-        result = await orchestrator.submit(
-            user_key="user", message="B", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual("session-user-1", self.store.turns[-1].session_id)
-
-    async def test_reset_waits_for_commit_and_supersedes_queued_input(self) -> None:
-        delivering = asyncio.Event()
-        release_delivery = asyncio.Event()
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def deliver(user_key, text):
-            delivering.set()
-            await release_delivery.wait()
-
-        orchestrator = self.orchestrator(generate, deliver=deliver)
-        first = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
-        )
-        await delivering.wait()
-        resetting = asyncio.create_task(
-            orchestrator.reset(user_key="user", now=self.now)
-        )
-        await asyncio.sleep(0.01)
-        queued = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="B", accepted_at=self.now)
-        )
-        self.assertEqual(OrchestratorStatus.SUPERSEDED, (await queued).status)
-        self.assertFalse(resetting.done())
-
-        release_delivery.set()
-        self.assertEqual(OrchestratorStatus.DELIVERED, (await first).status)
-        reset_result = await resetting
-        self.assertEqual("session-user-1", reset_result.session.session_id)
-        self.assertEqual(["A"], [turn.user_message for turn in self.store.turns])
-
     async def test_different_users_generate_concurrently(self) -> None:
         both_started = asyncio.Event()
         started = set()
@@ -926,35 +821,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, final.status)
         self.assertEqual("D", seen[-1])
-
-    async def test_reset_abandonment_always_recovers_user_state(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        orchestrator = self.orchestrator(generate)
-        self.store.abandon_on = "reset"
-        with self.assertRaises(ConversationAbandoned):
-            await orchestrator.reset(user_key="user", now=self.now)
-
-        result = await orchestrator.submit(
-            user_key="user", message="after reset", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-
-    async def test_reset_does_not_review_old_memory(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        orchestrator = self.orchestrator(generate)
-        self.memory.abandon_on = "force"
-        await orchestrator.reset(user_key="user", now=self.now)
-        self.assertEqual(1, self.store.reset_count)
-        self.assertEqual([], self.memory.calls)
-
-        result = await orchestrator.submit(
-            user_key="user", message="after reset", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
     async def test_tool_runs_after_generation_and_persists_only_host_text(self) -> None:
         calls = []

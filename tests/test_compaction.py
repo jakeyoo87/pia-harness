@@ -203,7 +203,7 @@ class TokenCompactionTest(unittest.TestCase):
         self.assertIsNone(context.summary)
         self.assertEqual(tuple(turns), context.turns)
 
-    def test_summary_cas_boundary_and_reset(self) -> None:
+    def test_summary_cas_boundary(self) -> None:
         user_key = "compact-cas"
         session = self.store.get_or_create_active_session(user_key, now=self.now)
         turns = self.append_turns(user_key, session.session_id, 2)
@@ -243,22 +243,6 @@ class TokenCompactionTest(unittest.TestCase):
         self.assertEqual(
             stale,
             self.store.get_summary(user_key=user_key, session_id=session.session_id),
-        )
-
-        replacement = self.store.reset_active_session(
-            user_key=user_key,
-            expected_session_id=session.session_id,
-            now=self.now + timedelta(minutes=2),
-        )
-        self.assertIsNone(
-            self.store.get_summary(user_key=user_key, session_id=session.session_id)
-        )
-        self.assertIsNone(
-            self.store.load_context(
-                user_key=user_key,
-                session_id=replacement.session_id,
-                now=self.now,
-            ).summary
         )
 
     def test_misordered_store_turns_fail_before_summary_or_delete(self) -> None:

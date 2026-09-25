@@ -125,11 +125,6 @@ class ConversationResult:
     compaction_failed: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class ConversationResetResult:
-    session: ActiveSession
-
-
 class _Phase(StrEnum):
     IDLE = "IDLE"
     GENERATING = "GENERATING"
@@ -151,7 +146,6 @@ class _UserState:
     pending: list[_Submission] = field(default_factory=list)
     active_task: asyncio.Task[None] | None = None
     committing_count: int = 0
-    reset_requested: bool = False
 
 
 class ConversationOrchestrator:
@@ -286,75 +280,20 @@ class ConversationOrchestrator:
         submission = _Submission(value, future)
 
         async with state.state_lock:
-            if state.reset_requested:
-                future.set_result(ConversationResult(OrchestratorStatus.SUPERSEDED))
-            else:
-                if state.phase is _Phase.GENERATING:
-                    _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
-                    if state.active_task is not None:
-                        state.active_task.cancel()
-                elif state.phase is _Phase.COMMITTING:
-                    _resolve_unfinished(
-                        state.pending[state.committing_count :],
-                        OrchestratorStatus.SUPERSEDED,
-                    )
-                state.pending.append(submission)
-                if state.phase is not _Phase.COMMITTING:
-                    self._start_generation_locked(user_key, state)
-
-        return await future
-
-    async def reset(
-        self,
-        *,
-        user_key: str,
-        now: datetime | None = None,
-    ) -> ConversationResetResult:
-        now = as_utc(now or datetime.now(UTC))
-        state = await self._state_for(user_key)
-        async with state.state_lock:
-            state.reset_requested = True
-            if state.phase is _Phase.GENERATING and state.active_task is not None:
-                state.generation_id += 1
-                state.active_task.cancel()
+            if state.phase is _Phase.GENERATING:
                 _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
+                if state.active_task is not None:
+                    state.active_task.cancel()
             elif state.phase is _Phase.COMMITTING:
                 _resolve_unfinished(
                     state.pending[state.committing_count :],
                     OrchestratorStatus.SUPERSEDED,
                 )
-            else:
-                _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
+            state.pending.append(submission)
+            if state.phase is not _Phase.COMMITTING:
+                self._start_generation_locked(user_key, state)
 
-        try:
-            async with state.commit_lock:
-                session = validate_active_session(
-                    await _durable_call(
-                        self._store.get_or_create_active_session,
-                        user_key,
-                        now=now,
-                    ),
-                    user_key=user_key,
-                )
-                replacement = validate_active_session(
-                    await _durable_call(
-                        self._store.reset_active_session,
-                        user_key=user_key,
-                        expected_session_id=session.session_id,
-                        now=now,
-                    ),
-                    user_key=user_key,
-                )
-            return ConversationResetResult(replacement)
-        finally:
-            async with state.state_lock:
-                _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
-                state.pending.clear()
-                state.phase = _Phase.IDLE
-                state.active_task = None
-                state.committing_count = 0
-                state.reset_requested = False
-            await self._remove_if_idle(user_key, state)
+        return await future
 
     async def _state_for(self, user_key: str) -> _UserState:
         async with self._states_lock:
@@ -783,8 +722,7 @@ class ConversationOrchestrator:
     ) -> bool:
         async with state.state_lock:
             if (
-                state.reset_requested
-                or state.phase is not _Phase.GENERATING
+                state.phase is not _Phase.GENERATING
                 or state.generation_id != generation_id
             ):
                 return False
@@ -951,7 +889,7 @@ class ConversationOrchestrator:
             state.active_task = None
             state.committing_count = 0
             queued_new_input = len(state.pending) > (0 if clear_pending else len(batch))
-            if queued_new_input and not state.reset_requested:
+            if queued_new_input:
                 self._start_generation_locked(user_key, state)
                 start_next = True
         if not start_next:
@@ -960,8 +898,7 @@ class ConversationOrchestrator:
     async def _is_current(self, state: _UserState, generation_id: int) -> bool:
         async with state.state_lock:
             return (
-                not state.reset_requested
-                and state.phase is _Phase.GENERATING
+                state.phase is _Phase.GENERATING
                 and state.generation_id == generation_id
             )
 
@@ -972,7 +909,6 @@ class ConversationOrchestrator:
                     self._states.get(user_key) is state
                     and state.phase is _Phase.IDLE
                     and not state.pending
-                    and not state.reset_requested
                 ):
                     del self._states[user_key]
 

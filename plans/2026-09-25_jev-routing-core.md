@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Implement the README 1-6 runtime changes and the generic tool boundary needed by section 7.
+- Implement the README 1-5 runtime changes and the generic tool boundary needed by section 6.
 - Keep Search provider, coding environment, Broker calls, and AWS deployment out of this branch.
 - Use fake registered read tools to verify Jev selection, observation, re-selection, supersede, and persistence.
 
@@ -13,10 +13,9 @@
 3. Add an injected Jev next-action adapter and registered tool contracts. A read-tool result joins current Context and is revisited by Jev. No live effectful tool is enabled.
 4. Route answer-only conversations through Jev as well. On `answer`, Jev returns
    `NONE / UPDATE / FORGET` in the same response; the text-generation model no
-   longer chooses MemoryAction. Reset bypasses Jev and atomically erases the
-   long-term Memory while starting a new session. Old Turns are excluded from
-   the new Context and expire under the existing retention policy.
-   Test both paths with fakes and the full suite.
+   longer chooses MemoryAction. Remove the unused conversation Reset API,
+   store method, coordination state, and tests. Test the remaining paths with
+   fakes and the full suite.
 
 ## Boundaries
 
@@ -33,8 +32,10 @@
 - The concrete `next_action` value is `answer` or a registered tool ID (for
   example `search`), not one of the README's four explanatory categories.
   Non-answer choices defer MemoryAction as `NONE`. Whole-Memory deletion no
-  longer has a model action or two-turn marker; the host's Reset request owns it.
-- Before PIA upgrades its pia-harness pin, its `ConversationStore` adapter must
-  implement the stronger atomic `reset_active_session` erasure contract and its
-  Orchestrator construction must supply Jev `choose_next`. This branch does not
+  longer has a model action or two-turn marker. Targeted `FORGET` can leave an
+  empty Memory document when the last retained fact is removed.
+- Before PIA upgrades its pia-harness pin, remove its Telegram `/reset` command,
+  `ConversationService.reset`, DynamoDB `reset_active_session` and
+  `SessionConflictError` import, related work-kind/ordering/tests/docs, then
+  supply Jev `choose_next` at Orchestrator construction. This branch does not
   deploy or change PIA.

@@ -5,7 +5,7 @@ from threading import RLock
 from typing import Any
 from uuid import uuid4
 
-from .persistence import SessionConflictError, TurnConflictError, TurnTooLargeError
+from .persistence import TurnConflictError, TurnTooLargeError
 from .session import (
     MEMORY_MAX_CHARS,
     ActiveSession,
@@ -214,26 +214,6 @@ class InMemoryConversationStore:
                 del self._turns[key]
             return len(keys)
 
-    def reset_active_session(
-        self,
-        *,
-        user_key: str,
-        expected_session_id: str,
-        now: datetime | None = None,
-    ) -> ActiveSession:
-        user_key = _required("user_key", user_key)
-        expected_session_id = _required("expected_session_id", expected_session_id)
-        created_at = as_utc(now or datetime.now(UTC))
-        with self._lock:
-            current = self._sessions.get(user_key)
-            if current is None or current.session_id != expected_session_id:
-                raise SessionConflictError("active session changed before reset")
-            replacement = ActiveSession(user_key, uuid4().hex, created_at)
-            self._sessions[user_key] = replacement
-            self._summaries.pop((user_key, expected_session_id), None)
-            self._memories.pop(user_key, None)
-            return replacement
-
     def delete_all_for_user(self, user_key: str) -> int:
         user_key = _required("user_key", user_key)
         with self._lock:
@@ -350,7 +330,7 @@ class ConversationStoreContract:
             ).turns,
         )
 
-    def test_contract_boundaries_cas_and_reset(self) -> None:
+    def test_contract_boundaries_and_cas(self) -> None:
         session = self.store.get_or_create_active_session("boundaries", now=self.now)
         first = self.append("boundaries", session.session_id)
         second = self.append(
@@ -419,22 +399,11 @@ class ConversationStoreContract:
                 now=self.now,
             ),
         )
-        replacement = self.store.reset_active_session(
-            user_key="boundaries",
-            expected_session_id=session.session_id,
-            now=self.now + timedelta(minutes=1),
-        )
-        with self.assertRaises(SessionConflictError):
-            self.store.reset_active_session(
-                user_key="boundaries",
-                expected_session_id=session.session_id,
-                now=self.now,
-            )
         self.assertEqual(
-            replacement,
+            session,
             self.store.get_or_create_active_session("boundaries", now=self.now),
         )
-        self.assertIsNone(self.store.get_memory("boundaries"))
+        self.assertEqual(memory, self.store.get_memory("boundaries"))
         self.assertEqual(
             (first, second),
             self.store.load_unreviewed_turns(
@@ -444,19 +413,15 @@ class ConversationStoreContract:
                 now=self.now,
             ),
         )
-        self.assertIsNone(
-            self.store.get_summary(user_key="boundaries", session_id=session.session_id)
+        self.assertEqual(
+            summary,
+            self.store.get_summary(
+                user_key="boundaries", session_id=session.session_id
+            ),
         )
 
-    def test_contract_delete_turns_through_is_scoped_to_one_session(self) -> None:
-        # Every out-of-scope Turn is older than the bound, so a wider delete removes it.
-        old = self.store.get_or_create_active_session("owner", now=self.now)
-        old_turn = self.append(
-            "owner", old.session_id, created_at=self.now - timedelta(seconds=5)
-        )
-        current = self.store.reset_active_session(
-            user_key="owner", expected_session_id=old.session_id, now=self.now
-        )
+    def test_contract_delete_turns_through_is_scoped_to_one_user(self) -> None:
+        current = self.store.get_or_create_active_session("owner", now=self.now)
         covered = self.append("owner", current.session_id)
         kept = self.append(
             "owner", current.session_id, created_at=self.now + timedelta(seconds=2)
@@ -478,12 +443,6 @@ class ConversationStoreContract:
             (kept,),
             self.store.load_context(
                 user_key="owner", session_id=current.session_id, now=self.now
-            ).turns,
-        )
-        self.assertEqual(
-            (old_turn,),
-            self.store.load_context(
-                user_key="owner", session_id=old.session_id, now=self.now
             ).turns,
         )
         self.assertEqual(

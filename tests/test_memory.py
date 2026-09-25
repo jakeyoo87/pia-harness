@@ -581,7 +581,7 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
         self.assertEqual((), result.change_summary)
         self.assertEqual(winner, self.store.get_memory(user_key))
 
-    def test_boundary_skips_reviewed_turns_and_reset_erases_memory(self) -> None:
+    def test_boundary_skips_reviewed_turns(self) -> None:
         user_key = "memory-review-boundary"
         session_id, first = self.session_and_turn(user_key)
         requests = []
@@ -617,12 +617,7 @@ class AutomaticMemoryReviewerTest(unittest.TestCase):
         self.assertEqual((second,), requests[1].turns)
         self.assertEqual("memory-2", second_result.memory.memory_text)
 
-        self.store.reset_active_session(
-            user_key=user_key,
-            expected_session_id=session_id,
-            now=self.now + timedelta(minutes=2),
-        )
-        self.assertIsNone(self.store.get_memory(user_key))
+        self.assertEqual(second_result.memory, self.store.get_memory(user_key))
 
     def test_unreviewed_query_ignores_summary_boundary_and_expired_turns(self) -> None:
         user_key = "memory-boundary"

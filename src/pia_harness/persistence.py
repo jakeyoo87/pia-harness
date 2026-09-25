@@ -21,10 +21,6 @@ class SessionStoreError(RuntimeError):
     pass
 
 
-class SessionConflictError(SessionStoreError):
-    pass
-
-
 class TurnConflictError(SessionStoreError):
     pass
 
@@ -100,21 +96,6 @@ class ConversationStore(Protocol):
     def delete_turns_through(
         self, *, user_key: str, session_id: str, through_turn_id: str
     ) -> int: ...
-
-    def reset_active_session(
-        self,
-        *,
-        user_key: str,
-        expected_session_id: str,
-        now: datetime | None = None,
-    ) -> ActiveSession:
-        """Replace the session and clear long-term Memory in one store operation.
-
-        Old Turns remain under the store's retention policy but are never read
-        into the new session. The old Summary may be removed. A session conflict
-        must leave the session and Memory unchanged.
-        """
-        ...
 
 
 def validate_loaded_turns(
