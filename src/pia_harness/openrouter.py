@@ -46,11 +46,10 @@ ANSWER_INSTRUCTION = """Return the natural user-facing answer. Memory decisions 
 not this text-generation call. Do not claim that a Memory change has already persisted; the
 application adds success or failure information after the durable write. When this Turn contains
 tool results, base factual claims only on material actually present in them or in the earlier
-conversation. A search candidate
-whose body was not read is only a title and short description; never describe its content as if it
-had been read. If a read body is cut off by a subscription or login notice, say that only part
-of it was read. Cite the link of every body or candidate you relied on; later Turns keep only
-this answer, so an uncited source cannot be found again."""
+conversation. A search candidate whose body was not read is only a title and short description;
+never describe its content as if it had been read. If a read body is cut off by a subscription or
+login notice, say that only part of it was read. Cite the link of every body or candidate you
+relied on; later Turns keep only this answer, so an uncited source cannot be found again."""
 
 MEMORY_OUTPUT_INSTRUCTION = """Return UNCHANGED only when no durable meaning changes; then memory_text
 must be JSON null and change_summary must be empty. Return REPLACE with the complete non-empty Memory
