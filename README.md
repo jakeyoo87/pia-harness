@@ -255,6 +255,8 @@ Harness가 해당 URL 본문 1건 읽기
 ◇ Jev가 다시 선택 (answer · search · 남은 read:후보ID)
 ```
 
+본문은 readability-lxml(Firefox 읽기 모드 방식)로 기사 영역만 추린다. 추린 글이 200자 미만이면 페이지 전체 글자를 쓴다.
+
 URL 접근은 최소한으로만 검증한다. http·https만 허용하고, 사설·loopback·link-local 주소(EC2 metadata 포함)는 거부하며, redirect마다 같은 검사를 반복한다. 요청 타임아웃과 다운로드 크기 상한을 둔다.
 
 ## 기타: 지원 계약

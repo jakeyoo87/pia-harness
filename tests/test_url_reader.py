@@ -35,7 +35,7 @@ class UrlReaderTest(unittest.IsolatedAsyncioTestCase):
         if hasattr(self, "client"):
             await self.client.aclose()
 
-    async def test_article_text_is_preferred_and_scripts_are_dropped(self) -> None:
+    async def test_main_content_is_kept_and_page_chrome_dropped(self) -> None:
         article = "외국인 순매도가 이어졌다. " * 20
         page = (
             "<html><head><title>메뉴</title><script>var x=1;</script></head><body>"

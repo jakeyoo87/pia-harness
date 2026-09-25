@@ -11,13 +11,15 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from readability import Document  # type: ignore[import-untyped]
+from readability.readability import Unparseable  # type: ignore[import-untyped]
 
 DEFAULT_MAX_CHARS = 6000
 DEFAULT_MAX_BYTES = 2_000_000
 MAX_REDIRECTS = 5
 _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 _META_CHARSET = re.compile(rb"""charset\s*=\s*["']?([A-Za-z0-9_.:-]+)""", re.IGNORECASE)
-_MIN_ARTICLE_CHARS = 200
+_MIN_MAIN_CHARS = 200
 
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 
@@ -154,15 +156,11 @@ class _PageText(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._skip_depth = 0
-        self._article_depth = 0
         self.body: list[str] = []
-        self.article: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: object) -> None:
         if tag in self._SKIP:
             self._skip_depth += 1
-        elif tag == "article":
-            self._article_depth += 1
         if tag in self._BLOCK:
             self._add("\n")
 
@@ -173,8 +171,6 @@ class _PageText(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag in self._SKIP and self._skip_depth:
             self._skip_depth -= 1
-        elif tag == "article" and self._article_depth:
-            self._article_depth -= 1
         if tag in self._BLOCK:
             self._add("\n")
 
@@ -184,17 +180,24 @@ class _PageText(HTMLParser):
 
     def _add(self, text: str) -> None:
         self.body.append(text)
-        if self._article_depth:
-            self.article.append(text)
 
 
 def _page_text(document: str) -> str:
+    # readability (Firefox Reader View port) keeps the main content; fall back
+    # to the whole page text when it finds nothing substantial.
+    try:
+        main = _html_text(Document(document).summary(html_partial=True))
+    except Unparseable:
+        main = ""
+    if len(main) >= _MIN_MAIN_CHARS:
+        return main
+    return _html_text(document)
+
+
+def _html_text(document: str) -> str:
     parser = _PageText()
     parser.feed(document)
     parser.close()
-    article = _normalize("".join(parser.article))
-    if len(article) >= _MIN_ARTICLE_CHARS:
-        return article
     return _normalize("".join(parser.body))
 
 
