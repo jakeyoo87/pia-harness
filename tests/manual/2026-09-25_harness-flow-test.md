@@ -81,6 +81,7 @@ README 1번 흐름(Jev 선택 → 읽기 도구 → 답변)이 실제 모델·AP
   | 인사이트 | 1,371 | 1,248 | 1,243 | 1,391 | 1,248 |
   | 코인리더스 | 3,930 | 실패 (변화 없음) | 1,649 | 1,724 | 1,634 |
 
+- 비교 때 설치 버전: readability-lxml 0.9, lxml 6.1.3, cssselect 1.3.0, chardet 5.2.0, lxml_html_clean 0.4.5, trafilatura 2.2.0, boilerpy3 1.0.7. chardet 5.x는 LGPL이고 7.x는 0BSD이므로, PIA의 해시 고정 lock을 만들 때 실제로 선택된 버전과 라이선스를 확인한다.
 - 수정 (`b63bc8c`): 6개 모두 성공한 readability-lxml을 채택. 결과가 200자 미만이거나 파싱에 실패하면 페이지 전체 글자를 쓴다. 의존성 4개 추가(lxml, cssselect, chardet, lxml_html_clean). 적용 후 네이버는 끝에 "기사 추천" 안내가 붙어 1,880자가 됐다. 한경은 끝의 구독 문구가 빠지고 첫 줄의 유료 플랫폼 안내만 남는다.
 
 ### 4. Memory 기억 요청
