@@ -1,4 +1,7 @@
-"""Typed Jev decisions. Tool execution and text generation remain separate."""
+"""Typed Jev decisions through the OpenRouter Decisions API.
+
+Tool execution and text generation remain separate.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +14,8 @@ from .context import AssembledPromptContext
 from .memory import MemoryReviewRequest
 from .orchestrator import MemoryAction, NextActionDecision
 
-JEV_BASE_URL = "https://api.typesafe.ai"
+JEV_BASE_URL = "https://openrouter.ai"
+JEV_DECISIONS_PATH = "/api/alpha/decisions"
 
 
 class ToolOption(Protocol):
@@ -28,13 +32,13 @@ class JevDecisionAdapter:
         self,
         *,
         api_key: str,
-        model_id: str = "jev-latest",
+        model_id: str = "~typesafe/jev-latest",
         timeout_seconds: float = 10,
         sync_client: httpx.Client | None = None,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
         if not isinstance(api_key, str) or not api_key:
-            raise ValueError("Jev API key is required")
+            raise ValueError("OpenRouter API key is required")
         if not isinstance(model_id, str) or not model_id:
             raise ValueError("Jev model ID is required")
         if timeout_seconds <= 0:
@@ -141,7 +145,7 @@ class JevDecisionAdapter:
     async def _post_async(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = await self._async.post(
-                "/v1/systemone", json=payload, headers=self._headers
+                JEV_DECISIONS_PATH, json=payload, headers=self._headers
             )
             response.raise_for_status()
             result = response.json()
@@ -154,7 +158,7 @@ class JevDecisionAdapter:
     def _post_sync(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = self._sync.post(
-                "/v1/systemone", json=payload, headers=self._headers
+                JEV_DECISIONS_PATH, json=payload, headers=self._headers
             )
             response.raise_for_status()
             result = response.json()

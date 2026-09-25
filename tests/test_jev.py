@@ -26,13 +26,15 @@ class _Tool:
 class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
     async def test_selects_only_registered_next_action(self) -> None:
         requests = []
+        paths = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(json.loads(request.content))
+            paths.append(request.url.path)
             return httpx.Response(
                 200,
                 json={
-                    "model": "jev-latest",
+                    "model": "typesafe/jev-1.13",
                     "answers": {
                         "next_action": {
                             "type": "choice",
@@ -50,10 +52,10 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         adapter = JevDecisionAdapter(
             api_key="synthetic-key",
             sync_client=httpx.Client(
-                transport=transport, base_url="https://api.typesafe.ai"
+                transport=transport, base_url="https://openrouter.ai"
             ),
             async_client=httpx.AsyncClient(
-                transport=transport, base_url="https://api.typesafe.ai"
+                transport=transport, base_url="https://openrouter.ai"
             ),
         )
         context = AssembledPromptContext(
@@ -76,6 +78,8 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
             context, (_Tool("search", "Find public sources"),)
         )
         self.assertEqual(NextActionDecision("search"), choice)
+        self.assertEqual(["/api/alpha/decisions"], paths)
+        self.assertEqual("~typesafe/jev-latest", requests[0]["model"])
         self.assertEqual(
             {"answer", "search"},
             set(requests[0]["questions"]["next_action"]["criteria"]),
@@ -105,7 +109,7 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
             api_key="synthetic-key",
             async_client=httpx.AsyncClient(
                 transport=httpx.MockTransport(handler),
-                base_url="https://api.typesafe.ai",
+                base_url="https://openrouter.ai",
             ),
         )
         context = AssembledPromptContext(
@@ -144,7 +148,7 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
             api_key="synthetic-key",
             async_client=httpx.AsyncClient(
                 transport=httpx.MockTransport(handler),
-                base_url="https://api.typesafe.ai",
+                base_url="https://openrouter.ai",
             ),
         )
         context = AssembledPromptContext(
@@ -174,7 +178,7 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
                         },
                     )
                 ),
-                base_url="https://api.typesafe.ai",
+                base_url="https://openrouter.ai",
             ),
         )
         context = AssembledPromptContext(
@@ -208,7 +212,7 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
             api_key="synthetic-key",
             sync_client=httpx.Client(
                 transport=httpx.MockTransport(handler),
-                base_url="https://api.typesafe.ai",
+                base_url="https://openrouter.ai",
             ),
         )
         self.assertFalse(
