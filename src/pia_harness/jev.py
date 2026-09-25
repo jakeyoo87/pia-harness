@@ -10,12 +10,21 @@ from typing import Any, Protocol
 
 import httpx
 
-from .context import AssembledPromptContext
+from .context import AssembledPromptContext, PromptContextKind
 from .memory import MemoryReviewRequest
 from .orchestrator import MemoryAction, NextActionDecision
 
 JEV_BASE_URL = "https://openrouter.ai"
 JEV_DECISIONS_PATH = "/api/alpha/decisions"
+# Jev routes only the current request: the (merged) user message and this
+# Turn's tool requests and results. History and Memory go to the answer LLM.
+_ROUTING_KINDS = frozenset(
+    {
+        PromptContextKind.CURRENT_USER,
+        PromptContextKind.TOOL_REQUEST,
+        PromptContextKind.TOOL_RESULT,
+    }
+)
 
 
 class ToolOption(Protocol):
@@ -69,6 +78,7 @@ class JevDecisionAdapter:
             "state": [
                 {"kind": part.kind.value, "content": part.content}
                 for part in context.parts
+                if part.kind in _ROUTING_KINDS
             ],
             "questions": {
                 "next_action": {

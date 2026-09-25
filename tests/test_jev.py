@@ -90,6 +90,54 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
             set(requests[0]["questions"]["memory_action"]["criteria"]),
         )
 
+    async def test_routes_only_the_current_request_and_its_tool_results(self) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "answers": {
+                        "next_action": {"type": "choice", "choice": "answer"},
+                        "memory_action": {"type": "choice", "choice": "NONE"},
+                    }
+                },
+            )
+
+        adapter = JevDecisionAdapter(
+            api_key="synthetic-key",
+            async_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="https://openrouter.ai",
+            ),
+        )
+        trusted = PromptTrust.TRUSTED_INSTRUCTION
+        data = PromptTrust.UNTRUSTED_DATA
+        context = AssembledPromptContext(
+            (
+                PromptContextPart(PromptContextKind.SYSTEM, "Be helpful", trusted),
+                PromptContextPart(PromptContextKind.MEMORY, "Likes chips", data),
+                PromptContextPart(PromptContextKind.SUMMARY, "Earlier talk", data),
+                PromptContextPart(PromptContextKind.USER_TURN, "Old question", data),
+                PromptContextPart(PromptContextKind.ASSISTANT_TURN, "Old answer", data),
+                PromptContextPart(PromptContextKind.CURRENT_USER, "오늘 뉴스", data),
+                PromptContextPart(PromptContextKind.TOOL_REQUEST, "search", data),
+                PromptContextPart(PromptContextKind.TOOL_RESULT, "c1 title", data),
+            ),
+            10,
+            100,
+        )
+        await adapter.choose_next(context, (_Tool("search", "Find news"),))
+        self.assertEqual(
+            [
+                {"kind": "CURRENT_USER", "content": "오늘 뉴스"},
+                {"kind": "TOOL_REQUEST", "content": "search"},
+                {"kind": "TOOL_RESULT", "content": "c1 title"},
+            ],
+            requests[0]["state"],
+        )
+
     async def test_answer_selects_memory_action_in_the_same_request(self) -> None:
         requests = []
 
