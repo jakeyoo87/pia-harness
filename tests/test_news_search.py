@@ -94,6 +94,31 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn(FAKE_SECRET, result.observation_text)
 
+    async def test_malformed_links_skip_only_that_candidate(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        item(1, link="http://[bad", originallink="http://[bad"),
+                        item(2, link="http://[bad"),
+                        item(3),
+                    ]
+                },
+            )
+
+        result = await self.search(handler).execute(
+            "user", ToolCall("search", '{"query":"삼성전자","sort":"sim"}'), inputs()
+        )
+
+        self.assertEqual(
+            [
+                "https://press.example.com/2",
+                "https://n.news.naver.com/mnews/article/001/3",
+            ],
+            [link.url for link in result.links],
+        )
+
     async def test_original_link_is_used_without_a_naver_news_link(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

@@ -35,6 +35,7 @@ from .session import ActiveSession, as_utc, new_turn_id
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
 READ_ROUTING_TIMEOUT_SECONDS = 120.0
+PROGRESS_TIMEOUT_SECONDS = 5.0
 READ_OPTION_PREFIX = "read:"
 _TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _MESSAGE_URL = re.compile(r"https?://[^\s<>\"'()\[\]{}]+", re.IGNORECASE)
@@ -438,7 +439,10 @@ class ConversationOrchestrator:
                     if tool.progress is not None and not progress_started:
                         progress_started = True
                         await self._report_progress(
-                            user_key, batch[-1].value.turn_id, tool.progress
+                            user_key,
+                            batch[-1].value.turn_id,
+                            tool.progress,
+                            timeout=deadline - asyncio.get_running_loop().time(),
                         )
                     try:
                         tool_result = await _before_deadline(
@@ -603,6 +607,7 @@ class ConversationOrchestrator:
                     user_key,
                     batch[-1].value.turn_id,
                     ConversationProgress.COMPLETE,
+                    timeout=PROGRESS_TIMEOUT_SECONDS,
                 )
 
     def _next_action_options(self, links: list[_Link]) -> tuple[NextActionOption, ...]:
@@ -652,11 +657,16 @@ class ConversationOrchestrator:
         user_key: str,
         progress_id: str,
         event: ConversationProgress,
+        *,
+        timeout: float,
     ) -> None:
+        # Progress is best effort; a stuck callback must not hold the Turn.
         if self._progress is None:
             return
         try:
-            await self._progress(user_key, progress_id, event)
+            await asyncio.wait_for(
+                self._progress(user_key, progress_id, event), max(0.0, timeout)
+            )
         except asyncio.CancelledError:
             raise
         except Exception:

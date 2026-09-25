@@ -162,15 +162,17 @@ def _link(item: Any) -> ToolLink | None:
     if not isinstance(item, dict):
         return None
     title = _clean(item.get("title"))
-    naver_link = item.get("link")
-    original_link = item.get("originallink")
-    url = None
-    for candidate in (naver_link, original_link):
-        if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
-            if url is None or _is_naver_news(candidate):
-                url = candidate
-            if _is_naver_news(candidate):
-                break
+    hosts = {
+        url: host
+        for url in (item.get("link"), item.get("originallink"))
+        if (host := _host(url)) is not None
+    }
+    naver = [
+        url
+        for url, host in hosts.items()
+        if host == "news.naver.com" or host.endswith(".news.naver.com")
+    ]
+    url = naver[0] if naver else next(iter(hosts), None)
     if not title or url is None:
         return None
     return ToolLink(
@@ -181,9 +183,14 @@ def _link(item: Any) -> ToolLink | None:
     )
 
 
-def _is_naver_news(url: str) -> bool:
-    host = urlsplit(url).hostname or ""
-    return host == "news.naver.com" or host.endswith(".news.naver.com")
+def _host(url: Any) -> str | None:
+    """Return the host of a usable http(s) link, or None for a malformed one."""
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return None
+    try:
+        return urlsplit(url).hostname
+    except ValueError:
+        return None
 
 
 def _clean(value: Any) -> str:

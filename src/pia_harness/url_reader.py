@@ -51,9 +51,12 @@ class UrlReader:
         self._max_chars = max_chars
         self._resolve = resolve or _resolve
         self._owns_client = async_client is None
+        # trust_env=False: an environment proxy would resolve the host itself and
+        # bypass the public-address check below.
         self._client = async_client or httpx.AsyncClient(
             timeout=httpx.Timeout(float(timeout_seconds)),
             follow_redirects=False,
+            trust_env=False,
         )
 
     async def read(self, url: str) -> str:

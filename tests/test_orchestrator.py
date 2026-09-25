@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import unittest
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
+import pia_harness.orchestrator as orchestrator_module
 from pia_harness import (
     MESSAGE_SEPARATOR,
     ActiveSession,
@@ -304,6 +306,47 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             choose_next=self.search_then_answer(),
         ).submit(user_key="other", message="question", accepted_at=self.now)
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+
+    async def test_stuck_progress_callback_cannot_outlive_the_routing_limit(
+        self,
+    ) -> None:
+        executed = []
+
+        async def generate(context):
+            raise AssertionError("the routing limit must end this Turn")
+
+        async def execute(user_key, call, inputs):
+            executed.append(call)
+            return ReadToolResult("searched")
+
+        async def stuck_progress(user_key, progress_id, event):
+            await asyncio.Event().wait()
+
+        orchestrator = self.orchestrator(
+            generate,
+            progress=stuck_progress,
+            read_tools=(self.progress_search(execute),),
+            choose_next=self.search_then_answer(),
+            read_routing_timeout_seconds=0.05,
+        )
+        with patch.object(orchestrator_module, "PROGRESS_TIMEOUT_SECONDS", 0.01):
+            result = await asyncio.wait_for(
+                orchestrator.submit(
+                    user_key="user", message="question", accepted_at=self.now
+                ),
+                timeout=2,
+            )
+            await asyncio.sleep(0.05)
+        still_running = [
+            task
+            for task in asyncio.all_tasks()
+            if "_run_generation" in repr(task.get_coro())
+        ]
+
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual([], executed)
+        self.assertNotIn("user", orchestrator._states)
+        self.assertEqual([], still_running)
 
     async def test_superseded_progress_is_completed_with_its_own_turn_id(self) -> None:
         first_started = asyncio.Event()

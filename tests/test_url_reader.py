@@ -134,6 +134,13 @@ class UrlReaderTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("missing", str(caught.exception))
                 await self.client.aclose()
 
+    async def test_default_client_ignores_environment_proxies(self) -> None:
+        reader = UrlReader()
+        try:
+            self.assertFalse(reader._client.trust_env)
+        finally:
+            await reader.aclose()
+
     async def test_download_stops_at_the_byte_limit(self) -> None:
         page = "<body><p>" + "a" * 5000 + "</p></body>"
         text = await self.reader(
