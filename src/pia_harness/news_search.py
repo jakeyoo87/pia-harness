@@ -1,0 +1,202 @@
+"""NAVER API HUB news search registered as the ``search`` read tool."""
+
+from __future__ import annotations
+
+import html
+import json
+import math
+import re
+from email.utils import parsedate_to_datetime
+from typing import Any
+from urllib.parse import urlsplit
+
+import httpx
+
+from .orchestrator import (
+    ConversationInput,
+    ConversationProgress,
+    ReadToolDefinition,
+    ReadToolResult,
+    ToolCall,
+    ToolLink,
+)
+
+NAVER_NEWS_SEARCH_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
+NEWS_RESULT_COUNT = 5
+MAX_QUERY_CHARS = 100
+_TAG = re.compile(r"<[^>]+>")
+
+NEWS_SEARCH_DESCRIPTION = (
+    "Find up to five news article candidates with title, short description, link, "
+    "and date. Candidate bodies are not included."
+)
+
+NEWS_SEARCH_ARGUMENTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Two to five news search keywords in the user's language. "
+            "Replace pronouns with the actual subject. Take a different angle from "
+            "searches already made in this Turn.",
+        },
+        "sort": {
+            "type": "string",
+            "enum": ["sim", "date"],
+            "description": "date when the user asks about recent developments; "
+            "otherwise sim.",
+        },
+    },
+    "required": ["query", "sort"],
+    "additionalProperties": False,
+}
+
+
+class NaverNewsSearch:
+    def __init__(
+        self,
+        *,
+        client_id: str,
+        client_secret: str,
+        timeout_seconds: float = 10.0,
+        async_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if not isinstance(client_id, str) or not client_id.strip():
+            raise ValueError("NAVER client ID is required")
+        if not isinstance(client_secret, str) or not client_secret.strip():
+            raise ValueError("NAVER client secret is required")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be positive and finite")
+        self._headers = {
+            "X-NCP-APIGW-API-KEY-ID": client_id.strip(),
+            "X-NCP-APIGW-API-KEY": client_secret.strip(),
+        }
+        self._owns_client = async_client is None
+        self._client = async_client or httpx.AsyncClient(
+            timeout=httpx.Timeout(float(timeout_seconds))
+        )
+
+    def tool(self) -> ReadToolDefinition:
+        return ReadToolDefinition(
+            name="search",
+            description=NEWS_SEARCH_DESCRIPTION,
+            execute=self.execute,
+            arguments_schema=NEWS_SEARCH_ARGUMENTS_SCHEMA,
+            progress=ConversationProgress.WEB_SEARCH_STARTED,
+        )
+
+    async def execute(
+        self,
+        user_key: str,
+        call: ToolCall,
+        inputs: tuple[ConversationInput, ...],
+    ) -> ReadToolResult:
+        del user_key, inputs
+        query, sort = _arguments(call.arguments_json)
+        if query is None:
+            return ReadToolResult("News search was not run: the query was invalid.")
+        heading = (
+            f"News search: query={json.dumps(query, ensure_ascii=False)}, sort={sort}"
+        )
+        try:
+            response = await self._client.get(
+                NAVER_NEWS_SEARCH_URL,
+                params={
+                    "query": query,
+                    "display": NEWS_RESULT_COUNT,
+                    "start": 1,
+                    "sort": sort,
+                },
+                headers=self._headers,
+            )
+        except httpx.HTTPError:
+            return ReadToolResult(f"{heading}. The search request failed.")
+        if response.status_code != 200:
+            return ReadToolResult(
+                f"{heading}. The search request failed with status "
+                f"{response.status_code}."
+            )
+        try:
+            payload = response.json()
+            items = payload["items"]
+            if not isinstance(items, list):
+                raise TypeError("items")
+        except (KeyError, TypeError, ValueError):
+            return ReadToolResult(f"{heading}. The search response was invalid.")
+        links = tuple(
+            link
+            for link in (_link(item) for item in items[:NEWS_RESULT_COUNT])
+            if link is not None
+        )
+        if not links:
+            return ReadToolResult(f"{heading}. No articles were found.")
+        return ReadToolResult(f"{heading}. Found {len(links)} candidates.", links)
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+
+def _arguments(arguments_json: str) -> tuple[str | None, str]:
+    try:
+        arguments = json.loads(arguments_json)
+    except (TypeError, ValueError):
+        return None, "sim"
+    if not isinstance(arguments, dict):
+        return None, "sim"
+    query = arguments.get("query")
+    sort = arguments.get("sort")
+    if sort not in ("sim", "date"):
+        sort = "sim"
+    if not isinstance(query, str) or not query.strip():
+        return None, sort
+    return query.strip()[:MAX_QUERY_CHARS], sort
+
+
+def _link(item: Any) -> ToolLink | None:
+    if not isinstance(item, dict):
+        return None
+    title = _clean(item.get("title"))
+    naver_link = item.get("link")
+    original_link = item.get("originallink")
+    url = None
+    for candidate in (naver_link, original_link):
+        if isinstance(candidate, str) and candidate.startswith(("http://", "https://")):
+            if url is None or _is_naver_news(candidate):
+                url = candidate
+            if _is_naver_news(candidate):
+                break
+    if not title or url is None:
+        return None
+    return ToolLink(
+        title=title,
+        url=url,
+        published=_date(item.get("pubDate")),
+        summary=_clean(item.get("description")) or None,
+    )
+
+
+def _is_naver_news(url: str) -> bool:
+    host = urlsplit(url).hostname or ""
+    return host == "news.naver.com" or host.endswith(".news.naver.com")
+
+
+def _clean(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = _TAG.sub("", html.unescape(_TAG.sub("", value)))
+    return " ".join(text.split())
+
+
+def _date(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return parsedate_to_datetime(value).date().isoformat()
+    except (TypeError, ValueError, IndexError):
+        return None

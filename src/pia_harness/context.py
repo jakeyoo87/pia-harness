@@ -43,7 +43,6 @@ class ToolObservation:
     name: str
     arguments_json: str
     result_text: str
-    answer_candidate: str | None = None
 
 
 class PromptContextValidationError(RuntimeError):

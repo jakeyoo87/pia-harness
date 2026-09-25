@@ -9,7 +9,6 @@ from pia_harness import (
     MemoryReviewAction,
     MemoryReviewOutput,
     OpenRouterModelError,
-    OpenRouterWebSearchConfig,
     SummaryOutput,
 )
 from scripts.smoke_openrouter_model import SmokeConfig, cli, run_smoke
@@ -76,13 +75,11 @@ def answer(
     *,
     model: str = MODEL,
     text: str = "한국어 synthetic 답변",
-    web_search_requests: int = 0,
 ) -> GeneratedAnswer:
     return GeneratedAnswer(
         text=text,
         model_id=model,
         estimated_total_tokens=20,
-        web_search_requests=web_search_requests,
     )
 
 
@@ -95,35 +92,6 @@ def parsed(lines: list[str]) -> list[dict]:
 
 
 class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
-    async def test_web_search_scenarios_observe_search_and_no_search(self) -> None:
-        answers = passing_answers() + (
-            answer(
-                text="[OpenRouter](https://openrouter.ai/docs)", web_search_requests=1
-            ),
-            answer(text="4"),
-        )
-        adapter = FakeAdapter(answers=answers)
-        lines: list[str] = []
-
-        exit_code = await run_smoke(
-            config=SmokeConfig(
-                MODEL,
-                262_144,
-                web_search=OpenRouterWebSearchConfig("exa", 3, 5, "low"),
-            ),
-            api_key=FAKE_KEY,
-            emit=lines.append,
-            adapter_factory=lambda **values: adapter,
-        )
-
-        results = parsed(lines)
-        self.assertEqual(0, exit_code)
-        self.assertEqual(7, len(results))
-        self.assertEqual(6, results[-1]["total"])
-        self.assertEqual(3, adapter.answer_calls)
-        self.assertEqual(1, results[1]["web_search_requests"])
-        self.assertEqual(0, results[2]["web_search_requests"])
-
     async def test_all_four_scenarios_pass_and_adapter_closes(self) -> None:
         adapter = FakeAdapter()
         lines: list[str] = []
@@ -279,43 +247,6 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
 
 
 class OpenRouterModelSmokeCliTest(unittest.TestCase):
-    def test_web_search_cli_uses_provider_result_defaults(self) -> None:
-        answers = passing_answers() + (
-            answer(
-                text="[OpenRouter](https://openrouter.ai/docs)", web_search_requests=1
-            ),
-            answer(text="4"),
-        )
-        adapter = FakeAdapter(answers=answers)
-        captured: list[dict] = []
-
-        def factory(**values):
-            captured.append(values)
-            return adapter
-
-        self.assertEqual(
-            0,
-            cli(
-                [
-                    "--model",
-                    MODEL,
-                    "--context-limit",
-                    "262144",
-                    "--web-search-engine",
-                    "exa",
-                    "--web-search-context-size",
-                    "low",
-                ],
-                environ={"OPENROUTER_API_KEY": FAKE_KEY},
-                emit=lambda line: None,
-                adapter_factory=factory,
-            ),
-        )
-        self.assertEqual(
-            OpenRouterWebSearchConfig("exa", None, None, "low"),
-            captured[0]["web_search"],
-        )
-
     def test_invalid_key_alias_and_numbers_exit_two_without_adapter(self) -> None:
         calls: list[dict] = []
 
@@ -389,7 +320,6 @@ class OpenRouterModelSmokeCliTest(unittest.TestCase):
                     "actual_action",
                     "total_tokens",
                     "completion_tokens",
-                    "web_search_requests",
                     "output_text",
                     "error_event",
                     "error_status",

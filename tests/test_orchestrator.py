@@ -24,6 +24,7 @@ from pia_harness import (
     ToolResult,
     ReadToolDefinition,
     ReadToolResult,
+    ToolLink,
     new_turn_id,
 )
 
@@ -192,10 +193,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         counter=None,
         deliver=None,
         failure_notice="memory update failed",
-        generate_with_progress=None,
         progress=None,
         execute_tool=None,
         read_tools=(),
+        read_url=None,
         choose_next=None,
         build_tool_call=None,
         read_routing_timeout_seconds=120.0,
@@ -220,10 +221,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             token_budget=self.token_budget,
             model_id="model",
             explicit_memory_failure_notice=failure_notice,
-            generate_answer_with_progress=generate_with_progress,
             progress=progress,
             execute_tool=execute_tool,
             read_tools=read_tools,
+            read_url=read_url,
             choose_next=choose_next or default_choose_next,
             build_tool_call=build_tool_call,
             read_routing_timeout_seconds=read_routing_timeout_seconds,
@@ -240,18 +241,32 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             self.orchestrator(generate, failure_notice="   ")
         with self.assertRaises(ValueError):
-            self.orchestrator(generate, generate_with_progress=generate)
-        with self.assertRaises(ValueError):
-            self.orchestrator(generate, progress=generate)
+            self.orchestrator(generate, progress="not callable")
+
+    def progress_search(self, execute=None):
+        async def default_execute(user_key, call, inputs):
+            return ReadToolResult("searched")
+
+        return ReadToolDefinition(
+            "search",
+            "Search news",
+            execute or default_execute,
+            progress=ConversationProgress.WEB_SEARCH_STARTED,
+        )
+
+    @staticmethod
+    def search_then_answer():
+        async def choose_next(context, options):
+            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
+                return NextActionDecision("answer")
+            return NextActionDecision("search")
+
+        return choose_next
 
     async def test_progress_wraps_delivery_and_is_best_effort(self) -> None:
         ordered: list[tuple] = []
 
         async def generate(context):
-            raise AssertionError("legacy generator must not run")
-
-        async def generate_with_progress(context, report):
-            await report(ConversationProgress.WEB_SEARCH_STARTED)
             return GeneratedAnswer("answer", "model", 10)
 
         async def progress(user_key, progress_id, event):
@@ -263,8 +278,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         result = await self.orchestrator(
             generate,
             deliver=deliver,
-            generate_with_progress=generate_with_progress,
             progress=progress,
+            read_tools=(self.progress_search(),),
+            choose_next=self.search_then_answer(),
         ).submit(user_key="user", message="question", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
@@ -283,8 +299,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         result = await self.orchestrator(
             generate,
-            generate_with_progress=generate_with_progress,
             progress=failing_progress,
+            read_tools=(self.progress_search(),),
+            choose_next=self.search_then_answer(),
         ).submit(user_key="other", message="question", accepted_at=self.now)
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
@@ -293,22 +310,22 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         events: list[tuple[str, ConversationProgress]] = []
 
         async def generate(context):
-            raise AssertionError("legacy generator must not run")
+            return GeneratedAnswer("answer", "model", 10)
 
-        async def generate_with_progress(context, report):
-            await report(ConversationProgress.WEB_SEARCH_STARTED)
-            if context.parts[-1].content == "A":
+        async def execute(user_key, call, inputs):
+            if inputs[-1].message == "A":
                 first_started.set()
                 await asyncio.Event().wait()
-            return GeneratedAnswer("answer", "model", 10)
+            return ReadToolResult("searched")
 
         async def progress(user_key, progress_id, event):
             events.append((progress_id, event))
 
         orchestrator = self.orchestrator(
             generate,
-            generate_with_progress=generate_with_progress,
             progress=progress,
+            read_tools=(self.progress_search(execute),),
+            choose_next=self.search_then_answer(),
         )
         first = asyncio.create_task(
             orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
@@ -567,24 +584,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
         self.assertEqual([], self.memory.calls)
-        self.assertEqual([], self.store.turns)
-
-    async def test_invalid_generated_web_search_usage_fails_before_commit(self) -> None:
-        for index, value in enumerate((True, -1, "1")):
-            with self.subTest(value=value):
-
-                async def generate(context, value=value):
-                    return GeneratedAnswer(
-                        "answer", "model", 10, web_search_requests=value
-                    )
-
-                result = await self.orchestrator(generate).submit(
-                    user_key=f"user-{index}",
-                    message="question",
-                    accepted_at=self.now,
-                )
-
-                self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
         self.assertEqual([], self.store.turns)
 
     async def test_overflow_compacts_once_and_stops_without_progress(self) -> None:
@@ -882,7 +881,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, calls)
         self.assertEqual("hello", self.store.turns[0].user_message)
 
-    async def test_tool_requires_executor_and_excludes_search(self) -> None:
+    async def test_tool_requires_executor(self) -> None:
         async def generate(context):
             return GeneratedAnswer(
                 "unused", "model", 10, tool_call=ToolCall("quote", "{}")
@@ -893,24 +892,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             user_key="user", message="price", accepted_at=self.now
         )
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, missing.status)
-
-        async def invalid_generate(context):
-            return GeneratedAnswer(
-                "unused",
-                "model",
-                10,
-                web_search_requests=1,
-                tool_call=ToolCall("quote", "{}"),
-            )
-
-        async def execute_tool(user_key, call, inputs):
-            raise AssertionError("invalid answer must not execute")
-
-        invalid = self.orchestrator(invalid_generate, execute_tool=execute_tool)
-        rejected = await invalid.submit(
-            user_key="other", message="price", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, rejected.status)
 
     async def test_superseded_model_tool_call_never_executes(self) -> None:
         started = asyncio.Event()
@@ -986,60 +967,217 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([("user", "quote returned")], self.delivered)
         self.assertEqual("[result]", self.store.turns[0].assistant_message)
 
-    async def test_jev_search_result_returns_to_router_and_persists(self) -> None:
-        decisions = []
-        queries = []
-        request = "시장 뉴스 찾아주고 배당주 선호를 기억해줘"
+    def news_search(self, results, queries=None):
+        async def execute(user_key, call, inputs):
+            if queries is not None:
+                queries.append(call.arguments_json)
+            return results.pop(0)
+
+        return ReadToolDefinition(
+            "search",
+            "Find news candidates",
+            execute,
+            arguments_schema={"type": "object"},
+        )
+
+    @staticmethod
+    async def build_query(context, tool):
+        return ToolCall(tool.name, '{"query":"삼성전자 주가","sort":"sim"}')
+
+    async def test_search_candidates_can_be_read_one_by_one_before_answer(
+        self,
+    ) -> None:
+        offered = []
+        read_urls = []
+        answer_contexts = []
+        request = "삼성전자 왜 떨어져? 배당주 선호도 기억해줘"
+        results = [
+            ReadToolResult(
+                "News search: 삼성전자 주가",
+                (
+                    ToolLink(
+                        "외국인 순매도", "https://n.news.naver.com/a", "2026-09-24"
+                    ),
+                    ToolLink(
+                        "실적 전망 하향", "https://n.news.naver.com/b", None, "요약"
+                    ),
+                ),
+            )
+        ]
 
         async def generate(context):
-            raise AssertionError("a verified Search answer needs no second LLM")
+            answer_contexts.append(context)
+            return GeneratedAnswer("answer from read bodies", "model", 10)
 
-        async def choose_next(context, tools):
-            decisions.append(tuple(part.kind.value for part in context.parts))
-            if len(decisions) == 1:
+        async def choose_next(context, options):
+            offered.append(tuple(option.name for option in options))
+            if len(offered) == 1:
                 return NextActionDecision("search")
+            if len(offered) == 2:
+                return NextActionDecision("read:c2")
             return NextActionDecision("answer", MemoryAction.UPDATE)
 
-        async def build_call(context, tool):
-            return ToolCall(tool.name, '{"query":"market news"}')
+        async def read_url(url):
+            read_urls.append(url)
+            return "실적 전망 하향 본문"
 
-        async def execute_search(user_key, call, inputs):
-            queries.append((user_key, call, inputs))
-            return ReadToolResult(
-                "News with source https://example.com",
-                "News [source](https://example.com)",
-            )
-
-        tool = ReadToolDefinition(
-            "search",
-            "Find sourced public information",
-            {"type": "object"},
-            execute_search,
-        )
         result = await self.orchestrator(
             generate,
-            read_tools=(tool,),
+            read_tools=(self.news_search(results),),
+            read_url=read_url,
             choose_next=choose_next,
-            build_tool_call=build_call,
+            build_tool_call=self.build_query,
         ).submit(user_key="member", message=request, accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(
-            [
-                (
-                    "member",
-                    f"News [source](https://example.com)\n\n- remembered:{request}",
-                )
-            ],
-            self.delivered,
-        )
-        self.assertEqual(1, len(queries))
-        self.assertEqual("TOOL_RESULT", decisions[1][-1])
+        self.assertEqual(("search",), offered[0])
+        self.assertEqual(("search", "read:c1", "read:c2"), offered[1])
+        self.assertEqual(("search", "read:c1"), offered[2])
+        self.assertEqual(["https://n.news.naver.com/b"], read_urls)
+        self.assertEqual(1, len(answer_contexts))
+        results_text = [
+            part.content
+            for part in answer_contexts[0].parts
+            if part.kind.value == "TOOL_RESULT"
+        ]
         self.assertIn(
-            "Tool request (data): search", self.store.turns[0].assistant_message
+            "c1 [2026-09-24] 외국인 순매도 <https://n.news.naver.com/a>",
+            results_text[0],
         )
-        self.assertIn("News with source", self.store.turns[0].assistant_message)
+        self.assertIn(
+            "c2 실적 전망 하향 — 요약 <https://n.news.naver.com/b>", results_text[0]
+        )
+        self.assertEqual("실적 전망 하향 본문", results_text[1])
+        stored = self.store.turns[0].assistant_message
+        self.assertIn("Tool request (data): search", stored)
+        self.assertIn('Tool request (data): read {"id":"c2"', stored)
+        self.assertIn("실적 전망 하향 본문", stored)
         self.assertEqual(request, self.memory.explicit_inputs[0][0].user_message)
+
+    async def test_repeated_search_lists_only_new_candidates(self) -> None:
+        link = ToolLink("같은 기사", "https://n.news.naver.com/a")
+        results = [
+            ReadToolResult("first", (link,)),
+            ReadToolResult(
+                "second", (link, ToolLink("새 기사", "https://n.news.naver.com/b"))
+            ),
+            ReadToolResult("third", (link,)),
+        ]
+        seen = []
+
+        async def generate(context):
+            seen.extend(
+                part.content
+                for part in context.parts
+                if part.kind.value == "TOOL_RESULT"
+            )
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose_next(context, options):
+            searches = sum(
+                1 for part in context.parts if part.kind.value == "TOOL_RESULT"
+            )
+            return NextActionDecision("search" if searches < 3 else "answer")
+
+        async def read_url(url):
+            raise AssertionError("not selected")
+
+        result = await self.orchestrator(
+            generate,
+            read_tools=(self.news_search(results),),
+            read_url=read_url,
+            choose_next=choose_next,
+            build_tool_call=self.build_query,
+        ).submit(user_key="user", message="news", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertIn("c1 같은 기사", seen[0])
+        self.assertNotIn("같은 기사", seen[1])
+        self.assertIn("c2 새 기사", seen[1])
+        self.assertIn("No new candidates", seen[2])
+
+    async def test_user_url_can_be_read_and_failed_reads_are_observations(
+        self,
+    ) -> None:
+        offered = []
+
+        async def generate(context):
+            return GeneratedAnswer("could not read it", "model", 10)
+
+        async def choose_next(context, options):
+            offered.append(tuple(option.name for option in options))
+            if len(offered) == 1:
+                return NextActionDecision("read:u1")
+            return NextActionDecision("answer")
+
+        async def read_url(url):
+            raise RuntimeError("blocked page")
+
+        result = await self.orchestrator(
+            generate,
+            read_url=read_url,
+            choose_next=choose_next,
+        ).submit(
+            user_key="user",
+            message="이거 요약해줘 https://example.com/news/1.",
+            accepted_at=self.now,
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([("read:u1",), ()], offered)
+        stored = self.store.turns[0].assistant_message
+        self.assertIn('"url":"https://example.com/news/1"', stored)
+        self.assertIn("could not be read", stored)
+
+    async def test_selecting_an_unavailable_read_option_fails_before_commit(
+        self,
+    ) -> None:
+        async def generate(context):
+            raise AssertionError("invalid Jev choice must stop before generation")
+
+        async def choose_next(context, options):
+            return NextActionDecision("read:c9")
+
+        async def read_url(url):
+            raise AssertionError("unavailable option must not be read")
+
+        result = await self.orchestrator(
+            generate, read_url=read_url, choose_next=choose_next
+        ).submit(user_key="user", message="question", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual([], self.store.turns)
+
+    async def test_only_tools_with_arguments_use_argument_generation(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def execute(user_key, call, inputs):
+            return ReadToolResult(f"arguments={call.arguments_json}")
+
+        no_arguments = ReadToolDefinition("quote", "Quote", execute)
+
+        async def build_call(context, tool):
+            raise AssertionError("no argument generation for this tool")
+
+        with self.assertRaises(ValueError):
+            self.orchestrator(
+                generate, read_tools=(no_arguments,), build_tool_call=build_call
+            )
+        with self.assertRaises(ValueError):
+            self.orchestrator(generate, read_tools=(self.news_search([]),))
+
+        async def choose_next(context, options):
+            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
+                return NextActionDecision("answer")
+            return NextActionDecision("quote")
+
+        result = await self.orchestrator(
+            generate, read_tools=(no_arguments,), choose_next=choose_next
+        ).submit(user_key="user", message="price", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertIn("arguments={}", self.store.turns[0].assistant_message)
 
     async def test_compaction_happens_before_answer_generation(self) -> None:
         self.compactor.due = True
@@ -1072,22 +1210,16 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             )
             return NextActionDecision("answer" if "new" in current else "search")
 
-        async def build_call(context, tool):
-            return ToolCall(tool.name, "{}")
-
         async def execute_search(user_key, call, inputs):
             tool_started.set()
             await asyncio.Event().wait()
             return ReadToolResult("stale result")
 
-        tool = ReadToolDefinition(
-            "search", "Search", {"type": "object"}, execute_search
-        )
+        tool = ReadToolDefinition("search", "Search", execute_search)
         orchestrator = self.orchestrator(
             generate,
             read_tools=(tool,),
             choose_next=choose_next,
-            build_tool_call=build_call,
         )
         first = asyncio.create_task(
             orchestrator.submit(user_key="user", message="old", accepted_at=self.now)
@@ -1112,21 +1244,15 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             choices.append("search")
             return NextActionDecision("search")
 
-        async def build_call(context, tool):
-            return ToolCall(tool.name, "{}")
-
         async def execute_search(user_key, call, inputs):
             await asyncio.sleep(0)
             return ReadToolResult("short observation")
 
-        tool = ReadToolDefinition(
-            "search", "Search", {"type": "object"}, execute_search
-        )
+        tool = ReadToolDefinition("search", "Search", execute_search)
         orchestrator = self.orchestrator(
             generate,
             read_tools=(tool,),
             choose_next=choose_next,
-            build_tool_call=build_call,
             read_routing_timeout_seconds=0.01,
         )
         result = await orchestrator.submit(

@@ -27,7 +27,6 @@ from pia_harness import (
     ModelTokenBudget,
     OpenRouterModelAdapter,
     OpenRouterModelError,
-    OpenRouterWebSearchConfig,
     PromptContextKind,
     PromptContextPart,
     PromptTrust,
@@ -64,7 +63,6 @@ class SmokeConfig:
     context_limit: int
     response_tokens: int = 4_096
     timeout_seconds: float = 90.0
-    web_search: OpenRouterWebSearchConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +75,6 @@ class SmokeResult:
     actual_action: str | None = None
     total_tokens: int | None = None
     completion_tokens: int | None = None
-    web_search_requests: int | None = None
     output_text: str | None = None
     error_event: str | None = None
     error_status: int | None = None
@@ -102,7 +99,6 @@ async def run_smoke(
         model_id=config.model_id,
         token_budget=budget,
         timeout_seconds=config.timeout_seconds,
-        web_search=config.web_search,
     )
     results: list[SmokeResult] = []
     started = monotonic()
@@ -116,18 +112,6 @@ async def run_smoke(
             )
             results.append(result)
             _emit(emit, asdict(result))
-
-        if config.web_search is not None:
-            for name, parts, should_search in _web_search_scenarios():
-                result = await _run_web_answer(
-                    adapter,
-                    budget,
-                    name=name,
-                    parts=parts,
-                    should_search=should_search,
-                )
-                results.append(result)
-                _emit(emit, asdict(result))
 
         replace = await _run_memory_replace(adapter)
         results.append(replace)
@@ -188,39 +172,6 @@ async def _run_answer(
             elapsed_ms=_elapsed_ms(started),
             response_model=answer.model_id,
             total_tokens=(None if answer.usage is None else answer.usage.total_tokens),
-            web_search_requests=answer.web_search_requests,
-            output_text=answer.text,
-        )
-    except OpenRouterModelError as error:
-        return _adapter_failure(name, started, error)
-    except Exception as error:
-        return _unexpected_failure(name, started, error)
-
-
-async def _run_web_answer(
-    adapter: SmokeAdapter,
-    budget: ModelTokenBudget,
-    *,
-    name: str,
-    parts: tuple[PromptContextPart, ...],
-    should_search: bool,
-) -> SmokeResult:
-    started = monotonic()
-    try:
-        estimate = adapter.count_input_tokens(parts)
-        answer = await adapter.generate_answer(
-            AssembledPromptContext(parts, estimate, budget.input_tokens)
-        )
-        searched = answer.web_search_requests > 0
-        links = _markdown_https_links(answer.text)
-        valid = searched is should_search and (not should_search or bool(links))
-        return SmokeResult(
-            scenario=name,
-            status="PASS" if valid else "FAIL",
-            elapsed_ms=_elapsed_ms(started),
-            response_model=answer.model_id,
-            total_tokens=(None if answer.usage is None else answer.usage.total_tokens),
-            web_search_requests=answer.web_search_requests,
             output_text=answer.text,
         )
     except OpenRouterModelError as error:
@@ -355,32 +306,6 @@ def _answer_scenarios() -> tuple[tuple[str, tuple[PromptContextPart, ...]], ...]
     )
 
 
-def _web_search_scenarios() -> tuple[
-    tuple[str, tuple[PromptContextPart, ...], bool], ...
-]:
-    return (
-        (
-            "answer_web_search",
-            _parts(
-                "현재 OpenRouter Web Search Server Tool 공식 문서의 제목을 "
-                "확인하고 출처 링크를 포함해줘."
-            ),
-            True,
-        ),
-        (
-            "answer_without_web_search",
-            _parts("웹 검색 없이 2 더하기 2의 답만 말해줘."),
-            False,
-        ),
-    )
-
-
-def _markdown_https_links(value: str) -> tuple[str, ...]:
-    import re
-
-    return tuple(re.findall(r"\[[^\]\n]+\]\((https://[^\s)]+)\)", value))
-
-
 def _parts(
     current: str,
     *,
@@ -483,17 +408,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--context-limit", required=True, type=int)
     parser.add_argument("--response-tokens", type=int, default=4_096)
     parser.add_argument("--timeout-seconds", type=float, default=90.0)
-    parser.add_argument(
-        "--web-search-engine",
-        choices=("auto", "native", "exa", "firecrawl", "parallel", "perplexity"),
-    )
-    parser.add_argument("--web-search-max-results", type=int)
-    parser.add_argument("--web-search-max-total-results", type=int)
-    parser.add_argument(
-        "--web-search-context-size",
-        choices=("low", "medium", "high"),
-        default="low",
-    )
     return parser
 
 
@@ -506,22 +420,11 @@ def cli(
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        web_search = (
-            None
-            if args.web_search_engine is None
-            else OpenRouterWebSearchConfig(
-                args.web_search_engine,
-                args.web_search_max_results,
-                args.web_search_max_total_results,
-                args.web_search_context_size,
-            )
-        )
         config = SmokeConfig(
             model_id=args.model,
             context_limit=args.context_limit,
             response_tokens=args.response_tokens,
             timeout_seconds=args.timeout_seconds,
-            web_search=web_search,
         )
         return asyncio.run(
             run_smoke(

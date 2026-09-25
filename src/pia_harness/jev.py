@@ -53,7 +53,9 @@ class JevDecisionAdapter:
     async def choose_next(
         self, context: AssembledPromptContext, tools: Sequence[ToolOption]
     ) -> NextActionDecision:
-        options = {"answer": "Answer the user from the available context."}
+        options = {
+            "answer": "The current context is enough to answer the user well now."
+        }
         for tool in tools:
             if not tool.name or tool.name == "answer" or tool.name in options:
                 raise ValueError("tool options must have unique names")
