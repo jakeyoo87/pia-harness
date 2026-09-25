@@ -967,9 +967,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("실적 전망 하향 본문", results_text[1])
         stored = self.store.turns[0].assistant_message
-        self.assertIn("Tool request (data): search", stored)
-        self.assertIn('Tool request (data): read {"id":"c2"', stored)
-        self.assertIn("실적 전망 하향 본문", stored)
+        # Only the request and final answer are stored; tool results stay in this Turn.
+        self.assertNotIn("Tool request", stored)
+        self.assertNotIn("실적 전망 하향 본문", stored)
         self.assertEqual(request, self.memory.explicit_inputs[0][0].user_message)
 
     async def test_repeated_search_lists_only_new_candidates(self) -> None:
@@ -1018,8 +1018,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         offered = []
+        answer_contexts = []
 
         async def generate(context):
+            answer_contexts.append(context)
             return GeneratedAnswer("could not read it", "model", 10)
 
         async def choose_next(context, options):
@@ -1043,9 +1045,13 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertEqual([("read:u1",), ()], offered)
-        stored = self.store.turns[0].assistant_message
-        self.assertIn('"url":"https://example.com/news/1"', stored)
-        self.assertIn("could not be read", stored)
+        tool_parts = "\n".join(
+            part.content
+            for part in answer_contexts[0].parts
+            if part.kind.value in ("TOOL_REQUEST", "TOOL_RESULT")
+        )
+        self.assertIn('"url":"https://example.com/news/1"', tool_parts)
+        self.assertIn("could not be read", tool_parts)
 
     async def test_selecting_an_unavailable_read_option_fails_before_commit(
         self,
@@ -1067,7 +1073,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], self.store.turns)
 
     async def test_only_tools_with_arguments_use_argument_generation(self) -> None:
+        answer_contexts = []
+
         async def generate(context):
+            answer_contexts.append(context)
             return GeneratedAnswer("answer", "model", 10)
 
         async def execute(user_key, call, inputs):
@@ -1094,7 +1103,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         ).submit(user_key="user", message="price", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertIn("arguments={}", self.store.turns[0].assistant_message)
+        self.assertIn(
+            "arguments={}",
+            "\n".join(part.content for part in answer_contexts[-1].parts),
+        )
 
     async def test_compaction_happens_before_answer_generation(self) -> None:
         self.compactor.due = True
