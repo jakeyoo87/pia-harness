@@ -67,10 +67,10 @@ class JevDecisionAdapter:
         self, context: AssembledPromptContext, tools: Sequence[ToolOption]
     ) -> NextActionDecision:
         options = {
-            "answer": "The current context is enough to answer the user well now. "
-            "The answer model sees the full conversation history, so also choose this "
-            "when the request needs no new information, such as summarizing, "
-            "shortening, or re-explaining an earlier answer."
+            "answer": "Answer now. Choose this when the reply can be written from "
+            "what the conversation already contains (earlier answers, facts, links, "
+            "Memory) or from general knowledge, without fetching new information. "
+            "The answer model sees the full conversation history."
         }
         for tool in tools:
             if not tool.name or tool.name == "answer" or tool.name in options:
