@@ -482,7 +482,6 @@ class ConversationOrchestrator:
                     session=session,
                     answer=answer,
                     memory_action=memory_action,
-                    tool_observations=tool_observations,
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
                 )
@@ -751,7 +750,6 @@ class ConversationOrchestrator:
         session: ActiveSession,
         answer: GeneratedAnswer,
         memory_action: MemoryAction,
-        tool_observations: tuple[ToolObservation, ...],
         memory_failed: bool,
         compaction_failed: bool,
     ) -> tuple[ConversationResult, bool]:
