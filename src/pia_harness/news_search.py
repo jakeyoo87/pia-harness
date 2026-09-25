@@ -34,18 +34,13 @@ NEWS_SEARCH_ARGUMENTS_SCHEMA: dict[str, Any] = {
     "properties": {
         "query": {
             "type": "string",
-            "description": "Two to five news search keywords in the user's language. "
-            "Replace pronouns with the actual subject. Take a different angle from "
-            "searches already made in this Turn.",
-        },
-        "sort": {
-            "type": "string",
-            "enum": ["sim", "date"],
-            "description": "date when the user asks about recent developments; "
-            "otherwise sim.",
+            "description": "Two to five key words in the user's language, mainly "
+            "the subject's name. Replace pronouns with the actual subject. Do not add "
+            "generic words such as news, latest, today, or major. Take a different "
+            "angle from searches already made in this Turn.",
         },
     },
-    "required": ["query", "sort"],
+    "required": ["query"],
     "additionalProperties": False,
 }
 
@@ -91,19 +86,10 @@ class NaverNewsSearch:
         # The Orchestrator already checked that arguments_json is a JSON object.
         arguments = json.loads(call.arguments_json)
         query = arguments.get("query")
-        sort = arguments.get("sort")
-        if (
-            not isinstance(query, str)
-            or not query.strip()
-            or sort not in ("sim", "date")
-        ):
-            return ReadToolResult(
-                "News search was not run: the query or sort was invalid."
-            )
+        if not isinstance(query, str) or not query.strip():
+            return ReadToolResult("News search was not run: the query was invalid.")
         query = query.strip()
-        heading = (
-            f"News search: query={json.dumps(query, ensure_ascii=False)}, sort={sort}"
-        )
+        heading = f"News search: query={json.dumps(query, ensure_ascii=False)}"
         try:
             response = await self._client.get(
                 NAVER_NEWS_SEARCH_URL,
@@ -111,7 +97,8 @@ class NaverNewsSearch:
                     "query": query,
                     "display": NEWS_RESULT_COUNT,
                     "start": 1,
-                    "sort": sort,
+                    # Always by relevance; candidate dates let Jev judge recency.
+                    "sort": "sim",
                 },
                 headers=self._headers,
             )

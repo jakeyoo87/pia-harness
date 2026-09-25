@@ -53,7 +53,7 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
         ).tool()
 
         self.assertEqual("search", tool.name)
-        self.assertEqual(["query", "sort"], tool.arguments_schema["required"])
+        self.assertEqual(["query"], tool.arguments_schema["required"])
         self.assertEqual(ConversationProgress.WEB_SEARCH_STARTED, tool.progress)
 
     async def test_one_request_returns_five_clean_candidates(self) -> None:
@@ -68,9 +68,7 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
 
         result = await self.search(handler).execute(
             "user",
-            ToolCall(
-                "search", json.dumps({"query": "삼성전자 주가 하락", "sort": "date"})
-            ),
+            ToolCall("search", json.dumps({"query": "삼성전자 주가 하락"})),
             inputs(),
         )
 
@@ -79,7 +77,7 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(NAVER_NEWS_SEARCH_URL, str(request.url.copy_with(query=None)))
         self.assertEqual("삼성전자 주가 하락", request.url.params["query"])
         self.assertEqual("5", request.url.params["display"])
-        self.assertEqual("date", request.url.params["sort"])
+        self.assertEqual("sim", request.url.params["sort"])
         self.assertEqual(FAKE_ID, request.headers["X-NCP-APIGW-API-KEY-ID"])
         self.assertEqual(FAKE_SECRET, request.headers["X-NCP-APIGW-API-KEY"])
         self.assertEqual(5, len(result.links))
@@ -108,7 +106,7 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
             )
 
         result = await self.search(handler).execute(
-            "user", ToolCall("search", '{"query":"삼성전자","sort":"sim"}'), inputs()
+            "user", ToolCall("search", '{"query":"삼성전자"}'), inputs()
         )
 
         self.assertEqual(
@@ -127,7 +125,7 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
             )
 
         result = await self.search(handler).execute(
-            "user", ToolCall("search", '{"query":"삼성전자","sort":"sim"}'), inputs()
+            "user", ToolCall("search", '{"query":"삼성전자"}'), inputs()
         )
         self.assertEqual("https://press.example.com/1", result.links[0].url)
 
@@ -141,7 +139,7 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(case=name):
                 result = await self.search(handler).execute(
                     "user",
-                    ToolCall("search", '{"query":"삼성전자","sort":"sim"}'),
+                    ToolCall("search", '{"query":"삼성전자"}'),
                     inputs(),
                 )
                 self.assertEqual((), result.links)
@@ -152,7 +150,7 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
             raise httpx.ConnectError("offline", request=request)
 
         result = await self.search(raising).execute(
-            "user", ToolCall("search", '{"query":"삼성전자","sort":"sim"}'), inputs()
+            "user", ToolCall("search", '{"query":"삼성전자"}'), inputs()
         )
         self.assertIn("failed", result.observation_text)
 
@@ -162,9 +160,8 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
 
         search = self.search(handler)
         for arguments in (
-            '{"query":"  ","sort":"sim"}',
-            '{"sort":"sim"}',
-            '{"query":"삼성전자","sort":"newest"}',
+            '{"query":"  "}',
+            "{}",
         ):
             with self.subTest(arguments=arguments):
                 result = await search.execute(

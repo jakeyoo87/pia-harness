@@ -900,7 +900,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     async def build_query(context, tool):
-        return ToolCall(tool.name, '{"query":"삼성전자 주가","sort":"sim"}')
+        return ToolCall(tool.name, '{"query":"삼성전자 주가"}')
 
     async def test_search_candidates_can_be_read_one_by_one_before_answer(
         self,
