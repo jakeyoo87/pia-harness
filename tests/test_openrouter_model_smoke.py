@@ -6,7 +6,6 @@ import unittest
 
 from pia_harness import (
     GeneratedAnswer,
-    MemoryAction,
     MemoryReviewAction,
     MemoryReviewOutput,
     OpenRouterModelError,
@@ -74,9 +73,7 @@ class FakeAdapter:
 
 
 def answer(
-    action: MemoryAction,
     *,
-    confirmed: bool = False,
     model: str = MODEL,
     text: str = "한국어 synthetic 답변",
     web_search_requests: int = 0,
@@ -85,20 +82,12 @@ def answer(
         text=text,
         model_id=model,
         estimated_total_tokens=20,
-        memory_action=action,
-        delete_all_confirmed=confirmed,
         web_search_requests=web_search_requests,
     )
 
 
 def passing_answers() -> tuple[GeneratedAnswer, ...]:
-    return (
-        answer(MemoryAction.NONE),
-        answer(MemoryAction.UPDATE),
-        answer(MemoryAction.FORGET),
-        answer(MemoryAction.DELETE_ALL),
-        answer(MemoryAction.DELETE_ALL, confirmed=True),
-    )
+    return (answer(),)
 
 
 def parsed(lines: list[str]) -> list[dict]:
@@ -109,11 +98,9 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
     async def test_web_search_scenarios_observe_search_and_no_search(self) -> None:
         answers = passing_answers() + (
             answer(
-                MemoryAction.NONE,
-                text="[OpenRouter](https://openrouter.ai/docs)",
-                web_search_requests=1,
+                text="[OpenRouter](https://openrouter.ai/docs)", web_search_requests=1
             ),
-            answer(MemoryAction.NONE, text="4"),
+            answer(text="4"),
         )
         adapter = FakeAdapter(answers=answers)
         lines: list[str] = []
@@ -131,13 +118,13 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         results = parsed(lines)
         self.assertEqual(0, exit_code)
-        self.assertEqual(11, len(results))
-        self.assertEqual(10, results[-1]["total"])
-        self.assertEqual(7, adapter.answer_calls)
-        self.assertEqual(1, results[5]["web_search_requests"])
-        self.assertEqual(0, results[6]["web_search_requests"])
+        self.assertEqual(7, len(results))
+        self.assertEqual(6, results[-1]["total"])
+        self.assertEqual(3, adapter.answer_calls)
+        self.assertEqual(1, results[1]["web_search_requests"])
+        self.assertEqual(0, results[2]["web_search_requests"])
 
-    async def test_all_eight_scenarios_pass_and_adapter_closes(self) -> None:
+    async def test_all_four_scenarios_pass_and_adapter_closes(self) -> None:
         adapter = FakeAdapter()
         lines: list[str] = []
 
@@ -150,20 +137,19 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         results = parsed(lines)
         self.assertEqual(0, exit_code)
-        self.assertEqual(9, len(results))
+        self.assertEqual(5, len(results))
         self.assertTrue(all(item["status"] == "PASS" for item in results))
-        self.assertEqual(5, adapter.answer_calls)
+        self.assertEqual(1, adapter.answer_calls)
         self.assertEqual(2, adapter.memory_calls)
         self.assertEqual(1, adapter.summary_calls)
         self.assertTrue(adapter.closed)
         self.assertEqual([MODEL], results[-1]["observed_models"])
-        self.assertEqual(8, results[-1]["total"])
-        self.assertIsNone(results[6]["output_text"])
+        self.assertEqual(4, results[-1]["total"])
+        self.assertIsNone(results[2]["output_text"])
 
-    async def test_wrong_action_and_mixed_response_models_fail_aggregate(self) -> None:
+    async def test_mixed_response_models_fail_aggregate(self) -> None:
         answers = list(passing_answers())
-        answers[0] = answer(MemoryAction.UPDATE)
-        answers[1] = answer(MemoryAction.UPDATE, model="vendor/other-model")
+        answers[0] = answer(model="vendor/other-model")
         adapter = FakeAdapter(answers=answers)
         lines: list[str] = []
 
@@ -176,17 +162,15 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         results = parsed(lines)
         self.assertEqual(1, exit_code)
-        self.assertEqual("FAIL", results[0]["status"])
+        self.assertEqual("PASS", results[0]["status"])
         self.assertFalse(results[-1]["model_consistent"])
-        self.assertEqual(
-            [MODEL, "vendor/other-model"], results[-1]["observed_models"]
-        )
+        self.assertEqual([MODEL, "vendor/other-model"], results[-1]["observed_models"])
 
-    async def test_adapter_error_is_safe_and_does_not_stop_later_scenarios(self) -> None:
+    async def test_adapter_error_is_safe_and_does_not_stop_later_scenarios(
+        self,
+    ) -> None:
         answers = list(passing_answers())
-        answers[0] = OpenRouterModelError(
-            "openrouter.http_error", status=404
-        )
+        answers[0] = OpenRouterModelError("openrouter.http_error", status=404)
         adapter = FakeAdapter(answers=answers)
         lines: list[str] = []
 
@@ -201,7 +185,7 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, exit_code)
         self.assertEqual("openrouter.http_error", results[0]["error_event"])
         self.assertEqual(404, results[0]["error_status"])
-        self.assertEqual(5, adapter.answer_calls)
+        self.assertEqual(1, adapter.answer_calls)
         self.assertEqual(2, adapter.memory_calls)
         self.assertEqual(1, adapter.summary_calls)
         self.assertTrue(adapter.closed)
@@ -236,9 +220,9 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
 
         results = parsed(lines)
         self.assertEqual(1, exit_code)
-        self.assertEqual("FAIL", results[5]["status"])
-        self.assertEqual("FAIL", results[6]["status"])
-        self.assertEqual("FAIL", results[7]["status"])
+        self.assertEqual("FAIL", results[1]["status"])
+        self.assertEqual("FAIL", results[2]["status"])
+        self.assertEqual("FAIL", results[3]["status"])
 
     async def test_replace_needs_a_document_and_a_reported_change(self) -> None:
         cases = (
@@ -266,8 +250,8 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
 
                 results = parsed(lines)
                 self.assertEqual(1, exit_code)
-                self.assertEqual("FAIL", results[5]["status"])
-                self.assertEqual("PASS", results[6]["status"])
+                self.assertEqual("FAIL", results[1]["status"])
+                self.assertEqual("PASS", results[2]["status"])
 
     async def test_cancellation_propagates_and_adapter_closes(self) -> None:
         started = asyncio.Event()
@@ -298,11 +282,9 @@ class OpenRouterModelSmokeCliTest(unittest.TestCase):
     def test_web_search_cli_uses_provider_result_defaults(self) -> None:
         answers = passing_answers() + (
             answer(
-                MemoryAction.NONE,
-                text="[OpenRouter](https://openrouter.ai/docs)",
-                web_search_requests=1,
+                text="[OpenRouter](https://openrouter.ai/docs)", web_search_requests=1
             ),
-            answer(MemoryAction.NONE, text="4"),
+            answer(text="4"),
         )
         adapter = FakeAdapter(answers=answers)
         captured: list[dict] = []
@@ -379,7 +361,9 @@ class OpenRouterModelSmokeCliTest(unittest.TestCase):
                         adapter_factory=factory,
                     ),
                 )
-                self.assertEqual("smoke.invalid_configuration", parsed(lines)[0]["error_event"])
+                self.assertEqual(
+                    "smoke.invalid_configuration", parsed(lines)[0]["error_event"]
+                )
         self.assertEqual([], calls)
 
     def test_output_uses_only_documented_json_fields(self) -> None:
@@ -403,8 +387,6 @@ class OpenRouterModelSmokeCliTest(unittest.TestCase):
                     "response_model",
                     "expected_action",
                     "actual_action",
-                    "expected_confirmed",
-                    "actual_confirmed",
                     "total_tokens",
                     "completion_tokens",
                     "web_search_requests",

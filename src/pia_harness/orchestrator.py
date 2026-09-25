@@ -29,9 +29,8 @@ from .persistence import (
     ConversationAbandoned,
     ConversationStore,
     validate_active_session,
-    validate_loaded_memory,
 )
-from .session import ActiveSession, MemoryDocument, as_utc, new_turn_id
+from .session import ActiveSession, as_utc, new_turn_id
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
 READ_ROUTING_TIMEOUT_SECONDS = 120.0
@@ -42,7 +41,12 @@ class MemoryAction(StrEnum):
     NONE = "NONE"
     UPDATE = "UPDATE"
     FORGET = "FORGET"
-    DELETE_ALL = "DELETE_ALL"
+
+
+@dataclass(frozen=True, slots=True)
+class NextActionDecision:
+    next_action: str
+    memory_action: MemoryAction = MemoryAction.NONE
 
 
 class OrchestratorStatus(StrEnum):
@@ -108,8 +112,6 @@ class GeneratedAnswer:
     model_id: str
     estimated_total_tokens: int
     usage: ContextUsage | None = None
-    memory_action: MemoryAction = MemoryAction.NONE
-    delete_all_confirmed: bool = False
     web_search_requests: int = 0
     tool_call: ToolCall | None = None
 
@@ -126,7 +128,6 @@ class ConversationResult:
 @dataclass(frozen=True, slots=True)
 class ConversationResetResult:
     session: ActiveSession
-    memory_failed: bool = False
 
 
 class _Phase(StrEnum):
@@ -151,7 +152,6 @@ class _UserState:
     active_task: asyncio.Task[None] | None = None
     committing_count: int = 0
     reset_requested: bool = False
-    delete_all_confirmation_pending: bool = False
 
 
 class ConversationOrchestrator:
@@ -180,9 +180,9 @@ class ConversationOrchestrator:
         | None = None,
         read_tools: tuple[ReadToolDefinition, ...] = (),
         choose_next: Callable[
-            [AssembledPromptContext, tuple[ReadToolDefinition, ...]], Awaitable[str]
-        ]
-        | None = None,
+            [AssembledPromptContext, tuple[ReadToolDefinition, ...]],
+            Awaitable[NextActionDecision],
+        ],
         build_tool_call: Callable[
             [AssembledPromptContext, ReadToolDefinition], Awaitable[ToolCall]
         ]
@@ -205,8 +205,10 @@ class ConversationOrchestrator:
             raise ValueError("progress must be callable")
         if execute_tool is not None and not callable(execute_tool):
             raise ValueError("execute_tool must be callable")
+        if not callable(choose_next):
+            raise ValueError("Jev next-action selection is required")
         if read_tools:
-            if not callable(choose_next) or not callable(build_tool_call):
+            if not callable(build_tool_call):
                 raise ValueError("read tools require Jev routing and tool arguments")
             if any(
                 not isinstance(tool, ReadToolDefinition)
@@ -224,8 +226,8 @@ class ConversationOrchestrator:
             names = [tool.name for tool in read_tools]
             if len(set(names)) != len(names):
                 raise ValueError("read tool names must be unique")
-        elif choose_next is not None or build_tool_call is not None:
-            raise ValueError("Jev routing requires registered read tools")
+        elif build_tool_call is not None:
+            raise ValueError("tool argument generation requires registered read tools")
         if (
             isinstance(read_routing_timeout_seconds, bool)
             or not isinstance(read_routing_timeout_seconds, (int, float))
@@ -324,7 +326,6 @@ class ConversationOrchestrator:
             else:
                 _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
 
-        memory_failed = False
         try:
             async with state.commit_lock:
                 session = validate_active_session(
@@ -335,17 +336,6 @@ class ConversationOrchestrator:
                     ),
                     user_key=user_key,
                 )
-                try:
-                    await _durable_call(
-                        self._memory_reviewer.force_review,
-                        user_key=user_key,
-                        session_id=session.session_id,
-                        now=now,
-                    )
-                except ConversationAbandoned:
-                    raise
-                except Exception:
-                    memory_failed = True
                 replacement = validate_active_session(
                     await _durable_call(
                         self._store.reset_active_session,
@@ -355,7 +345,7 @@ class ConversationOrchestrator:
                     ),
                     user_key=user_key,
                 )
-            return ConversationResetResult(replacement, memory_failed)
+            return ConversationResetResult(replacement)
         finally:
             async with state.state_lock:
                 _resolve_unfinished(state.pending, OrchestratorStatus.SUPERSEDED)
@@ -364,7 +354,6 @@ class ConversationOrchestrator:
                 state.active_task = None
                 state.committing_count = 0
                 state.reset_requested = False
-                state.delete_all_confirmation_pending = False
             await self._remove_if_idle(user_key, state)
 
     async def _state_for(self, user_key: str) -> _UserState:
@@ -430,96 +419,101 @@ class ConversationOrchestrator:
                 return
             assert assembled is not None
             tool_observations: tuple[ToolObservation, ...] = ()
-            if self._read_tools:
-                assert self._choose_next is not None
-                assert self._build_tool_call is not None
-                deadline = (
-                    asyncio.get_running_loop().time()
-                    + self._read_routing_timeout_seconds
+            memory_action = MemoryAction.NONE
+            deadline = (
+                asyncio.get_running_loop().time() + self._read_routing_timeout_seconds
+            )
+            while True:
+                if not await self._is_current(state, generation_id):
+                    return
+                choice = await _before_deadline(
+                    deadline, self._choose_next(assembled, self._read_tools)
                 )
-                while True:
-                    if not await self._is_current(state, generation_id):
-                        return
-                    choice = await _before_deadline(
-                        deadline, self._choose_next(assembled, self._read_tools)
-                    )
-                    if choice == "answer":
-                        break
-                    tool = next(
-                        (tool for tool in self._read_tools if tool.name == choice), None
-                    )
-                    if tool is None:
-                        raise ValueError("Jev selected an unregistered tool")
-                    call = await _before_deadline(
-                        deadline, self._build_tool_call(assembled, tool)
-                    )
-                    _validate_read_tool_call(call, tool.name)
-                    if not await self._is_current(state, generation_id):
-                        return
-                    try:
-                        tool_result = await _before_deadline(
-                            deadline,
-                            tool.execute(
-                                user_key, call, tuple(item.value for item in batch)
-                            ),
-                        )
-                        _validate_read_tool_result(tool_result)
-                    except ConversationAbandoned:
-                        raise
-                    except TimeoutError:
-                        raise
-                    except Exception:
-                        await self._finish_generation(
-                            user_key,
-                            state,
-                            generation_id,
-                            batch,
-                            ConversationResult(
-                                OrchestratorStatus.TOOL_FAILED,
-                                turn_id=batch[-1].value.turn_id,
-                            ),
-                            clear_pending=True,
-                        )
-                        return
-                    if not await self._is_current(state, generation_id):
-                        return
-                    tool_observations += (
-                        ToolObservation(
-                            call.name,
-                            call.arguments_json,
-                            tool_result.observation_text,
-                            tool_result.answer_candidate,
-                        ),
-                    )
+                _validate_next_action_decision(choice, self._read_tools)
+                if choice.next_action == "answer":
+                    memory_action = choice.memory_action
+                    break
+                tool = next(
                     (
-                        assembled,
-                        overflow_result,
-                        review_failed,
-                        compact_failed,
-                    ) = await _before_deadline(
+                        tool
+                        for tool in self._read_tools
+                        if tool.name == choice.next_action
+                    ),
+                    None,
+                )
+                if tool is None:
+                    raise ValueError("Jev selected an unregistered tool")
+                assert self._build_tool_call is not None
+                call = await _before_deadline(
+                    deadline, self._build_tool_call(assembled, tool)
+                )
+                _validate_read_tool_call(call, tool.name)
+                if not await self._is_current(state, generation_id):
+                    return
+                try:
+                    tool_result = await _before_deadline(
                         deadline,
-                        self._assemble_with_overflow(
-                            user_key,
-                            state,
-                            generation_id,
-                            batch,
-                            session,
-                            tool_observations,
+                        tool.execute(
+                            user_key, call, tuple(item.value for item in batch)
                         ),
                     )
-                    memory_failed = memory_failed or review_failed
-                    compaction_failed = compaction_failed or compact_failed
-                    if overflow_result is not None:
-                        await self._finish_generation(
-                            user_key,
-                            state,
-                            generation_id,
-                            batch,
-                            overflow_result,
-                            clear_pending=True,
-                        )
-                        return
-                    assert assembled is not None
+                    _validate_read_tool_result(tool_result)
+                except ConversationAbandoned:
+                    raise
+                except TimeoutError:
+                    raise
+                except Exception:
+                    await self._finish_generation(
+                        user_key,
+                        state,
+                        generation_id,
+                        batch,
+                        ConversationResult(
+                            OrchestratorStatus.TOOL_FAILED,
+                            turn_id=batch[-1].value.turn_id,
+                        ),
+                        clear_pending=True,
+                    )
+                    return
+                if not await self._is_current(state, generation_id):
+                    return
+                tool_observations += (
+                    ToolObservation(
+                        call.name,
+                        call.arguments_json,
+                        tool_result.observation_text,
+                        tool_result.answer_candidate,
+                    ),
+                )
+                (
+                    assembled,
+                    overflow_result,
+                    review_failed,
+                    compact_failed,
+                ) = await _before_deadline(
+                    deadline,
+                    self._assemble_with_overflow(
+                        user_key,
+                        state,
+                        generation_id,
+                        batch,
+                        session,
+                        tool_observations,
+                    ),
+                )
+                memory_failed = memory_failed or review_failed
+                compaction_failed = compaction_failed or compact_failed
+                if overflow_result is not None:
+                    await self._finish_generation(
+                        user_key,
+                        state,
+                        generation_id,
+                        batch,
+                        overflow_result,
+                        clear_pending=True,
+                    )
+                    return
+                assert assembled is not None
 
             candidate = (
                 tool_observations[-1].answer_candidate if tool_observations else None
@@ -563,6 +557,7 @@ class ConversationOrchestrator:
                     batch=batch,
                     session=session,
                     answer=answer,
+                    memory_action=memory_action,
                     tool_observations=tool_observations,
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
@@ -612,7 +607,6 @@ class ConversationOrchestrator:
                     compaction_failed=compaction_failed,
                 ),
                 clear_pending=True,
-                clear_confirmation=True,
             )
         except TimeoutError:
             await self._finish_generation(
@@ -806,6 +800,7 @@ class ConversationOrchestrator:
         batch: tuple[_Submission, ...],
         session: ActiveSession,
         answer: GeneratedAnswer,
+        memory_action: MemoryAction,
         tool_observations: tuple[ToolObservation, ...],
         memory_failed: bool,
         compaction_failed: bool,
@@ -815,7 +810,7 @@ class ConversationOrchestrator:
         now = batch[-1].value.accepted_at
         combined = _combined_message(batch)
         async with state.commit_lock:
-            action = answer.memory_action
+            action = memory_action
             if action in (MemoryAction.UPDATE, MemoryAction.FORGET):
                 try:
                     review = await _durable_call(
@@ -842,45 +837,7 @@ class ConversationOrchestrator:
                 except Exception:
                     memory_failed = True
                     explicit_memory_failed = True
-            elif (
-                action is MemoryAction.DELETE_ALL
-                and answer.delete_all_confirmed
-                and state.delete_all_confirmation_pending
-            ):
-                try:
-                    current = validate_loaded_memory(
-                        await _durable_call(self._store.get_memory, user_key),
-                        user_key=user_key,
-                    )
-                    expected = (
-                        None if current is None else current.last_reviewed_turn_id
-                    )
-                    replacement = MemoryDocument(
-                        user_key=user_key,
-                        memory_text="",
-                        last_reviewed_turn_id=batch[-1].value.turn_id,
-                        updated_at=now,
-                    )
-                    replaced = await _durable_call(
-                        self._store.replace_memory,
-                        replacement,
-                        expected_last_reviewed_turn_id=expected,
-                    )
-                    if not replaced:
-                        memory_failed = True
-                        explicit_memory_failed = True
-                except ConversationAbandoned:
-                    raise
-                except Exception:
-                    memory_failed = True
-                    explicit_memory_failed = True
             else:
-                if action is MemoryAction.DELETE_ALL and answer.delete_all_confirmed:
-                    # The answer already believes it confirmed a deletion that this
-                    # Orchestrator will not perform, so report it rather than
-                    # delivering a silent no-op.
-                    memory_failed = True
-                    explicit_memory_failed = True
                 try:
                     review = await _durable_call(
                         self._memory_reviewer.review_if_due,
@@ -942,16 +899,6 @@ class ConversationOrchestrator:
                     compaction_failed=compaction_failed,
                 ), False
 
-            async with state.state_lock:
-                state.delete_all_confirmation_pending = (
-                    action is MemoryAction.DELETE_ALL
-                    and not (
-                        answer.delete_all_confirmed
-                        and state.delete_all_confirmation_pending
-                        and not explicit_memory_failed
-                    )
-                )
-
             try:
                 await _durable_call(
                     self._store.append_completed_turn,
@@ -990,7 +937,6 @@ class ConversationOrchestrator:
         result: ConversationResult,
         *,
         clear_pending: bool,
-        clear_confirmation: bool = False,
     ) -> None:
         start_next = False
         async with state.state_lock:
@@ -998,8 +944,6 @@ class ConversationOrchestrator:
                 return
             if clear_pending:
                 del state.pending[: len(batch)]
-            if clear_confirmation:
-                state.delete_all_confirmation_pending = False
             owner = batch[-1]
             if not owner.future.done():
                 owner.future.set_result(result)
@@ -1029,7 +973,6 @@ class ConversationOrchestrator:
                     and state.phase is _Phase.IDLE
                     and not state.pending
                     and not state.reset_requested
-                    and not state.delete_all_confirmation_pending
                 ):
                     del self._states[user_key]
 
@@ -1064,15 +1007,6 @@ def _validate_generated_answer(answer: GeneratedAnswer) -> None:
         raise ValueError("generated answer text is required")
     if not isinstance(answer.model_id, str) or not answer.model_id:
         raise ValueError("generated answer model_id is required")
-    if not isinstance(answer.memory_action, MemoryAction):
-        raise ValueError("generated answer memory_action is invalid")
-    if not isinstance(answer.delete_all_confirmed, bool):
-        raise ValueError("generated answer delete_all_confirmed is invalid")
-    if (
-        answer.delete_all_confirmed
-        and answer.memory_action is not MemoryAction.DELETE_ALL
-    ):
-        raise ValueError("delete_all_confirmed requires the DELETE_ALL memory action")
     if (
         isinstance(answer.web_search_requests, bool)
         or not isinstance(answer.web_search_requests, int)
@@ -1097,12 +1031,22 @@ def _validate_generated_answer(answer: GeneratedAnswer) -> None:
             or len(tool.arguments_json) > 8192
         ):
             raise ValueError("generated tool call is invalid")
-        if (
-            answer.memory_action is not MemoryAction.NONE
-            or answer.delete_all_confirmed
-            or answer.web_search_requests
-        ):
+        if answer.web_search_requests:
             raise ValueError("tool call must not combine with other actions")
+
+
+def _validate_next_action_decision(
+    decision: NextActionDecision, tools: tuple[ReadToolDefinition, ...]
+) -> None:
+    if not isinstance(decision, NextActionDecision):
+        raise ValueError("Jev decision has the wrong type")
+    if decision.next_action == "answer":
+        if not isinstance(decision.memory_action, MemoryAction):
+            raise ValueError("Jev memory action is invalid")
+    elif decision.next_action not in {tool.name for tool in tools}:
+        raise ValueError("Jev selected an unregistered tool")
+    elif decision.memory_action is not MemoryAction.NONE:
+        raise ValueError("tool selection must defer the Memory action")
 
 
 def _validate_tool_result(result: ToolResult) -> None:

@@ -15,7 +15,6 @@ from pia_harness import (
     ConversationProgress,
     CurrentMemoryInput,
     GeneratedAnswer,
-    MemoryAction,
     MemoryReviewAction,
     MemoryReviewRequest,
     ModelTokenBudget,
@@ -72,13 +71,7 @@ def completed_turn() -> CompletedTurn:
 
 
 def answer_content() -> str:
-    return json.dumps(
-        {
-            "answer": "answer",
-            "memory_action": "NONE",
-            "delete_all_confirmed": False,
-        }
-    )
+    return json.dumps({"answer": "answer"})
 
 
 def answer_parts() -> tuple[PromptContextPart, ...]:
@@ -160,12 +153,12 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             **chosen,
         )
 
-    async def test_no_tools_preserves_original_answer_schema(self) -> None:
+    async def test_no_tools_uses_text_only_answer_schema(self) -> None:
         adapter = self.adapter(lambda request: chat_response(answer_content()))
         payload = adapter._answer_payload(answer_parts())
         schema = payload["response_format"]["json_schema"]["schema"]
         self.assertEqual(
-            {"answer", "memory_action", "delete_all_confirmed"},
+            {"answer"},
             set(schema["properties"]),
         )
         self.assertNotIn("tool_call", payload["messages"][0]["content"])
@@ -205,8 +198,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 json.dumps(
                     {
                         "answer": "도구 실행 전 임시 문구",
-                        "memory_action": "NONE",
-                        "delete_all_confirmed": False,
                         "tool_call": {
                             "name": "QUOTE",
                             "arguments_json": '{"symbol":"005930"}',
@@ -246,8 +237,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 json.dumps(
                     {
                         "answer": "temporary",
-                        "memory_action": "NONE",
-                        "delete_all_confirmed": False,
                         "needs_web_search": True,
                         "tool_call": {"name": "QUOTE", "arguments_json": "{}"},
                     }
@@ -294,8 +283,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     json.dumps(
                         {
                             "answer": "검색 전 임시 답변",
-                            "memory_action": "DELETE_ALL",
-                            "delete_all_confirmed": True,
                             "needs_web_search": True,
                         },
                         ensure_ascii=False,
@@ -323,8 +310,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         adapter.summarize(SummaryRequest("summary", None, (completed_turn(),), 100))
 
-        self.assertIs(MemoryAction.NONE, result.memory_action)
-        self.assertFalse(result.delete_all_confirmed)
         self.assertEqual(1, result.web_search_requests)
         self.assertEqual(
             [
@@ -379,8 +364,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 json.dumps(
                     {
                         "answer": "4",
-                        "memory_action": "NONE",
-                        "delete_all_confirmed": False,
                         "needs_web_search": False,
                     }
                 )
@@ -419,8 +402,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     json.dumps(
                         {
                             "answer": "draft",
-                            "memory_action": "NONE",
-                            "delete_all_confirmed": False,
                             "needs_web_search": True,
                         }
                     )
@@ -455,15 +436,13 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             requests[1]["tools"][0]["parameters"],
         )
 
-    async def test_annotation_alone_blocks_delete_all(self) -> None:
+    async def test_annotation_alone_does_not_change_answer_metadata(self) -> None:
         cited_url = "https://example.com/source"
         adapter = self.adapter(
             lambda request: chat_response(
                 json.dumps(
                     {
                         "answer": f"[출처]({cited_url})",
-                        "memory_action": "DELETE_ALL",
-                        "delete_all_confirmed": True,
                     },
                     ensure_ascii=False,
                 ),
@@ -478,8 +457,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         result = await adapter.generate_answer(
             AssembledPromptContext(answer_parts(), 10, 900)
         )
-        self.assertIs(MemoryAction.NONE, result.memory_action)
-        self.assertFalse(result.delete_all_confirmed)
         self.assertEqual(0, result.web_search_requests)
 
     async def test_searched_answer_validates_every_url_against_citations(self) -> None:
@@ -494,8 +471,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                         json.dumps(
                             {
                                 "answer": "검색 전 임시 답변",
-                                "memory_action": "NONE",
-                                "delete_all_confirmed": False,
                                 "needs_web_search": True,
                             },
                             ensure_ascii=False,
@@ -552,7 +527,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(answer, (await generate(answer, expected)).text)
 
-    async def test_answer_uses_one_structured_call_and_maps_action_and_usage(
+    async def test_answer_uses_one_structured_call_and_maps_usage(
         self,
     ) -> None:
         requests: list[httpx.Request] = []
@@ -565,8 +540,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 json.dumps(
                     {
                         "answer": "핵심만 답할게요.",
-                        "memory_action": "UPDATE",
-                        "delete_all_confirmed": False,
                     }
                 ),
                 model="vendor/exact-model:routed",
@@ -582,8 +555,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         result = await adapter.generate_answer(AssembledPromptContext(parts, 10, 900))
 
         self.assertEqual("핵심만 답할게요.", result.text)
-        self.assertIs(MemoryAction.UPDATE, result.memory_action)
-        self.assertFalse(result.delete_all_confirmed)
         self.assertEqual(27, result.estimated_total_tokens)
         self.assertEqual(27, result.usage.total_tokens)
         # Both must come from the response, because CompactionPolicy prefers provider
@@ -628,8 +599,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 json.dumps(
                     {
                         "answer": "답변",
-                        "memory_action": "NONE",
-                        "delete_all_confirmed": False,
                     },
                     ensure_ascii=False,
                 )
@@ -643,26 +612,16 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             result.estimated_total_tokens, adapter.count_input_tokens(parts)
         )
 
-    async def test_every_memory_action_parses_without_keyword_logic(self) -> None:
-        for action in MemoryAction:
-            with self.subTest(action=action):
-                confirmed = action is MemoryAction.DELETE_ALL
-                adapter = self.adapter(
-                    lambda request, action=action, confirmed=confirmed: chat_response(
-                        json.dumps(
-                            {
-                                "answer": "자연스러운 답변",
-                                "memory_action": action.value,
-                                "delete_all_confirmed": confirmed,
-                            },
-                            ensure_ascii=False,
-                        )
-                    )
-                )
-                result = await adapter.generate_answer(
-                    AssembledPromptContext(answer_parts(), 10, 900)
-                )
-                self.assertIs(action, result.memory_action)
+    async def test_answer_rejects_old_memory_action_fields(self) -> None:
+        adapter = self.adapter(
+            lambda request: chat_response(
+                json.dumps({"answer": "답변", "memory_action": "UPDATE"})
+            )
+        )
+        with self.assertRaisesRegex(OpenRouterModelError, "openrouter.invalid_output"):
+            await adapter.generate_answer(
+                AssembledPromptContext(answer_parts(), 10, 900)
+            )
 
     def test_memory_review_has_no_completion_cap_and_converts_changes_to_tuple(
         self,
@@ -801,25 +760,11 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_outputs_and_usage_fail_closed(self) -> None:
         outputs = (
             "not-json",
+            json.dumps({"answer": ""}),
+            json.dumps({"answer": None}),
             json.dumps(
                 {
                     "answer": "answer",
-                    "memory_action": "UNKNOWN",
-                    "delete_all_confirmed": False,
-                }
-            ),
-            json.dumps(
-                {
-                    "answer": "answer",
-                    "memory_action": "NONE",
-                    "delete_all_confirmed": True,
-                }
-            ),
-            json.dumps(
-                {
-                    "answer": "answer",
-                    "memory_action": "NONE",
-                    "delete_all_confirmed": False,
                     "extra": True,
                 }
             ),
@@ -839,8 +784,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                 json.dumps(
                     {
                         "answer": "answer",
-                        "memory_action": "NONE",
-                        "delete_all_confirmed": False,
                     }
                 ),
                 usage={
@@ -990,7 +933,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             result = await self.adapter(handler, max_attempts=2).generate_answer(
                 context
             )
-        self.assertIs(MemoryAction.NONE, result.memory_action)
+        self.assertEqual("answer", result.text)
         self.assertEqual(2, len(calls))
         self.assertEqual(calls[0], calls[1])
         sleeper.assert_awaited_once_with(1.0)
@@ -1014,7 +957,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     result = await self.adapter(
                         handler, max_attempts=2
                     ).generate_answer(context)
-                self.assertIs(MemoryAction.NONE, result.memory_action)
+                self.assertEqual("answer", result.text)
                 self.assertEqual(2, calls)
 
     async def test_retryable_failure_stops_after_two_attempts(self) -> None:
@@ -1152,8 +1095,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     json.dumps(
                         {
                             "answer": "draft",
-                            "memory_action": "NONE",
-                            "delete_all_confirmed": False,
                             "needs_web_search": True,
                         }
                     )
@@ -1216,8 +1157,6 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     json.dumps(
                         {
                             "answer": "draft",
-                            "memory_action": "NONE",
-                            "delete_all_confirmed": False,
                             "needs_web_search": True,
                         }
                     )

@@ -13,6 +13,7 @@ from pia_harness import (
     ConversationProgress,
     GeneratedAnswer,
     MemoryAction,
+    NextActionDecision,
     MemoryDocument,
     MemoryReviewResult,
     MemoryReviewStatus,
@@ -101,6 +102,9 @@ class FakeStore:
 
     def reset_active_session(self, *, user_key, expected_session_id, now=None):
         self._check("reset")
+        current = self.sessions.get(user_key)
+        if current is None or current.session_id != expected_session_id:
+            raise RuntimeError("session changed")
         self.reset_count += 1
         replacement = ActiveSession(
             user_key,
@@ -108,6 +112,7 @@ class FakeStore:
             now,
         )
         self.sessions[user_key] = replacement
+        self.memories.pop(user_key, None)
         return replacement
 
 
@@ -210,11 +215,15 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         choose_next=None,
         build_tool_call=None,
         read_routing_timeout_seconds=120.0,
+        memory_action=MemoryAction.NONE,
     ):
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
         async def default_deliver(user_key, text):
             self.delivered.append((user_key, text))
+
+        async def default_choose_next(context, tools):
+            return NextActionDecision("answer", memory_action)
 
         return ConversationOrchestrator(
             store=self.store,
@@ -231,7 +240,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             progress=progress,
             execute_tool=execute_tool,
             read_tools=read_tools,
-            choose_next=choose_next,
+            choose_next=choose_next or default_choose_next,
             build_tool_call=build_tool_call,
             read_routing_timeout_seconds=read_routing_timeout_seconds,
         )
@@ -453,11 +462,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             if current == "A":
                 first_started.set()
                 await asyncio.Event().wait()
-            return GeneratedAnswer(
-                "answer", "model", 10, memory_action=MemoryAction.UPDATE
-            )
+            return GeneratedAnswer("answer", "model", 10)
 
-        orchestrator = self.orchestrator(generate)
+        orchestrator = self.orchestrator(generate, memory_action=MemoryAction.UPDATE)
         first = asyncio.create_task(
             orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
         )
@@ -484,19 +491,17 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         async def generate(context):
-            return GeneratedAnswer(
-                "answer", "model", 10, memory_action=MemoryAction.FORGET
-            )
+            return GeneratedAnswer("answer", "model", 10)
 
-        result = await self.orchestrator(generate).submit(
-            user_key="user", message="forget this", accepted_at=self.now
-        )
+        result = await self.orchestrator(
+            generate, memory_action=MemoryAction.FORGET
+        ).submit(user_key="user", message="forget this", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertEqual(["explicit"], self.memory.calls)
         self.assertTrue(self.memory.explicit_inputs[0][1])
 
-    async def test_delete_all_requires_preceding_delivered_request(self) -> None:
+    async def test_reset_clears_memory_and_old_turns_leave_context(self) -> None:
         self.store.memories["user"] = MemoryDocument(
             "user",
             "remembered",
@@ -505,75 +510,29 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
 
         async def generate(context):
-            confirmed = context.parts[-1].content == "yes"
-            return GeneratedAnswer(
-                "confirm" if not confirmed else "cleared",
-                "model",
-                10,
-                memory_action=MemoryAction.DELETE_ALL,
-                delete_all_confirmed=confirmed,
-            )
+            return GeneratedAnswer("answer", "model", 10)
 
         orchestrator = self.orchestrator(generate)
-        requested = await orchestrator.submit(
-            user_key="user", message="delete everything", accepted_at=self.now
+        delivered = await orchestrator.submit(
+            user_key="user", message="question", accepted_at=self.now
         )
-        self.assertEqual(OrchestratorStatus.DELIVERED, requested.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, delivered.status)
         self.assertEqual("remembered", self.store.memories["user"].memory_text)
-        self.assertTrue(orchestrator._states["user"].delete_all_confirmation_pending)
-
-        confirmed = await orchestrator.submit(
-            user_key="user",
-            message="yes",
-            accepted_at=self.now + timedelta(seconds=1),
+        review_calls = list(self.memory.calls)
+        reset_result = await orchestrator.reset(
+            user_key="user", now=self.now + timedelta(seconds=1)
         )
-        self.assertEqual(OrchestratorStatus.DELIVERED, confirmed.status)
-        cleared = self.store.memories["user"]
-        self.assertEqual("", cleared.memory_text)
-        self.assertEqual(confirmed.turn_id, cleared.last_reviewed_turn_id)
+        self.assertEqual("session-user-1", reset_result.session.session_id)
+        self.assertNotIn("user", self.store.memories)
+        self.assertEqual(1, len(self.store.turns))
+        self.assertEqual("session-user-0", self.store.turns[0].session_id)
         self.assertEqual(
             (),
-            self.store.load_unreviewed_turns(
-                user_key="user",
-                session_id="session-user-0",
-                after_turn_id=cleared.last_reviewed_turn_id,
-            ),
+            self.store.load_context(
+                user_key="user", session_id=reset_result.session.session_id
+            ).turns,
         )
-        self.assertNotIn("user", orchestrator._states)
-
-    async def test_delete_all_confirmation_without_pending_marker_is_not_honored(
-        self,
-    ) -> None:
-        self.store.memories["user"] = MemoryDocument(
-            "user",
-            "remembered",
-            new_turn_id(self.now - timedelta(seconds=1)),
-            self.now,
-        )
-
-        async def generate(context):
-            return GeneratedAnswer(
-                "cleared",
-                "model",
-                10,
-                memory_action=MemoryAction.DELETE_ALL,
-                delete_all_confirmed=True,
-            )
-
-        orchestrator = self.orchestrator(
-            generate, failure_notice="삭제를 확인하지 못했어요."
-        )
-        result = await orchestrator.submit(
-            user_key="user", message="yes", accepted_at=self.now
-        )
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual("remembered", self.store.memories["user"].memory_text)
-        self.assertTrue(orchestrator._states["user"].delete_all_confirmation_pending)
-        # The answer said "cleared", so a silent no-op would leave the user
-        # believing Memory was deleted.
-        self.assertTrue(result.memory_failed)
-        self.assertEqual("cleared\n\n- 삭제를 확인하지 못했어요.", result.final_text)
+        self.assertEqual(review_calls, self.memory.calls)
 
     async def test_failure_notice_survives_automatic_change_summaries(self) -> None:
         self.memory.fail = False
@@ -581,9 +540,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.memory.force_changes = ("첫째", "둘째", "셋째")
 
         async def generate(context):
-            return GeneratedAnswer(
-                "answer", "model", 10, memory_action=MemoryAction.UPDATE
-            )
+            return GeneratedAnswer("answer", "model", 10)
 
         class FailingExplicit(FakeMemoryReviewer):
             def review_explicit_input(self, **values):
@@ -593,7 +550,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.memory = FailingExplicit()
         self.memory.force_changes = ("첫째", "둘째", "셋째")
         result = await self.orchestrator(
-            generate, failure_notice="기억에 반영하지 못했어요."
+            generate,
+            failure_notice="기억에 반영하지 못했어요.",
+            memory_action=MemoryAction.UPDATE,
         ).submit(user_key="user", message="remember", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
@@ -606,64 +565,17 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.memory.fail = True
 
         async def generate(context):
-            return GeneratedAnswer(
-                "answer", "model", 10, memory_action=MemoryAction.UPDATE
-            )
+            return GeneratedAnswer("answer", "model", 10)
 
         result = await self.orchestrator(
-            generate, failure_notice="기억에 반영하지 못했어요."
+            generate,
+            failure_notice="기억에 반영하지 못했어요.",
+            memory_action=MemoryAction.UPDATE,
         ).submit(user_key="user", message="remember", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertTrue(result.memory_failed)
         self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
-
-    async def test_failure_notice_is_never_dropped_for_a_full_change_budget(
-        self,
-    ) -> None:
-        # A rejected confirmation runs the ordinary revisit Review, which can fill
-        # the three-item budget on its own and would otherwise hide the failure of
-        # the deletion the user just asked for.
-        class BusyRevisit(FakeMemoryReviewer):
-            def review_if_due(self, **values):
-                self.calls.append("revisit")
-                return MemoryReviewResult(
-                    MemoryReviewStatus.REPLACED,
-                    MemoryDocument(
-                        "user",
-                        "memory",
-                        new_turn_id(values["request_at"] - timedelta(seconds=1)),
-                        values["request_at"],
-                    ),
-                    ("첫째", "둘째", "셋째"),
-                )
-
-        self.memory = BusyRevisit()
-        self.store.memories["user"] = MemoryDocument(
-            "user",
-            "remembered",
-            new_turn_id(self.now - timedelta(seconds=1)),
-            self.now,
-        )
-
-        async def generate(context):
-            return GeneratedAnswer(
-                "cleared",
-                "model",
-                10,
-                memory_action=MemoryAction.DELETE_ALL,
-                delete_all_confirmed=True,
-            )
-
-        result = await self.orchestrator(
-            generate, failure_notice="삭제를 확인하지 못했어요."
-        ).submit(user_key="user", message="yes", accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertTrue(result.memory_failed)
-        self.assertEqual("remembered", self.store.memories["user"].memory_text)
-        self.assertIn("삭제를 확인하지 못했어요.", result.final_text)
-        self.assertEqual(3, result.final_text.count("\n- "))
 
     async def test_stale_explicit_review_reports_failure_like_an_exception(
         self,
@@ -678,12 +590,12 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.memory = StaleExplicit()
 
         async def generate(context):
-            return GeneratedAnswer(
-                "answer", "model", 10, memory_action=MemoryAction.UPDATE
-            )
+            return GeneratedAnswer("answer", "model", 10)
 
         result = await self.orchestrator(
-            generate, failure_notice="기억에 반영하지 못했어요."
+            generate,
+            failure_notice="기억에 반영하지 못했어요.",
+            memory_action=MemoryAction.UPDATE,
         ).submit(user_key="user", message="remember", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
@@ -691,11 +603,14 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
         self.assertEqual(["explicit"], self.memory.calls)
 
-    async def test_invalid_generated_memory_action_fails_before_commit(self) -> None:
+    async def test_invalid_jev_memory_action_fails_before_commit(self) -> None:
         async def generate(context):
-            return GeneratedAnswer("answer", "model", 10, memory_action="UPDATE")
+            raise AssertionError("invalid Jev result must stop before generation")
 
-        result = await self.orchestrator(generate).submit(
+        async def choose_next(context, tools):
+            return NextActionDecision("answer", "UPDATE")
+
+        result = await self.orchestrator(generate, choose_next=choose_next).submit(
             user_key="user", message="remember", accepted_at=self.now
         )
 
@@ -924,11 +839,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_memory_and_compaction_abandonment_do_not_deliver(self) -> None:
         async def explicit(context):
-            return GeneratedAnswer(
-                "answer", "model", 10, memory_action=MemoryAction.UPDATE
-            )
+            return GeneratedAnswer("answer", "model", 10)
 
-        orchestrator = self.orchestrator(explicit)
+        orchestrator = self.orchestrator(explicit, memory_action=MemoryAction.UPDATE)
         self.memory.abandon_on = "explicit"
         result = await orchestrator.submit(
             user_key="user", message="remember", accepted_at=self.now
@@ -974,41 +887,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.ABANDONED, compacted.status)
         self.assertEqual([], self.delivered)
-
-    async def test_confirmed_delete_abandonment_clears_confirmation_marker(
-        self,
-    ) -> None:
-        self.store.memories["user"] = MemoryDocument(
-            "user",
-            "remembered",
-            new_turn_id(self.now - timedelta(seconds=1)),
-            self.now,
-        )
-
-        async def generate(context):
-            confirmed = context.parts[-1].content == "yes"
-            return GeneratedAnswer(
-                "confirm" if not confirmed else "cleared",
-                "model",
-                10,
-                memory_action=MemoryAction.DELETE_ALL,
-                delete_all_confirmed=confirmed,
-            )
-
-        orchestrator = self.orchestrator(generate)
-        requested = await orchestrator.submit(
-            user_key="user", message="delete", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.DELIVERED, requested.status)
-        self.store.abandon_on = "get_memory"
-        confirmed = await orchestrator.submit(
-            user_key="user",
-            message="yes",
-            accepted_at=self.now + timedelta(seconds=1),
-        )
-        self.assertEqual(OrchestratorStatus.ABANDONED, confirmed.status)
-        self.assertNotIn("user", orchestrator._states)
-        self.assertEqual("remembered", self.store.memories["user"].memory_text)
 
     async def test_delivery_and_post_delivery_append_abandonment_clear_batch(
         self,
@@ -1063,56 +941,20 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
-    async def test_reset_review_abandonment_does_not_replace_the_session(self) -> None:
+    async def test_reset_does_not_review_old_memory(self) -> None:
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
         orchestrator = self.orchestrator(generate)
         self.memory.abandon_on = "force"
-        with self.assertRaises(ConversationAbandoned):
-            await orchestrator.reset(user_key="user", now=self.now)
-        self.assertEqual(0, self.store.reset_count)
+        await orchestrator.reset(user_key="user", now=self.now)
+        self.assertEqual(1, self.store.reset_count)
+        self.assertEqual([], self.memory.calls)
 
         result = await orchestrator.submit(
             user_key="user", message="after reset", accepted_at=self.now
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-
-    async def test_confirmed_delete_write_abandonment_sends_no_failure_notice(
-        self,
-    ) -> None:
-        self.store.memories["user"] = MemoryDocument(
-            "user",
-            "remembered",
-            new_turn_id(self.now - timedelta(seconds=1)),
-            self.now,
-        )
-
-        async def generate(context):
-            confirmed = context.parts[-1].content == "yes"
-            return GeneratedAnswer(
-                "cleared" if confirmed else "confirm",
-                "model",
-                10,
-                memory_action=MemoryAction.DELETE_ALL,
-                delete_all_confirmed=confirmed,
-            )
-
-        orchestrator = self.orchestrator(generate)
-        await orchestrator.submit(
-            user_key="user", message="delete", accepted_at=self.now
-        )
-        delivered = list(self.delivered)
-        # The veto must fire in the clearing write itself, not in earlier context loading.
-        self.store.abandon_on = "replace_memory"
-        confirmed = await orchestrator.submit(
-            user_key="user",
-            message="yes",
-            accepted_at=self.now + timedelta(seconds=1),
-        )
-        self.assertEqual(OrchestratorStatus.ABANDONED, confirmed.status)
-        self.assertEqual(delivered, self.delivered)
-        self.assertEqual("remembered", self.store.memories["user"].memory_text)
 
     async def test_tool_runs_after_generation_and_persists_only_host_text(self) -> None:
         calls = []
@@ -1174,7 +1016,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, calls)
         self.assertEqual("hello", self.store.turns[0].user_message)
 
-    async def test_tool_requires_executor_and_excludes_memory_action(self) -> None:
+    async def test_tool_requires_executor_and_excludes_search(self) -> None:
         async def generate(context):
             return GeneratedAnswer(
                 "unused", "model", 10, tool_call=ToolCall("quote", "{}")
@@ -1191,7 +1033,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 "unused",
                 "model",
                 10,
-                memory_action=MemoryAction.UPDATE,
+                web_search_requests=1,
                 tool_call=ToolCall("quote", "{}"),
             )
 
@@ -1281,13 +1123,16 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
     async def test_jev_search_result_returns_to_router_and_persists(self) -> None:
         decisions = []
         queries = []
+        request = "시장 뉴스 찾아주고 배당주 선호를 기억해줘"
 
         async def generate(context):
             raise AssertionError("a verified Search answer needs no second LLM")
 
         async def choose_next(context, tools):
             decisions.append(tuple(part.kind.value for part in context.parts))
-            return "search" if len(decisions) == 1 else "answer"
+            if len(decisions) == 1:
+                return NextActionDecision("search")
+            return NextActionDecision("answer", MemoryAction.UPDATE)
 
         async def build_call(context, tool):
             return ToolCall(tool.name, '{"query":"market news"}')
@@ -1310,11 +1155,17 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             read_tools=(tool,),
             choose_next=choose_next,
             build_tool_call=build_call,
-        ).submit(user_key="member", message="시장 뉴스", accepted_at=self.now)
+        ).submit(user_key="member", message=request, accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertEqual(
-            [("member", "News [source](https://example.com)")], self.delivered
+            [
+                (
+                    "member",
+                    f"News [source](https://example.com)\n\n- remembered:{request}",
+                )
+            ],
+            self.delivered,
         )
         self.assertEqual(1, len(queries))
         self.assertEqual("TOOL_RESULT", decisions[1][-1])
@@ -1322,6 +1173,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             "Tool request (data): search", self.store.turns[0].assistant_message
         )
         self.assertIn("News with source", self.store.turns[0].assistant_message)
+        self.assertEqual(request, self.memory.explicit_inputs[0][0].user_message)
 
     async def test_compaction_happens_before_answer_generation(self) -> None:
         self.compactor.due = True
@@ -1352,7 +1204,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 for part in context.parts
                 if part.kind.value == "CURRENT_USER"
             )
-            return "answer" if "new" in current else "search"
+            return NextActionDecision("answer" if "new" in current else "search")
 
         async def build_call(context, tool):
             return ToolCall(tool.name, "{}")
@@ -1392,7 +1244,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         async def choose_next(context, tools):
             choices.append("search")
-            return "search"
+            return NextActionDecision("search")
 
         async def build_call(context, tool):
             return ToolCall(tool.name, "{}")

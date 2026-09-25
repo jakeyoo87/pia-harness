@@ -107,7 +107,14 @@ class ConversationStore(Protocol):
         user_key: str,
         expected_session_id: str,
         now: datetime | None = None,
-    ) -> ActiveSession: ...
+    ) -> ActiveSession:
+        """Replace the session and clear long-term Memory in one store operation.
+
+        Old Turns remain under the store's retention policy but are never read
+        into the new session. The old Summary may be removed. A session conflict
+        must leave the session and Memory unchanged.
+        """
+        ...
 
 
 def validate_loaded_turns(

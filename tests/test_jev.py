@@ -14,6 +14,7 @@ from pia_harness.context import (
 )
 from pia_harness.jev import JevDecisionAdapter, JevDecisionError
 from pia_harness.memory import MemoryReviewRequest
+from pia_harness.orchestrator import MemoryAction, NextActionDecision
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,8 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
                             "choice": "search",
                             "confidence": 0.9,
                             "probabilities": {"answer": 0.1, "search": 0.9},
-                        }
+                        },
+                        "memory_action": {"type": "choice", "choice": "NONE"},
                     },
                     "usage": {"input_tokens": 20, "output_tokens": 2},
                 },
@@ -73,18 +75,69 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         choice = await adapter.choose_next(
             context, (_Tool("search", "Find public sources"),)
         )
-        self.assertEqual("search", choice)
+        self.assertEqual(NextActionDecision("search"), choice)
         self.assertEqual(
             {"answer", "search"},
             set(requests[0]["questions"]["next_action"]["criteria"]),
         )
         self.assertEqual("CURRENT_USER", requests[0]["state"][-1]["kind"])
+        self.assertEqual(
+            {"NONE", "UPDATE", "FORGET"},
+            set(requests[0]["questions"]["memory_action"]["criteria"]),
+        )
+
+    async def test_answer_selects_memory_action_in_the_same_request(self) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "answers": {
+                        "next_action": {"type": "choice", "choice": "answer"},
+                        "memory_action": {"type": "choice", "choice": "UPDATE"},
+                    }
+                },
+            )
+
+        adapter = JevDecisionAdapter(
+            api_key="synthetic-key",
+            async_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="https://api.typesafe.ai",
+            ),
+        )
+        context = AssembledPromptContext(
+            (
+                PromptContextPart(
+                    PromptContextKind.SYSTEM, "System", PromptTrust.TRUSTED_INSTRUCTION
+                ),
+                PromptContextPart(
+                    PromptContextKind.CURRENT_USER,
+                    "배당주 선호를 기억해줘",
+                    PromptTrust.UNTRUSTED_DATA,
+                ),
+            ),
+            10,
+            100,
+        )
+        self.assertEqual(
+            NextActionDecision("answer", MemoryAction.UPDATE),
+            await adapter.choose_next(context, ()),
+        )
+        self.assertEqual(1, len(requests))
 
     async def test_rejects_invented_tool_name(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
-                json={"answers": {"next_action": {"type": "choice", "choice": "buy"}}},
+                json={
+                    "answers": {
+                        "next_action": {"type": "choice", "choice": "buy"},
+                        "memory_action": {"type": "choice", "choice": "NONE"},
+                    }
+                },
             )
 
         adapter = JevDecisionAdapter(
@@ -105,6 +158,38 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(JevDecisionError):
             await adapter.choose_next(context, (_Tool("search", "Search"),))
+
+    async def test_tool_choice_defers_memory_action(self) -> None:
+        adapter = JevDecisionAdapter(
+            api_key="synthetic-key",
+            async_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(
+                        200,
+                        json={
+                            "answers": {
+                                "next_action": {"type": "choice", "choice": "search"},
+                                "memory_action": {"type": "choice", "choice": "UPDATE"},
+                            }
+                        },
+                    )
+                ),
+                base_url="https://api.typesafe.ai",
+            ),
+        )
+        context = AssembledPromptContext(
+            (
+                PromptContextPart(
+                    PromptContextKind.SYSTEM, "System", PromptTrust.TRUSTED_INSTRUCTION
+                ),
+            ),
+            1,
+            100,
+        )
+        self.assertEqual(
+            NextActionDecision("search"),
+            await adapter.choose_next(context, (_Tool("search", "Search"),)),
+        )
 
     async def test_memory_choice_is_independent_of_writer(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

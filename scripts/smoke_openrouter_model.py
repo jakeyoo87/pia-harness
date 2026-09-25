@@ -21,7 +21,6 @@ from pia_harness import (
     CompletedTurn,
     CurrentMemoryInput,
     GeneratedAnswer,
-    MemoryAction,
     MemoryReviewAction,
     MemoryReviewOutput,
     MemoryReviewRequest,
@@ -39,7 +38,9 @@ from pia_harness import (
 from pia_harness.compaction import SUMMARY_INSTRUCTION
 
 
-SYSTEM_PROMPT = "한국어로 자연스럽고 간결하게 답하세요. 내부 메타데이터는 노출하지 마세요."
+SYSTEM_PROMPT = (
+    "한국어로 자연스럽고 간결하게 답하세요. 내부 메타데이터는 노출하지 마세요."
+)
 MOVING_MODEL_IDS = {"openrouter/auto", "openrouter/auto-beta", "openrouter/free"}
 
 
@@ -74,8 +75,6 @@ class SmokeResult:
     response_model: str | None = None
     expected_action: str | None = None
     actual_action: str | None = None
-    expected_confirmed: bool | None = None
-    actual_confirmed: bool | None = None
     total_tokens: int | None = None
     completion_tokens: int | None = None
     web_search_requests: int | None = None
@@ -108,14 +107,12 @@ async def run_smoke(
     results: list[SmokeResult] = []
     started = monotonic()
     try:
-        for name, parts, expected_action, expected_confirmed in _answer_scenarios():
+        for name, parts in _answer_scenarios():
             result = await _run_answer(
                 adapter,
                 budget,
                 name=name,
                 parts=parts,
-                expected_action=expected_action,
-                expected_confirmed=expected_confirmed,
             )
             results.append(result)
             _emit(emit, asdict(result))
@@ -177,8 +174,6 @@ async def _run_answer(
     *,
     name: str,
     parts: tuple[PromptContextPart, ...],
-    expected_action: MemoryAction,
-    expected_confirmed: bool,
 ) -> SmokeResult:
     started = monotonic()
     try:
@@ -186,22 +181,13 @@ async def _run_answer(
         answer = await adapter.generate_answer(
             AssembledPromptContext(parts, estimate, budget.input_tokens)
         )
-        passed = (
-            answer.memory_action is expected_action
-            and answer.delete_all_confirmed is expected_confirmed
-        )
+        passed = bool(answer.text.strip())
         return SmokeResult(
             scenario=name,
             status="PASS" if passed else "FAIL",
             elapsed_ms=_elapsed_ms(started),
             response_model=answer.model_id,
-            expected_action=expected_action.value,
-            actual_action=answer.memory_action.value,
-            expected_confirmed=expected_confirmed,
-            actual_confirmed=answer.delete_all_confirmed,
-            total_tokens=(
-                None if answer.usage is None else answer.usage.total_tokens
-            ),
+            total_tokens=(None if answer.usage is None else answer.usage.total_tokens),
             web_search_requests=answer.web_search_requests,
             output_text=answer.text,
         )
@@ -227,24 +213,13 @@ async def _run_web_answer(
         )
         searched = answer.web_search_requests > 0
         links = _markdown_https_links(answer.text)
-        valid = (
-            answer.memory_action is MemoryAction.NONE
-            and not answer.delete_all_confirmed
-            and searched is should_search
-            and (not should_search or bool(links))
-        )
+        valid = searched is should_search and (not should_search or bool(links))
         return SmokeResult(
             scenario=name,
             status="PASS" if valid else "FAIL",
             elapsed_ms=_elapsed_ms(started),
             response_model=answer.model_id,
-            expected_action=MemoryAction.NONE.value,
-            actual_action=answer.memory_action.value,
-            expected_confirmed=False,
-            actual_confirmed=answer.delete_all_confirmed,
-            total_tokens=(
-                None if answer.usage is None else answer.usage.total_tokens
-            ),
+            total_tokens=(None if answer.usage is None else answer.usage.total_tokens),
             web_search_requests=answer.web_search_requests,
             output_text=answer.text,
         )
@@ -351,13 +326,10 @@ async def _run_summary(adapter: SmokeAdapter) -> SmokeResult:
                 max_output_tokens=4_096,
             ),
         )
-        valid_tokens = (
-            output.token_count is None
-            or (
-                not isinstance(output.token_count, bool)
-                and isinstance(output.token_count, int)
-                and output.token_count > 0
-            )
+        valid_tokens = output.token_count is None or (
+            not isinstance(output.token_count, bool)
+            and isinstance(output.token_count, int)
+            and output.token_count > 0
         )
         valid = bool(output.text.strip()) and valid_tokens
         return SmokeResult(
@@ -374,45 +346,11 @@ async def _run_summary(adapter: SmokeAdapter) -> SmokeResult:
         return _unexpected_failure("rolling_summary", started, error)
 
 
-def _answer_scenarios() -> tuple[
-    tuple[str, tuple[PromptContextPart, ...], MemoryAction, bool], ...
-]:
+def _answer_scenarios() -> tuple[tuple[str, tuple[PromptContextPart, ...]], ...]:
     return (
         (
-            "answer_none",
+            "answer_text",
             _parts("삼성전자 실적에서 중요한 점을 한 문장으로 설명해줘."),
-            MemoryAction.NONE,
-            False,
-        ),
-        (
-            "answer_update",
-            _parts("앞으로 답변은 핵심부터 짧게 설명해줘."),
-            MemoryAction.UPDATE,
-            False,
-        ),
-        (
-            "answer_forget",
-            _parts("내가 답변을 짧게 선호한다는 기억은 잊어줘."),
-            MemoryAction.FORGET,
-            False,
-        ),
-        (
-            "answer_delete_all_request",
-            _parts("나에 대해 기억한 내용을 모두 삭제해줘."),
-            MemoryAction.DELETE_ALL,
-            False,
-        ),
-        (
-            "answer_delete_all_confirmed",
-            _parts(
-                "네, 모두 삭제해줘.",
-                history=(
-                    ("user", "나에 대해 기억한 내용을 모두 삭제해줘."),
-                    ("assistant", "저장된 기억을 모두 삭제할까요?"),
-                ),
-            ),
-            MemoryAction.DELETE_ALL,
-            True,
         ),
     )
 
@@ -502,9 +440,7 @@ def _adapter_failure(
     )
 
 
-def _unexpected_failure(
-    scenario: str, started: float, error: Exception
-) -> SmokeResult:
+def _unexpected_failure(scenario: str, started: float, error: Exception) -> SmokeResult:
     return SmokeResult(
         scenario=scenario,
         status="FAIL",

@@ -70,7 +70,10 @@ class InMemoryConversationStore:
             turn_id, created_at
         ):
             raise ValueError("turn_id must match created_at")
-        if len(user_message.encode()) + len(assistant_message.encode()) > self._max_turn_bytes:
+        if (
+            len(user_message.encode()) + len(assistant_message.encode())
+            > self._max_turn_bytes
+        ):
             raise TurnTooLargeError("turn content exceeds the configured byte limit")
         turn = CompletedTurn(
             user_key,
@@ -111,9 +114,7 @@ class InMemoryConversationStore:
             )
             return ConversationContext(summary, turns)
 
-    def get_summary(
-        self, *, user_key: str, session_id: str
-    ) -> RollingSummary | None:
+    def get_summary(self, *, user_key: str, session_id: str) -> RollingSummary | None:
         with self._lock:
             return self._summaries.get(
                 (_required("user_key", user_key), _required("session_id", session_id))
@@ -130,7 +131,10 @@ class InMemoryConversationStore:
         expected_last_reviewed_turn_id: str | None,
     ) -> bool:
         _required("user_key", memory.user_key)
-        if not isinstance(memory.memory_text, str) or len(memory.memory_text) > MEMORY_MAX_CHARS:
+        if (
+            not isinstance(memory.memory_text, str)
+            or len(memory.memory_text) > MEMORY_MAX_CHARS
+        ):
             raise ValueError("memory_text is invalid")
         if not is_valid_turn_id(memory.last_reviewed_turn_id):
             raise ValueError("last_reviewed_turn_id must be a turn ID")
@@ -227,6 +231,7 @@ class InMemoryConversationStore:
             replacement = ActiveSession(user_key, uuid4().hex, created_at)
             self._sessions[user_key] = replacement
             self._summaries.pop((user_key, expected_session_id), None)
+            self._memories.pop(user_key, None)
             return replacement
 
     def delete_all_for_user(self, user_key: str) -> int:
@@ -355,9 +360,7 @@ class ConversationStoreContract:
         )
         memory = MemoryDocument("boundaries", "memory", first.turn_id, self.now)
         self.assertTrue(
-            self.store.replace_memory(
-                memory, expected_last_reviewed_turn_id=None
-            )
+            self.store.replace_memory(memory, expected_last_reviewed_turn_id=None)
         )
         self.assertFalse(
             self.store.replace_memory(
@@ -375,7 +378,13 @@ class ConversationStoreContract:
             ),
         )
         summary = RollingSummary(
-            "boundaries", session.session_id, "summary", first.turn_id, 1, "model", self.now
+            "boundaries",
+            session.session_id,
+            "summary",
+            first.turn_id,
+            1,
+            "model",
+            self.now,
         )
         self.assertTrue(
             self.store.replace_summary(summary, expected_through_turn_id=None)
@@ -424,6 +433,19 @@ class ConversationStoreContract:
         self.assertEqual(
             replacement,
             self.store.get_or_create_active_session("boundaries", now=self.now),
+        )
+        self.assertIsNone(self.store.get_memory("boundaries"))
+        self.assertEqual(
+            (first, second),
+            self.store.load_unreviewed_turns(
+                user_key="boundaries",
+                session_id=session.session_id,
+                after_turn_id=None,
+                now=self.now,
+            ),
+        )
+        self.assertIsNone(
+            self.store.get_summary(user_key="boundaries", session_id=session.session_id)
         )
 
     def test_contract_delete_turns_through_is_scoped_to_one_session(self) -> None:
