@@ -47,7 +47,8 @@ not this text-generation call. Do not claim that a Memory change has already per
 application adds success or failure information after the durable write. When this Turn contains
 tool results, base factual claims only on material actually present in them. A search candidate
 whose body was not read is only a title and short description; never describe its content as if it
-had been read. Cite the links of the bodies you relied on."""
+had been read. If a read body is cut off by a subscription or login notice, say that only part
+of it was read. Cite the links of the bodies you relied on."""
 
 MEMORY_OUTPUT_INSTRUCTION = """Return UNCHANGED only when no durable meaning changes; then memory_text
 must be JSON null and change_summary must be empty. Return REPLACE with the complete non-empty Memory
