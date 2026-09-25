@@ -45,7 +45,8 @@ _Result = TypeVar("_Result")
 ANSWER_INSTRUCTION = """Return the natural user-facing answer. Memory decisions belong to Jev,
 not this text-generation call. Do not claim that a Memory change has already persisted; the
 application adds success or failure information after the durable write. When this Turn contains
-tool results, base factual claims only on material actually present in them. A search candidate
+tool results, base factual claims only on material actually present in them or in the earlier
+conversation. A search candidate
 whose body was not read is only a title and short description; never describe its content as if it
 had been read. If a read body is cut off by a subscription or login notice, say that only part
 of it was read. Cite the links of the bodies you relied on."""
