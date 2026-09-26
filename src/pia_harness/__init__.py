@@ -1,3 +1,4 @@
+from .broker_order import BrokerOrderTool
 from .budget import DEFAULT_MAX_RESPONSE_TOKENS, ModelTokenBudget
 from .compaction import (
     CompactionPolicy,
@@ -39,16 +40,20 @@ from .openrouter import (
     OpenRouterModelError,
 )
 from .orchestrator import (
+    CONFIRMATION_EXPIRED_NOTICE,
     MESSAGE_SEPARATOR,
     ConversationInput,
     ConversationOrchestrator,
     ConversationProgress,
     ConversationResult,
+    ExecutionToolDefinition,
     GeneratedAnswer,
     MemoryAction,
     NextActionDecision,
     NextActionOption,
     OrchestratorStatus,
+    PreparationResult,
+    PreparedAction,
     ReadToolDefinition,
     ReadToolResult,
     ToolCall,
@@ -74,6 +79,7 @@ from .session import (
 from .url_reader import UrlReader, UrlReadError
 
 __all__ = [
+    "CONFIRMATION_EXPIRED_NOTICE",
     "DEFAULT_MAX_RESPONSE_TOKENS",
     "MAX_CHANGE_SUMMARY_CHARS",
     "MAX_CHANGE_SUMMARY_ITEMS",
@@ -83,6 +89,7 @@ __all__ = [
     "ActiveSession",
     "AssembledPromptContext",
     "AutomaticMemoryReviewer",
+    "BrokerOrderTool",
     "CompactionPolicy",
     "CompletedTurn",
     "ContextBudgetExceeded",
@@ -95,6 +102,7 @@ __all__ = [
     "ConversationResult",
     "ConversationStore",
     "CurrentMemoryInput",
+    "ExecutionToolDefinition",
     "GeneratedAnswer",
     "JevDecisionAdapter",
     "JevDecisionError",
@@ -114,6 +122,8 @@ __all__ = [
     "OpenRouterModelAdapter",
     "OpenRouterModelError",
     "OrchestratorStatus",
+    "PreparationResult",
+    "PreparedAction",
     "PromptContextAssembler",
     "PromptContextKind",
     "PromptContextPart",
