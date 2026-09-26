@@ -1,4 +1,5 @@
 [
+  {"id": "o0", "message": "응", "expect": "answer"},
   {"id": "o1", "message": "삼전 10주 사줘", "expect": "order"},
   {"id": "o2", "message": "응", "expect": "confirm"},
   {"id": "o3", "message": "삼성전자 5주 팔아줘", "expect": "order"},
@@ -10,5 +11,12 @@
   {"id": "o9", "message": "삼성 10주 사줘", "expect": "order"},
   {"id": "o10", "message": "삼성전자우", "expect": "order"},
   {"id": "o11", "message": "시장가로 해줘", "expect": "order"},
-  {"id": "o12", "message": "응", "expect": "confirm"}
+  {"id": "o12", "message": "응", "expect": "confirm"},
+  {"id": "o13", "message": "삼전 2주 사줘", "expect": "order"},
+  {"id": "o14", "message": "고마워", "expect": "answer"},
+  {"id": "o15", "message": "응", "expect": "answer"},
+  {"id": "o16", "message": "하닉 3주 사줘", "expect": "order"},
+  {"id": "o17", "message": "응 근데 5주로", "expect": "order"},
+  {"id": "o18", "message": "응", "expect": "confirm"},
+  {"id": "o19", "message": "삼전 10주 사고 하닉 5주 팔아줘"}
 ]
