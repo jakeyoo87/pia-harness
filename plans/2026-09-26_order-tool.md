@@ -42,3 +42,10 @@ pia-broker 주문 v1(main `6b63c94`)을 쓰는 첫 실행 도구를 만든다. �
 - 시나리오 테스트(실제 Jev·LLM, 가짜 Broker): "삼전 10주 사줘" → 확인 문장, "응" → confirm, "28만원에" → 다시 order, 관련 없는 말 → answer. 비용이 들어 사용자 승인 후 실행.
 - PIA 연결: Bot role의 Broker 경로 3개 권한(bootstrap), `BrokerOrderTool` 등록과 서명기, dev 배포
 - 실제 KIS 확인(Broker 직접 호출 → 대화 흐름), 각 단계 승인
+
+## Codex 구현 검토 반영 (2026-09-27, `5573e92` 대상)
+
+- Blocker: 실행 확정 뒤의 실행·답변이 외부 취소 보호(shield) 밖이었다. 실행 → 답변 → 전달·저장을 하나의 소유 작업(`_execute_and_commit`)으로 묶어 기존 shield로 보호한다. 실행 중 외부 취소 테스트 추가.
+- Blocker: 한 Turn에서 다시 준비할 때 이전 확인 대기가 남았다. 실행 도구를 고르면 이번 generation에서 이전 Turn의 `confirm`을 숨기고, 준비 결과가 없으면 이번 Turn의 확인 대기도 비운다. 대체된 generation은 저장된 확인 대기를 다시 읽으므로 영향이 없다. 테스트 추가.
+- Blocker: 주문번호 없는 `ACCEPTED`를 접수로 안내했다. `broker_order_no`가 없으면 미확정 문구로 보낸다. `order_id` 일치 확인은 Broker 계약과 겹쳐 넣지 않았다.
+- 작은 수정이라 재검토 없이 Claude가 확인하고 `verify-harness.sh`로 검증한 뒤 병합했다(사용자 승인).

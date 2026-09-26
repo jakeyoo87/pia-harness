@@ -197,7 +197,7 @@ class BrokerOrderTool:
         except (httpx.HTTPError, ValueError):
             result = None
         status = result.get("status") if isinstance(result, dict) else None
-        if status == "ACCEPTED":
+        if status == "ACCEPTED" and result.get("broker_order_no"):
             return (
                 f"주문이 접수되었습니다: {summary} (주문번호 {result.get('broker_order_no')}). "
                 "체결 여부는 증권사 앱에서 확인해 주세요."

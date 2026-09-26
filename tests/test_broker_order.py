@@ -166,6 +166,7 @@ class BrokerOrderToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("사유: 잔고 부족", await self.tool.execute(MEMBER, action))
         for reply in (
             httpx.Response(200, json={"status": "UNKNOWN", "order_id": "r1"}),
+            httpx.Response(200, json={"status": "ACCEPTED", "order_id": "r1"}),
             httpx.Response(502),
             httpx.ReadTimeout("timeout"),
         ):

@@ -389,7 +389,7 @@ class ConversationOrchestrator:
             offered = None
             confirmation_expired = True
         prepared: _PendingAction | None = None
-        executed_text: str | None = None
+        confirmed: _PendingAction | None = None
         try:
             async with state.commit_lock:
                 session = validate_active_session(
@@ -454,15 +454,7 @@ class ConversationOrchestrator:
                         return
                     if self._pending_actions.get(user_key) is offered:
                         del self._pending_actions[user_key]
-                    executed_text = await offered.tool.execute(user_key, offered.action)
-                    if not isinstance(executed_text, str) or not executed_text.strip():
-                        raise ValueError("execution result text is required")
-                    tool_observations += (
-                        ToolObservation(
-                            CONFIRM_OPTION, offered.action.arguments_json, executed_text
-                        ),
-                    )
-                    offered = None
+                    confirmed = offered
                     break
                 execution_tool = next(
                     (
@@ -472,6 +464,10 @@ class ConversationOrchestrator:
                     ),
                     None,
                 )
+                if execution_tool is not None:
+                    # A new draft replaces the earlier one, so the earlier one can
+                    # no longer be confirmed in this generation.
+                    offered = None
                 read_link = next(
                     (
                         link
@@ -519,10 +515,13 @@ class ConversationOrchestrator:
                                 deadline, tool.prepare(user_key, call)
                             )
                             _validate_preparation(preparation)
-                            if preparation.action is not None:
-                                prepared = _PendingAction(
+                            prepared = (
+                                None
+                                if preparation.action is None
+                                else _PendingAction(
                                     tool, preparation.action, request_at
                                 )
+                            )
                             result_text = preparation.observation_text
                         else:
                             tool_result = await _before_deadline(
@@ -586,23 +585,13 @@ class ConversationOrchestrator:
                     return
                 assert assembled is not None
 
-            if executed_text is None:
+            owned: Awaitable[tuple[ConversationResult, bool]]
+            if confirmed is None:
                 answer = await self._generate_answer(assembled)
                 _validate_generated_answer(answer)
                 if not await self._claim_commit(state, generation_id, len(batch)):
                     return
-            else:
-                answer = await self._answer_after_execution(
-                    user_key,
-                    state,
-                    generation_id,
-                    batch,
-                    session,
-                    tool_observations,
-                    executed_text,
-                )
-            commit_task = asyncio.create_task(
-                self._commit_response(
+                owned = self._commit_response(
                     user_key=user_key,
                     state=state,
                     batch=batch,
@@ -614,7 +603,23 @@ class ConversationOrchestrator:
                     prepared=prepared,
                     confirmation_expired=confirmation_expired,
                 )
-            )
+            else:
+                # Already claimed: the execution, its answer and the commit run
+                # as one owned task so a sent order is always reported.
+                owned = self._execute_and_commit(
+                    user_key=user_key,
+                    state=state,
+                    generation_id=generation_id,
+                    batch=batch,
+                    session=session,
+                    confirmed=confirmed,
+                    tool_observations=tool_observations,
+                    memory_failed=memory_failed,
+                    compaction_failed=compaction_failed,
+                    prepared=prepared,
+                    confirmation_expired=confirmation_expired,
+                )
+            commit_task = asyncio.create_task(owned)
             # Repeated external cancellation must not cancel the owned commit.
             # Supersede only cancels while the phase is GENERATING.
             while not commit_task.done():
@@ -871,6 +876,46 @@ class ConversationOrchestrator:
             current_user_message=current_user_message,
             token_budget=self._token_budget,
             tool_observations=tool_observations,
+        )
+
+    async def _execute_and_commit(
+        self,
+        *,
+        user_key: str,
+        state: _UserState,
+        generation_id: int,
+        batch: tuple[_Submission, ...],
+        session: ActiveSession,
+        confirmed: _PendingAction,
+        tool_observations: tuple[ToolObservation, ...],
+        memory_failed: bool,
+        compaction_failed: bool,
+        prepared: _PendingAction | None,
+        confirmation_expired: bool,
+    ) -> tuple[ConversationResult, bool]:
+        executed_text = await confirmed.tool.execute(user_key, confirmed.action)
+        if not isinstance(executed_text, str) or not executed_text.strip():
+            raise ValueError("execution result text is required")
+        observations = (
+            *tool_observations,
+            ToolObservation(
+                CONFIRM_OPTION, confirmed.action.arguments_json, executed_text
+            ),
+        )
+        answer = await self._answer_after_execution(
+            user_key, state, generation_id, batch, session, observations, executed_text
+        )
+        return await self._commit_response(
+            user_key=user_key,
+            state=state,
+            batch=batch,
+            session=session,
+            answer=answer,
+            memory_action=MemoryAction.NONE,
+            memory_failed=memory_failed,
+            compaction_failed=compaction_failed,
+            prepared=prepared,
+            confirmation_expired=confirmation_expired,
         )
 
     async def _answer_after_execution(

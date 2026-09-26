@@ -1427,6 +1427,108 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertEqual("Order accepted: Samsung 10 shares.", result.final_text)
 
+    async def test_external_cancel_after_confirm_still_reports_the_order(
+        self,
+    ) -> None:
+        executing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def execute(user_key, prepared):
+            executing.set()
+            await release.wait()
+            return "Order accepted."
+
+        orchestrator = self.orchestrator(
+            generate,
+            execution_tools=(self.order_tool(execute=execute),),
+            choose_next=self.routing("order"),
+            build_tool_call=self.order_call(),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        confirm = asyncio.create_task(
+            orchestrator.submit(
+                user_key="user",
+                message="yes",
+                accepted_at=self.now + timedelta(minutes=1),
+            )
+        )
+        await executing.wait()
+        active = orchestrator._states["user"].active_task
+        assert active is not None
+        active.cancel()
+        await asyncio.sleep(0)
+        active.cancel()
+        release.set()
+        result = await asyncio.wait_for(confirm, timeout=2)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(
+            ["buy", "yes"], [turn.user_message for turn in self.store.turns]
+        )
+        self.assertNotIn("user", orchestrator._states)
+
+    async def test_redrafting_in_one_turn_replaces_the_earlier_draft(self) -> None:
+        drafts = 0
+        seen: list[list[str]] = []
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def prepare(user_key, call):
+            nonlocal drafts
+            drafts += 1
+            if drafts == 3:
+                return PreparationResult("Order not prepared. Missing: quantity.")
+            return PreparationResult(
+                "prepared", PreparedAction("draft", f"Confirm draft {drafts}?", "{}")
+            )
+
+        async def execute(user_key, prepared):
+            raise AssertionError("nothing should run")
+
+        tool = ExecutionToolDefinition(
+            "order", "Prepare an order", {"type": "object"}, prepare, execute
+        )
+
+        async def choose(context, options):
+            names = [option.name for option in options]
+            seen.append(names)
+            results = sum(1 for p in context.parts if p.kind.value == "TOOL_RESULT")
+            if len(seen) == 1:
+                return NextActionDecision("order")
+            if len(seen) == 2:
+                return NextActionDecision("answer")
+            # Second Turn: a new draft hides the old confirm; a failed redraft
+            # then clears the new draft.
+            if results == 0:
+                return NextActionDecision("order")
+            if results == 1:
+                return NextActionDecision("order")
+            return NextActionDecision("answer")
+
+        orchestrator = self.orchestrator(
+            generate,
+            execution_tools=(tool,),
+            choose_next=choose,
+            build_tool_call=self.order_call(),
+        )
+        first = await orchestrator.submit(
+            user_key="user", message="buy", accepted_at=self.now
+        )
+        self.assertTrue(first.final_text.endswith("Confirm draft 1?"))
+        second = await orchestrator.submit(
+            user_key="user",
+            message="buy again",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+        self.assertIn("confirm", seen[2])
+        self.assertNotIn("confirm", seen[3])
+        self.assertNotIn("Confirm draft", second.final_text)
+        self.assertEqual({}, orchestrator._pending_actions)
+
     async def test_confirm_and_answer_are_reserved_tool_names(self) -> None:
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
