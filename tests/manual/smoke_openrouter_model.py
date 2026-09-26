@@ -36,7 +36,6 @@ from pia_harness import (
 )
 from pia_harness.compaction import SUMMARY_INSTRUCTION
 
-
 SYSTEM_PROMPT = (
     "한국어로 자연스럽고 간결하게 답하세요. 내부 메타데이터는 노출하지 마세요."
 )
@@ -176,7 +175,7 @@ async def _run_answer(
         )
     except OpenRouterModelError as error:
         return _adapter_failure(name, started, error)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         return _unexpected_failure(name, started, error)
 
 
@@ -218,7 +217,7 @@ async def _run_memory_replace(adapter: SmokeAdapter) -> SmokeResult:
         )
     except OpenRouterModelError as error:
         return _adapter_failure("memory_replace", started, error)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         return _unexpected_failure("memory_replace", started, error)
 
 
@@ -250,7 +249,7 @@ async def _run_memory_unchanged(adapter: SmokeAdapter) -> SmokeResult:
         )
     except OpenRouterModelError as error:
         return _adapter_failure("memory_unchanged_null", started, error)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         return _unexpected_failure("memory_unchanged_null", started, error)
 
 
@@ -293,7 +292,7 @@ async def _run_summary(adapter: SmokeAdapter) -> SmokeResult:
         )
     except OpenRouterModelError as error:
         return _adapter_failure("rolling_summary", started, error)
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001
         return _unexpected_failure("rolling_summary", started, error)
 
 

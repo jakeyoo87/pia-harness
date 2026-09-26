@@ -11,8 +11,7 @@ from pia_harness import (
     OpenRouterModelError,
     SummaryOutput,
 )
-from scripts.smoke_openrouter_model import SmokeConfig, cli, run_smoke
-
+from tests.manual.smoke_openrouter_model import SmokeConfig, cli, run_smoke
 
 FAKE_KEY = "sk-or-v1-TEST-ONLY-smoke-secret"
 MODEL = "vendor/exact-model"
