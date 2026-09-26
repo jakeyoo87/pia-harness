@@ -95,6 +95,7 @@ Jev가 "10주", "응", "그거" 같은 짧은 후속 메시지를 해석할 수 
 
 ## Codex 검토 요청 핵심
 
+- README의 기존 설계(1~6번, 특히 Jev 입력 축소·answer 기준·Memory·Turn 저장 규칙)와 현재 코드에 이 변경과 충돌하거나 함께 고쳐야 하는 부분이 있는가
 - 조립된 Context의 마지막 `USER_TURN`·`ASSISTANT_TURN` 쌍을 직전 Turn으로 쓰는 방식이 Compaction·Summary·처리 중 합쳐진 메시지와 충돌하지 않는가
 - PREVIOUS_* 구분과 memory_action 제외 문장이 충분한가
 - 읽기 흐름 판단에 미칠 위험을 더 줄일 방법이 있는가, 아니면 시나리오 재실행으로 충분한가
