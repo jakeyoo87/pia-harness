@@ -90,7 +90,9 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
             set(requests[0]["questions"]["memory_action"]["criteria"]),
         )
 
-    async def test_routes_only_the_current_request_and_its_tool_results(self) -> None:
+    async def test_routes_the_current_request_with_the_previous_turn_as_reference(
+        self,
+    ) -> None:
         requests = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -121,7 +123,11 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
                 PromptContextPart(PromptContextKind.SUMMARY, "Earlier talk", data),
                 PromptContextPart(PromptContextKind.USER_TURN, "Old question", data),
                 PromptContextPart(PromptContextKind.ASSISTANT_TURN, "Old answer", data),
-                PromptContextPart(PromptContextKind.CURRENT_USER, "오늘 뉴스", data),
+                PromptContextPart(PromptContextKind.USER_TURN, "삼성전자 사줘", data),
+                PromptContextPart(
+                    PromptContextKind.ASSISTANT_TURN, "몇 주를 살까요?", data
+                ),
+                PromptContextPart(PromptContextKind.CURRENT_USER, "10주", data),
                 PromptContextPart(PromptContextKind.TOOL_REQUEST, "search", data),
                 PromptContextPart(PromptContextKind.TOOL_RESULT, "c1 title", data),
             ),
@@ -131,12 +137,63 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         await adapter.choose_next(context, (_Tool("search", "Find news"),))
         self.assertEqual(
             [
-                {"kind": "CURRENT_USER", "content": "오늘 뉴스"},
+                {"kind": "PREVIOUS_USER", "content": "삼성전자 사줘"},
+                {"kind": "PREVIOUS_ANSWER", "content": "몇 주를 살까요?"},
+                {"kind": "CURRENT_USER", "content": "10주"},
                 {"kind": "TOOL_REQUEST", "content": "search"},
                 {"kind": "TOOL_RESULT", "content": "c1 title"},
             ],
             requests[0]["state"],
         )
+        questions = requests[0]["questions"]
+        self.assertIn("PREVIOUS_ANSWER", questions["next_action"]["instructions"])
+        self.assertIn("PREVIOUS_USER", questions["memory_action"]["instructions"])
+
+    async def test_a_long_previous_turn_keeps_request_start_and_answer_end(
+        self,
+    ) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "answers": {
+                        "next_action": {"type": "choice", "choice": "answer"},
+                        "memory_action": {"type": "choice", "choice": "NONE"},
+                    }
+                },
+            )
+
+        adapter = JevDecisionAdapter(
+            api_key="synthetic-key",
+            async_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="https://openrouter.ai",
+            ),
+        )
+        data = PromptTrust.UNTRUSTED_DATA
+        request = "요청" + "가" * 2_000
+        answer = "본문" * 3_000 + "몇 주를 살까요?"
+        context = AssembledPromptContext(
+            (
+                PromptContextPart(PromptContextKind.USER_TURN, request, data),
+                PromptContextPart(PromptContextKind.ASSISTANT_TURN, answer, data),
+                PromptContextPart(PromptContextKind.CURRENT_USER, "10주", data),
+            ),
+            10,
+            100,
+        )
+        await adapter.choose_next(context, ())
+        previous_user, previous_answer = requests[0]["state"][:2]
+
+        self.assertEqual(request[:1_000], previous_user["content"])
+        self.assertTrue(previous_answer["content"].endswith("몇 주를 살까요?"))
+        self.assertEqual(
+            4_000, len(previous_user["content"]) + len(previous_answer["content"])
+        )
+        self.assertEqual("10주", requests[0]["state"][2]["content"])
 
     async def test_answer_selects_memory_action_in_the_same_request(self) -> None:
         requests = []

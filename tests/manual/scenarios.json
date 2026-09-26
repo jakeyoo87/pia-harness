@@ -1,6 +1,7 @@
 [
   {"id": "1", "message": "안녕, 뭐 할 수 있어?", "expect": "answer"},
   {"id": "2", "message": "오늘 삼성전자 관련 주요 뉴스 알려줘", "expect": "search"},
+  {"id": "2-1", "message": "SK하이닉스 최근 뉴스도 알려줘", "expect": "search"},
   {"id": "3", "message": "https://n.news.naver.com/mnews/article/018/0006375530?sid=101 이 기사 요약해줘", "expect": "read"},
   {"id": "6", "message": "아까 삼성전자 답변 세 줄로 줄여줘", "expect": "answer"},
   {"id": "6-1", "message": "아까 그 목표주가 기사 링크 다시 줘", "expect": "answer"},
