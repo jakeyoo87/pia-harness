@@ -37,6 +37,10 @@ MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
 READ_ROUTING_TIMEOUT_SECONDS = 120.0
 PROGRESS_TIMEOUT_SECONDS = 5.0
 READ_OPTION_PREFIX = "read:"
+CONFIRM_OPTION = "confirm"
+CONFIRMATION_TTL_SECONDS = 300.0
+CONFIRMATION_EXPIRED_NOTICE = "확인 시간이 지났습니다. 다시 요청해 주세요."
+_RESERVED_OPTIONS = frozenset({"answer", CONFIRM_OPTION})
 _TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _MESSAGE_URL = re.compile(r"https?://[^\s<>\"'()\[\]{}]+", re.IGNORECASE)
 _URL_TRAILING = ".,;:!?…。，、"
@@ -114,6 +118,35 @@ class ReadToolDefinition:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedAction:
+    """An execution tool's draft; it runs only if the user confirms it next Turn."""
+
+    summary: str  # shown to Jev in the confirm option
+    confirmation: str  # appended to the answer as the fixed question
+    arguments_json: str  # handed to execute() unchanged
+
+
+@dataclass(frozen=True, slots=True)
+class PreparationResult:
+    observation_text: str
+    # None when the tool still needs something from the user (missing or
+    # ambiguous arguments); the observation says what.
+    action: PreparedAction | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionToolDefinition:
+    name: str
+    description: str
+    arguments_schema: Mapping[str, Any]
+    prepare: Callable[[str, ToolCall], Awaitable[PreparationResult]]
+    # Runs after the execution claim. It returns the outcome text, which is also
+    # sent as-is if the answer cannot be generated, and must not raise once the
+    # request may have been sent.
+    execute: Callable[[str, PreparedAction], Awaitable[str]]
+
+
+@dataclass(frozen=True, slots=True)
 class NextActionOption:
     name: str
     description: str
@@ -159,6 +192,13 @@ class _Link:
         return f"{READ_OPTION_PREFIX}{self.link_id}"
 
 
+@dataclass(frozen=True, slots=True)
+class _PendingAction:
+    tool: ExecutionToolDefinition
+    action: PreparedAction
+    created_at: datetime
+
+
 @dataclass(slots=True)
 class _UserState:
     state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -187,16 +227,19 @@ class ConversationOrchestrator:
         progress: Callable[[str, str, ConversationProgress], Awaitable[None]]
         | None = None,
         read_tools: tuple[ReadToolDefinition, ...] = (),
+        execution_tools: tuple[ExecutionToolDefinition, ...] = (),
         read_url: Callable[[str], Awaitable[str]] | None = None,
         choose_next: Callable[
             [AssembledPromptContext, tuple[NextActionOption, ...]],
             Awaitable[NextActionDecision],
         ],
         build_tool_call: Callable[
-            [AssembledPromptContext, ReadToolDefinition], Awaitable[ToolCall]
+            [AssembledPromptContext, ReadToolDefinition | ExecutionToolDefinition],
+            Awaitable[ToolCall],
         ]
         | None = None,
         read_routing_timeout_seconds: float = READ_ROUTING_TIMEOUT_SECONDS,
+        confirmation_ttl_seconds: float = CONFIRMATION_TTL_SECONDS,
     ) -> None:
         if not callable(generate_answer):
             raise ValueError("generate_answer must be callable")
@@ -209,16 +252,27 @@ class ConversationOrchestrator:
         if read_url is not None and not callable(read_url):
             raise ValueError("read_url must be callable")
         # Tool names become Jev option names, so they must not collide with
-        # "answer" or the "read:" options.
-        names = [tool.name for tool in read_tools]
+        # "answer", "confirm" or the "read:" options.
+        names = [tool.name for tool in read_tools] + [
+            tool.name for tool in execution_tools
+        ]
         if any(
-            _TOOL_NAME.fullmatch(name) is None or name == "answer" for name in names
+            _TOOL_NAME.fullmatch(name) is None or name in _RESERVED_OPTIONS
+            for name in names
         ) or len(set(names)) != len(names):
-            raise ValueError("read tool names are invalid")
-        if not callable(build_tool_call) and any(
-            tool.arguments_schema is not None for tool in read_tools
+            raise ValueError("tool names are invalid")
+        if not callable(build_tool_call) and (
+            execution_tools
+            or any(tool.arguments_schema is not None for tool in read_tools)
         ):
             raise ValueError("tools with arguments require tool argument generation")
+        if (
+            isinstance(confirmation_ttl_seconds, bool)
+            or not isinstance(confirmation_ttl_seconds, (int, float))
+            or not math.isfinite(confirmation_ttl_seconds)
+            or confirmation_ttl_seconds <= 0
+        ):
+            raise ValueError("confirmation TTL must be positive and finite")
         if (
             isinstance(read_routing_timeout_seconds, bool)
             or not isinstance(read_routing_timeout_seconds, (int, float))
@@ -245,6 +299,11 @@ class ConversationOrchestrator:
         self._generate_answer = generate_answer
         self._progress = progress
         self._read_tools = read_tools
+        self._execution_tools = execution_tools
+        self._confirmation_ttl_seconds = float(confirmation_ttl_seconds)
+        # One action waiting for confirmation per user, in memory only: a restart
+        # drops it and the user asks again.
+        self._pending_actions: dict[str, _PendingAction] = {}
         self._read_url = read_url
         self._choose_next = choose_next
         self._build_tool_call = build_tool_call
@@ -318,6 +377,19 @@ class ConversationOrchestrator:
         memory_failed = False
         compaction_failed = False
         progress_started = False
+        request_at = batch[-1].value.accepted_at
+        offered = self._pending_actions.get(user_key)
+        confirmation_expired = False
+        if (
+            offered is not None
+            and (request_at - offered.created_at).total_seconds()
+            > self._confirmation_ttl_seconds
+        ):
+            del self._pending_actions[user_key]
+            offered = None
+            confirmation_expired = True
+        prepared: _PendingAction | None = None
+        executed_text: str | None = None
         try:
             async with state.commit_lock:
                 session = validate_active_session(
@@ -366,7 +438,7 @@ class ConversationOrchestrator:
             while True:
                 if not await self._is_current(state, generation_id):
                     return
-                options = self._next_action_options(links)
+                options = self._next_action_options(links, offered)
                 choice = await _before_deadline(
                     deadline, self._choose_next(assembled, options)
                 )
@@ -374,6 +446,32 @@ class ConversationOrchestrator:
                 if choice.next_action == "answer":
                     memory_action = choice.memory_action
                     break
+                if choice.next_action == CONFIRM_OPTION:
+                    assert offered is not None
+                    # The execution claim: from here new messages wait instead
+                    # of cancelling, and the read routing deadline no longer applies.
+                    if not await self._claim_commit(state, generation_id, len(batch)):
+                        return
+                    if self._pending_actions.get(user_key) is offered:
+                        del self._pending_actions[user_key]
+                    executed_text = await offered.tool.execute(user_key, offered.action)
+                    if not isinstance(executed_text, str) or not executed_text.strip():
+                        raise ValueError("execution result text is required")
+                    tool_observations += (
+                        ToolObservation(
+                            CONFIRM_OPTION, offered.action.arguments_json, executed_text
+                        ),
+                    )
+                    offered = None
+                    break
+                execution_tool = next(
+                    (
+                        tool
+                        for tool in self._execution_tools
+                        if tool.name == choice.next_action
+                    ),
+                    None,
+                )
                 read_link = next(
                     (
                         link
@@ -387,10 +485,13 @@ class ConversationOrchestrator:
                         return
                     observation = await self._read_link(deadline, read_link)
                 else:
-                    tool = next(
-                        tool
-                        for tool in self._read_tools
-                        if tool.name == choice.next_action
+                    tool: ReadToolDefinition | ExecutionToolDefinition = (
+                        execution_tool
+                        or next(
+                            tool
+                            for tool in self._read_tools
+                            if tool.name == choice.next_action
+                        )
                     )
                     if tool.arguments_schema is None:
                         call = ToolCall(tool.name, "{}")
@@ -402,19 +503,36 @@ class ConversationOrchestrator:
                         _validate_read_tool_call(call, tool.name)
                     if not await self._is_current(state, generation_id):
                         return
-                    if tool.progress is not None and not progress_started:
+                    if (
+                        isinstance(tool, ReadToolDefinition)
+                        and tool.progress is not None
+                        and not progress_started
+                    ):
                         progress_started = True
                         await self._report_progress(
                             user_key, batch[-1].value.turn_id, tool.progress
                         )
                     try:
-                        tool_result = await _before_deadline(
-                            deadline,
-                            tool.execute(
-                                user_key, call, tuple(item.value for item in batch)
-                            ),
-                        )
-                        _validate_read_tool_result(tool_result)
+                        if isinstance(tool, ExecutionToolDefinition):
+                            # Preparing only drafts the action; it runs after confirm.
+                            preparation = await _before_deadline(
+                                deadline, tool.prepare(user_key, call)
+                            )
+                            _validate_preparation(preparation)
+                            if preparation.action is not None:
+                                prepared = _PendingAction(
+                                    tool, preparation.action, request_at
+                                )
+                            result_text = preparation.observation_text
+                        else:
+                            tool_result = await _before_deadline(
+                                deadline,
+                                tool.execute(
+                                    user_key, call, tuple(item.value for item in batch)
+                                ),
+                            )
+                            _validate_read_tool_result(tool_result)
+                            result_text = _tool_result_text(tool_result, links)
                     except ConversationAbandoned:
                         raise
                     except TimeoutError:
@@ -433,9 +551,7 @@ class ConversationOrchestrator:
                         )
                         return
                     observation = ToolObservation(
-                        call.name,
-                        call.arguments_json,
-                        _tool_result_text(tool_result, links),
+                        call.name, call.arguments_json, result_text
                     )
                 if not await self._is_current(state, generation_id):
                     return
@@ -470,10 +586,21 @@ class ConversationOrchestrator:
                     return
                 assert assembled is not None
 
-            answer = await self._generate_answer(assembled)
-            _validate_generated_answer(answer)
-            if not await self._claim_commit(state, generation_id, len(batch)):
-                return
+            if executed_text is None:
+                answer = await self._generate_answer(assembled)
+                _validate_generated_answer(answer)
+                if not await self._claim_commit(state, generation_id, len(batch)):
+                    return
+            else:
+                answer = await self._answer_after_execution(
+                    user_key,
+                    state,
+                    generation_id,
+                    batch,
+                    session,
+                    tool_observations,
+                    executed_text,
+                )
             commit_task = asyncio.create_task(
                 self._commit_response(
                     user_key=user_key,
@@ -484,6 +611,8 @@ class ConversationOrchestrator:
                     memory_action=memory_action,
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
+                    prepared=prepared,
+                    confirmation_expired=confirmation_expired,
                 )
             )
             # Repeated external cancellation must not cancel the owned commit.
@@ -526,7 +655,9 @@ class ConversationOrchestrator:
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
                 ),
-                clear_pending=bool(self._read_tools) or self._read_url is not None,
+                clear_pending=bool(self._read_tools)
+                or bool(self._execution_tools)
+                or self._read_url is not None,
             )
         except asyncio.CancelledError:
             return
@@ -549,10 +680,24 @@ class ConversationOrchestrator:
                     user_key, batch[-1].value.turn_id, ConversationProgress.COMPLETE
                 )
 
-    def _next_action_options(self, links: list[_Link]) -> tuple[NextActionOption, ...]:
-        options = [
-            NextActionOption(tool.name, tool.description) for tool in self._read_tools
-        ]
+    def _next_action_options(
+        self, links: list[_Link], offered: _PendingAction | None
+    ) -> tuple[NextActionOption, ...]:
+        tools: tuple[ReadToolDefinition | ExecutionToolDefinition, ...] = (
+            *self._read_tools,
+            *self._execution_tools,
+        )
+        options = [NextActionOption(tool.name, tool.description) for tool in tools]
+        if offered is not None:
+            options.append(
+                NextActionOption(
+                    CONFIRM_OPTION,
+                    "Execute the action waiting for the user's confirmation: "
+                    f"{offered.action.summary}. Choose only when the current user "
+                    "message clearly agrees to exactly this action. If it changes "
+                    "the conditions, choose the tool again instead.",
+                )
+            )
         if self._read_url is not None:
             for link in links:
                 if link.read:
@@ -728,6 +873,33 @@ class ConversationOrchestrator:
             tool_observations=tool_observations,
         )
 
+    async def _answer_after_execution(
+        self,
+        user_key: str,
+        state: _UserState,
+        generation_id: int,
+        batch: tuple[_Submission, ...],
+        session: ActiveSession,
+        tool_observations: tuple[ToolObservation, ...],
+        executed_text: str,
+    ) -> GeneratedAnswer:
+        fixed = GeneratedAnswer(executed_text, "fixed-text", 0)
+        try:
+            assembled, _overflow, _, _ = await self._assemble_with_overflow(
+                user_key, state, generation_id, batch, session, tool_observations
+            )
+            if assembled is None:
+                return fixed
+            answer = await self._generate_answer(assembled)
+            _validate_generated_answer(answer)
+            return answer
+        except ConversationAbandoned:
+            raise
+        # The action already ran, so any failure still reports its outcome with
+        # the tool's fixed text instead of failing the Turn.
+        except Exception:  # noqa: BLE001
+            return fixed
+
     async def _claim_commit(
         self, state: _UserState, generation_id: int, batch_count: int
     ) -> bool:
@@ -752,6 +924,8 @@ class ConversationOrchestrator:
         memory_action: MemoryAction,
         memory_failed: bool,
         compaction_failed: bool,
+        prepared: _PendingAction | None = None,
+        confirmation_expired: bool = False,
     ) -> tuple[ConversationResult, bool]:
         changes: list[str] = []
         explicit_memory_failed = False
@@ -801,8 +975,14 @@ class ConversationOrchestrator:
 
             if explicit_memory_failed:
                 _add_notice(changes, self._explicit_memory_failure_notice)
+            if confirmation_expired:
+                _add_notice(changes, CONFIRMATION_EXPIRED_NOTICE)
 
             final_text = _final_text(answer.text, changes)
+            if prepared is not None:
+                # Last and outside the notice list, so it is never trimmed and the
+                # next Turn's previous answer ends with the question.
+                final_text = f"{final_text}\n\n{prepared.action.confirmation}"
             try:
                 await self._deliver(user_key, final_text)
             except ConversationAbandoned:
@@ -815,6 +995,12 @@ class ConversationOrchestrator:
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
                 ), False
+
+            # The Turn is delivered: a waiting action lives for the next Turn only.
+            if prepared is not None:
+                self._pending_actions[user_key] = prepared
+            else:
+                self._pending_actions.pop(user_key, None)
 
             try:
                 await _durable_call(
@@ -875,9 +1061,11 @@ class ConversationOrchestrator:
             await self._remove_if_idle(user_key, state)
 
     async def _is_current(self, state: _UserState, generation_id: int) -> bool:
+        # COMMITTING belongs to the generation that claimed it, which includes a
+        # confirmed execution that still has to write its answer.
         async with state.state_lock:
             return (
-                state.phase is _Phase.GENERATING
+                state.phase in (_Phase.GENERATING, _Phase.COMMITTING)
                 and state.generation_id == generation_id
             )
 
@@ -953,6 +1141,19 @@ def _validate_read_tool_call(call: ToolCall, expected_name: str) -> None:
         raise ValueError("read tool arguments are invalid") from None
     if not isinstance(arguments, dict):
         raise ValueError("read tool arguments must be an object")
+
+
+def _validate_preparation(result: PreparationResult) -> None:
+    if not isinstance(result, PreparationResult) or not result.observation_text.strip():
+        raise ValueError("execution tool preparation is invalid")
+    action = result.action
+    if action is not None and (
+        not isinstance(action, PreparedAction)
+        or not action.summary.strip()
+        or not action.confirmation.strip()
+        or not action.arguments_json.strip()
+    ):
+        raise ValueError("prepared action is invalid")
 
 
 def _validate_read_tool_result(result: ReadToolResult) -> None:

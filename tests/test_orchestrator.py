@@ -7,12 +7,14 @@ from unittest.mock import patch
 
 import pia_harness.orchestrator as orchestrator_module
 from pia_harness import (
+    CONFIRMATION_EXPIRED_NOTICE,
     MESSAGE_SEPARATOR,
     ActiveSession,
     ConversationAbandoned,
     ConversationContext,
     ConversationOrchestrator,
     ConversationProgress,
+    ExecutionToolDefinition,
     GeneratedAnswer,
     MemoryAction,
     NextActionDecision,
@@ -21,6 +23,8 @@ from pia_harness import (
     MemoryReviewStatus,
     ModelTokenBudget,
     OrchestratorStatus,
+    PreparationResult,
+    PreparedAction,
     PromptContextAssembler,
     ToolCall,
     ReadToolDefinition,
@@ -196,6 +200,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         failure_notice="memory update failed",
         progress=None,
         read_tools=(),
+        execution_tools=(),
         read_url=None,
         choose_next=None,
         build_tool_call=None,
@@ -223,6 +228,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             explicit_memory_failure_notice=failure_notice,
             progress=progress,
             read_tools=read_tools,
+            execution_tools=execution_tools,
             read_url=read_url,
             choose_next=choose_next or default_choose_next,
             build_tool_call=build_tool_call,
@@ -1203,6 +1209,241 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
         self.assertEqual(1, len(orchestrator._states["user"].pending))
+
+    def order_tool(self, *, executed=None, execute=None, action=True):
+        executed = executed if executed is not None else []
+
+        async def prepare(user_key, call):
+            if not action:
+                return PreparationResult("Order not prepared. Missing: quantity.")
+            return PreparationResult(
+                "Order prepared and waiting for confirmation.",
+                PreparedAction(
+                    "Samsung 10 shares limit buy",
+                    "Buy 10 Samsung shares at 285,500 KRW?",
+                    call.arguments_json,
+                ),
+            )
+
+        async def default_execute(user_key, prepared):
+            executed.append(prepared.arguments_json)
+            return "Order accepted: Samsung 10 shares."
+
+        return ExecutionToolDefinition(
+            "order",
+            "Prepare an order",
+            {"type": "object"},
+            prepare,
+            execute or default_execute,
+        )
+
+    @staticmethod
+    def order_call():
+        async def build_call(context, tool):
+            return ToolCall(tool.name, '{"name":"Samsung","quantity":10}')
+
+        return build_call
+
+    @staticmethod
+    def routing(first_turn_action, second_turn_action="confirm", seen=None):
+        async def choose_next(context, options):
+            names = [option.name for option in options]
+            if seen is not None:
+                seen.append(names)
+            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
+                return NextActionDecision("answer")
+            if "confirm" in names:
+                return NextActionDecision(second_turn_action)
+            return NextActionDecision(first_turn_action)
+
+        return choose_next
+
+    async def test_execution_tool_waits_for_next_turn_confirmation(self) -> None:
+        executed: list[str] = []
+        seen: list[list[str]] = []
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(
+            generate,
+            execution_tools=(self.order_tool(executed=executed),),
+            choose_next=self.routing("order", seen=seen),
+            build_tool_call=self.order_call(),
+        )
+        first = await orchestrator.submit(
+            user_key="user", message="buy Samsung", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, first.status)
+        self.assertEqual([], executed)
+        self.assertNotIn("confirm", seen[0])
+        # The question is last and stored with the Turn.
+        self.assertTrue(
+            first.final_text.endswith("\n\nBuy 10 Samsung shares at 285,500 KRW?")
+        )
+        self.assertEqual(first.final_text, self.store.turns[-1].assistant_message)
+
+        second = await orchestrator.submit(
+            user_key="user", message="yes", accepted_at=self.now + timedelta(minutes=1)
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, second.status)
+        self.assertIn("confirm", seen[-1])
+        self.assertEqual(['{"name":"Samsung","quantity":10}'], executed)
+        self.assertNotIn("Buy 10 Samsung", second.final_text)
+
+        third = await orchestrator.submit(
+            user_key="user", message="yes", accepted_at=self.now + timedelta(minutes=2)
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, third.status)
+        self.assertNotIn("confirm", seen[-1])
+        self.assertEqual(1, len(executed))
+
+    async def test_waiting_action_is_dropped_after_an_unrelated_turn(self) -> None:
+        seen: list[list[str]] = []
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(
+            generate,
+            execution_tools=(self.order_tool(),),
+            choose_next=self.routing("order", second_turn_action="answer", seen=seen),
+            build_tool_call=self.order_call(),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        await orchestrator.submit(
+            user_key="user",
+            message="what?",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+        self.assertIn("confirm", seen[-1])
+        self.assertEqual({}, orchestrator._pending_actions)
+
+    async def test_expired_confirmation_is_dropped_with_a_notice(self) -> None:
+        executed: list[str] = []
+        seen: list[list[str]] = []
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose(context, options):
+            names = [option.name for option in options]
+            seen.append(names)
+            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
+                return NextActionDecision("answer")
+            return NextActionDecision("order" if len(seen) == 1 else "answer")
+
+        orchestrator = self.orchestrator(
+            generate,
+            execution_tools=(self.order_tool(executed=executed),),
+            choose_next=choose,
+            build_tool_call=self.order_call(),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        late = await orchestrator.submit(
+            user_key="user", message="yes", accepted_at=self.now + timedelta(minutes=6)
+        )
+        self.assertNotIn("confirm", seen[-1])
+        self.assertIn(CONFIRMATION_EXPIRED_NOTICE, late.final_text)
+        self.assertEqual([], executed)
+
+    async def test_missing_arguments_prepare_nothing(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("How many shares?", "model", 10)
+
+        orchestrator = self.orchestrator(
+            generate,
+            execution_tools=(self.order_tool(action=False),),
+            choose_next=self.routing("order"),
+            build_tool_call=self.order_call(),
+        )
+        result = await orchestrator.submit(
+            user_key="user", message="buy Samsung", accepted_at=self.now
+        )
+        self.assertEqual("How many shares?", result.final_text)
+        self.assertEqual({}, orchestrator._pending_actions)
+
+    async def test_new_message_after_confirm_waits_for_the_execution(self) -> None:
+        executing = asyncio.Event()
+        release = asyncio.Event()
+        generated: list[str] = []
+
+        async def generate(context):
+            generated.append(context.parts[-1].content)
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def execute(user_key, prepared):
+            executing.set()
+            await release.wait()
+            return "Order accepted."
+
+        orchestrator = self.orchestrator(
+            generate,
+            execution_tools=(self.order_tool(execute=execute),),
+            choose_next=self.routing("order"),
+            build_tool_call=self.order_call(),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        later = self.now + timedelta(minutes=1)
+        confirm = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="yes", accepted_at=later)
+        )
+        await executing.wait()
+        other = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="and news?", accepted_at=later)
+        )
+        await asyncio.sleep(0)
+        self.assertFalse(confirm.done())
+        release.set()
+        confirm_result, other_result = await asyncio.gather(confirm, other)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, confirm_result.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, other_result.status)
+        self.assertEqual(
+            ["buy", "yes", "and news?"],
+            [turn.user_message for turn in self.store.turns],
+        )
+
+    async def test_answer_failure_after_execution_sends_the_fixed_result(self) -> None:
+        calls = 0
+
+        async def generate(context):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise RuntimeError("model unavailable")
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(
+            generate,
+            execution_tools=(self.order_tool(),),
+            choose_next=self.routing("order"),
+            build_tool_call=self.order_call(),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        result = await orchestrator.submit(
+            user_key="user", message="yes", accepted_at=self.now + timedelta(minutes=1)
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual("Order accepted: Samsung 10 shares.", result.final_text)
+
+    async def test_confirm_and_answer_are_reserved_tool_names(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        tool = self.order_tool()
+        for name in ("confirm", "answer"):
+            reserved = ExecutionToolDefinition(
+                name, "x", {"type": "object"}, tool.prepare, tool.execute
+            )
+            with self.assertRaises(ValueError):
+                self.orchestrator(
+                    generate,
+                    execution_tools=(reserved,),
+                    build_tool_call=self.order_call(),
+                )
+        with self.assertRaises(ValueError):
+            self.orchestrator(generate, execution_tools=(tool,))
 
 
 if __name__ == "__main__":
