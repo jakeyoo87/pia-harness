@@ -464,10 +464,6 @@ class ConversationOrchestrator:
                     ),
                     None,
                 )
-                if execution_tool is not None:
-                    # A new draft replaces the earlier one, so the earlier one can
-                    # no longer be confirmed in this generation.
-                    offered = None
                 read_link = next(
                     (
                         link
@@ -584,6 +580,11 @@ class ConversationOrchestrator:
                     )
                     return
                 assert assembled is not None
+                if execution_tool is not None:
+                    # A draft always ends in the answer: the confirmation question
+                    # or asking for what is missing. Jev is not asked again, since
+                    # it kept re-choosing the tool while the request stood.
+                    break
 
             owned: Awaitable[tuple[ConversationResult, bool]]
             if confirmed is None:

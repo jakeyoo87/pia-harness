@@ -33,8 +33,9 @@ ORDER_ARGUMENTS_SCHEMA: dict[str, Any] = {
     "properties": {
         "name": {
             "type": ["string", "null"],
-            "description": "Official listed stock name (삼성전자, not a nickname like "
-            "삼전), or the 6-digit code only if the user gave a code.",
+            "description": "Official listed stock name. Convert nicknames and "
+            "abbreviations (삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use the 6-digit code "
+            "only if the user gave a code. Null only if no stock was named.",
         },
         "side": {"type": ["string", "null"], "enum": ["BUY", "SELL", None]},
         "quantity": {"type": ["integer", "null"], "description": "Number of shares."},
@@ -53,8 +54,10 @@ ORDER_ARGUMENTS_SCHEMA: dict[str, Any] = {
 }
 ORDER_DESCRIPTION = (
     "Prepare a Korean stock buy or sell order for the user's confirmation; nothing "
-    "is executed yet. Choose when the user asks to buy or sell a stock. Use null "
-    "for anything the user has not said; do not guess."
+    "is executed yet. Choose when the user asks to buy or sell a stock, or answers a "
+    "question about an order being drafted. Fill each field from the whole "
+    "conversation (a short reply like '3주' continues the previous order request). "
+    "Never invent the side, quantity or price; leave them null if not said."
 )
 
 
@@ -126,8 +129,8 @@ class BrokerOrderTool:
             )
         if status != "FOUND":
             return PreparationResult(
-                f"Order not prepared. No listed stock matches '{name}'. Choose the "
-                "order tool again with the official listed name, or ask the user."
+                f"Order not prepared. No listed stock matches '{name}'. Ask the "
+                "user for the official listed name."
             )
         code, official_name = str(found["code"]), str(found["name"])
 

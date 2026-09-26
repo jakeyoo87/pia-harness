@@ -1,0 +1,14 @@
+[
+  {"id": "o1", "message": "삼전 10주 사줘", "expect": "order"},
+  {"id": "o2", "message": "응", "expect": "confirm"},
+  {"id": "o3", "message": "삼성전자 5주 팔아줘", "expect": "order"},
+  {"id": "o4", "message": "아니 28만원에", "expect": "order"},
+  {"id": "o5", "message": "아 그냥 하지 말자", "expect": "answer"},
+  {"id": "o6", "message": "하이닉스 사줘", "expect": "order"},
+  {"id": "o7", "message": "3주", "expect": "order"},
+  {"id": "o8", "message": "SK하이닉스 요즘 전망은 어때?"},
+  {"id": "o9", "message": "삼성 10주 사줘", "expect": "order"},
+  {"id": "o10", "message": "삼성전자우", "expect": "order"},
+  {"id": "o11", "message": "시장가로 해줘", "expect": "order"},
+  {"id": "o12", "message": "응", "expect": "confirm"}
+]
