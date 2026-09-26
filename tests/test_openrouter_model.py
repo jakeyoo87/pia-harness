@@ -180,6 +180,36 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("tools", requests[0])
 
+    async def test_answer_and_tool_calls_send_a_hashed_per_user_cache_key(
+        self,
+    ) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            requests.append(body)
+            if body["response_format"]["json_schema"]["name"] == "pia_tool_arguments":
+                return chat_response(json.dumps({"arguments_json": "{}"}))
+            return chat_response(answer_content())
+
+        adapter = self.adapter(handler)
+        tool = ReadToolDefinition(
+            "search", "Find public sources", None, arguments_schema={"type": "object"}
+        )
+        for user_key in ("member-a", "member-a", "member-b"):
+            context = AssembledPromptContext(answer_parts(), 10, 900, user_key)
+            await adapter.generate_answer(context)
+            await adapter.generate_tool_call(context, tool)
+        keys = [request["prompt_cache_key"] for request in requests]
+
+        self.assertEqual(1, len(set(keys[:4])))
+        self.assertNotEqual(keys[0], keys[4])
+        self.assertEqual(32, len(keys[0]))
+        self.assertNotIn("member-a", keys[0])
+
+        await adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+        self.assertNotIn("prompt_cache_key", requests[-1])
+
     async def test_answer_uses_one_structured_call_and_maps_usage(
         self,
     ) -> None:

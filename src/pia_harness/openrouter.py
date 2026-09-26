@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -209,6 +210,7 @@ class OpenRouterModelAdapter:
         if not isinstance(context, AssembledPromptContext):
             raise ValueError("context must be an AssembledPromptContext")
         payload = self._answer_payload(context.parts)
+        _add_cache_key(payload, context.user_key)
         return await self._retry_async(
             lambda: self._generate_answer_once(context, payload),
             stage="answer",
@@ -231,6 +233,7 @@ class OpenRouterModelAdapter:
             schema=_TOOL_ARGUMENTS_SCHEMA,
             output_token_limit=self.token_budget.response_tokens,
         )
+        _add_cache_key(payload, context.user_key)
 
         async def generate_once() -> ToolCall:
             content, _model, _usage = _chat_result(await self._post_async(payload))
@@ -498,6 +501,14 @@ class OpenRouterModelAdapter:
                 retryable=True,
             ) from None
         return _response_payload(response)
+
+
+def _add_cache_key(payload: dict[str, Any], user_key: str) -> None:
+    # Many users share the same system-prompt prefix; a per-user key keeps each
+    # user's requests on the same cache. Send a hash, not the user key itself.
+    if user_key:
+        digest = hashlib.sha256(user_key.encode("utf-8")).hexdigest()
+        payload["prompt_cache_key"] = digest[:32]
 
 
 def _context_messages(

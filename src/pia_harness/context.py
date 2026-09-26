@@ -36,6 +36,7 @@ class AssembledPromptContext:
     parts: tuple[PromptContextPart, ...]
     estimated_input_tokens: int
     input_budget: int
+    user_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +129,9 @@ class PromptContextAssembler:
                 input_budget=input_budget,
                 token_budget=token_budget,
             )
-        return AssembledPromptContext(parts, estimated_input_tokens, input_budget)
+        return AssembledPromptContext(
+            parts, estimated_input_tokens, input_budget, user_key
+        )
 
 
 def _parts(

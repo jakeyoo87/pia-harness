@@ -92,6 +92,7 @@ class PromptContextAssemblerTest(unittest.TestCase):
         self.assertTrue(
             all(part.trust is PromptTrust.UNTRUSTED_DATA for part in result.parts[-3:])
         )
+        self.assertEqual(self.user_key, result.user_key)
 
     def test_full_context_has_exact_order_content_and_trust(self) -> None:
         counted = []
