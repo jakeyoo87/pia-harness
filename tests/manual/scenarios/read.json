@@ -20,5 +20,11 @@
   {"id": "14", "message": "https://www.reuters.com/world/china/how-trumps-diplomatic-week-exposed-limits-his-power-2026-09-25/ 이 기사 요약해줘", "expect": "web_fetch"},
   {"id": "15", "message": "전력기기 회사 관련 주요 이슈는 ?", "expect": "search"},
   {"id": "15-1", "message": "기사들 본문 읽어보고 요약해줘", "expect": "web_fetch"},
-  {"id": "15-2", "message": "그중 두 번째 기사만 자세히 알려줘", "expect": "web_fetch"}
+  {"id": "15-2", "message": "그중 두 번째 기사만 자세히 알려줘", "expect": "web_fetch"},
+  {"id": "15-3", "message": "아까 그 기사들 링크만 다시 줘", "expect": "answer"},
+  {"id": "16", "message": "https://n.news.naver.com/mnews/article/277/0005820926?sid=101 이 기사에서 핵심 수치만 뽑아줘", "expect": "web_fetch"},
+  {"id": "16-1", "message": "방금 기사 한 줄로 줄여줘", "expect": "answer"},
+  {"id": "17", "message": "HBM 관련 최근 뉴스 알려줘", "expect": "search"},
+  {"id": "17-1", "message": "첫 번째랑 세 번째 기사 본문 비교해줘", "expect": "web_fetch"},
+  {"id": "18", "message": "https://n.news.naver.com/mnews/article/001/0016330402?sid=101 https://n.news.naver.com/mnews/article/018/0006375530?sid=101 이 두 기사 비교해줘", "expect": "web_fetch"}
 ]
