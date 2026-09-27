@@ -195,7 +195,7 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("10주", requests[0]["state"][2]["content"])
 
-    async def test_tool_results_are_cut_for_routing_only(self) -> None:
+    async def test_only_fetched_page_text_is_cut_for_routing(self) -> None:
         requests = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -219,20 +219,35 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         data = PromptTrust.UNTRUSTED_DATA
         body = "- https://a.example: read.\n" + "본문" * 5_000
+        # Five long search candidates must all stay visible to Jev.
+        candidates = "\n".join(
+            f"후보 {n} " + "요약" * 200 + f" <https://n.news.naver.com/{n}>"
+            for n in range(1, 6)
+        )
         context = AssembledPromptContext(
             (
                 PromptContextPart(PromptContextKind.CURRENT_USER, "읽어줘", data),
-                PromptContextPart(PromptContextKind.TOOL_REQUEST, "web_fetch", data),
+                PromptContextPart(
+                    PromptContextKind.TOOL_REQUEST, 'search {"query":"x"}', data
+                ),
+                PromptContextPart(PromptContextKind.TOOL_RESULT, candidates, data),
+                PromptContextPart(
+                    PromptContextKind.TOOL_REQUEST,
+                    'web_fetch {"urls":["https://a.example"]}',
+                    data,
+                ),
                 PromptContextPart(PromptContextKind.TOOL_RESULT, body, data),
             ),
             10,
             100,
         )
         await adapter.choose_next(context, ())
-        result = requests[0]["state"][2]
+        search_result, fetch_result = requests[0]["state"][2], requests[0]["state"][4]
 
-        self.assertEqual("TOOL_RESULT", result["kind"])
-        self.assertEqual(body[:1_000], result["content"])
+        self.assertEqual(candidates, search_result["content"])
+        self.assertIn("https://n.news.naver.com/5", search_result["content"])
+        self.assertEqual("TOOL_RESULT", fetch_result["kind"])
+        self.assertEqual(body[:1_000], fetch_result["content"])
         self.assertIn(
             "web_fetch", requests[0]["questions"]["next_action"]["instructions"]
         )

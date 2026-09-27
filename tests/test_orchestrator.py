@@ -1077,6 +1077,73 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             sorted(fetched),
         )
 
+    async def test_links_two_turns_back_can_still_be_fetched(self) -> None:
+        # Same shape as the Bot failure: links, then a link-free answer, then "read".
+        fetched = []
+        offered = []
+        answers = iter(
+            (
+                "요약 [기사](https://n.news.naver.com/a)",
+                "요약만 다시 정리했습니다.",
+                "본문 요약",
+            )
+        )
+
+        async def generate(context):
+            return GeneratedAnswer(next(answers), "model", 10)
+
+        async def choose_next(context, options):
+            offered.append(tuple(option.name for option in options))
+            if len(offered) == 3:
+                return NextActionDecision("web_fetch")
+            return NextActionDecision("answer")
+
+        async def read_url(url):
+            fetched.append(url)
+            return "본문"
+
+        orchestrator = self.orchestrator(
+            generate,
+            read_url=read_url,
+            choose_next=choose_next,
+            build_tool_call=self.build_calls(["https://n.news.naver.com/a"]),
+        )
+        for minutes, message in enumerate(("이슈는?", "요약해줘", "본문 읽어줘")):
+            result = await orchestrator.submit(
+                user_key="user",
+                message=message,
+                accepted_at=self.now + timedelta(minutes=minutes),
+            )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(("web_fetch",), offered[2])
+        self.assertEqual(["https://n.news.naver.com/a"], fetched)
+
+    async def test_fetch_reads_at_most_five_links(self) -> None:
+        links = [f"https://example.com/{n}" for n in range(6)]
+        fetched = []
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose_next(context, options):
+            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
+                return NextActionDecision("answer")
+            return NextActionDecision("web_fetch")
+
+        async def read_url(url):
+            fetched.append(url)
+            return "본문"
+
+        await self.orchestrator(
+            generate,
+            read_url=read_url,
+            choose_next=choose_next,
+            build_tool_call=self.build_calls(links),
+        ).submit(user_key="user", message=" ".join(links), accepted_at=self.now)
+
+        self.assertEqual(links[:5], sorted(fetched))
+
     async def test_fetch_reads_only_conversation_links_and_reports_failures(
         self,
     ) -> None:

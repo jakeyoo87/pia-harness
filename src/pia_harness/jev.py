@@ -12,7 +12,7 @@ import httpx
 
 from .context import AssembledPromptContext, PromptContextKind
 from .memory import MemoryReviewRequest
-from .orchestrator import MemoryAction, NextActionDecision
+from .orchestrator import WEB_FETCH_TOOL, MemoryAction, NextActionDecision
 
 JEV_BASE_URL = "https://openrouter.ai"
 JEV_DECISIONS_PATH = "/api/alpha/decisions"
@@ -30,9 +30,9 @@ _ROUTING_KINDS = frozenset(
 # The previous Turn is cut to this size for routing; the answer LLM still sees it
 # whole. Turns stored before final-answer-only storage can hold article bodies.
 PREVIOUS_TURN_MAX_CHARS = 4_000
-# Tool results can be long (fetched page text); Jev only needs their outcome,
-# while the answer model still gets them whole.
-TOOL_RESULT_MAX_CHARS = 1_000
+# Fetched page text can be long; Jev only needs the per-link outcome at the top,
+# while the answer model still gets it whole. Other tool results are kept.
+FETCH_RESULT_MAX_CHARS = 1_000
 PREVIOUS_USER_MAX_CHARS = 1_000
 
 
@@ -87,17 +87,7 @@ class JevDecisionAdapter:
             options[tool.name] = tool.description
         payload = {
             "model": self.model_id,
-            "state": _previous_turn(context)
-            + [
-                {
-                    "kind": part.kind.value,
-                    "content": part.content[:TOOL_RESULT_MAX_CHARS]
-                    if part.kind is PromptContextKind.TOOL_RESULT
-                    else part.content,
-                }
-                for part in context.parts
-                if part.kind in _ROUTING_KINDS
-            ],
+            "state": _previous_turn(context) + _routing_parts(context),
             "questions": {
                 "next_action": {
                     "type": "choice",
@@ -209,6 +199,21 @@ class JevDecisionAdapter:
             await self._async.aclose()
         if self._owns_sync:
             self._sync.close()
+
+
+def _routing_parts(context: AssembledPromptContext) -> list[dict[str, str]]:
+    parts: list[dict[str, str]] = []
+    request = ""
+    for part in context.parts:
+        if part.kind not in _ROUTING_KINDS:
+            continue
+        content = part.content
+        if part.kind is PromptContextKind.TOOL_REQUEST:
+            request = content
+        elif request.startswith(f"{WEB_FETCH_TOOL} "):
+            content = content[:FETCH_RESULT_MAX_CHARS]
+        parts.append({"kind": part.kind.value, "content": content})
+    return parts
 
 
 def _previous_turn(context: AssembledPromptContext) -> list[dict[str, str]]:
