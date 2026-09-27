@@ -13,7 +13,6 @@ import httpx
 
 from .orchestrator import (
     ConversationInput,
-    ConversationProgress,
     ReadToolDefinition,
     ReadToolResult,
     ToolCall,
@@ -73,7 +72,6 @@ class NaverNewsSearch:
             description=NEWS_SEARCH_DESCRIPTION,
             execute=self.execute,
             arguments_schema=NEWS_SEARCH_ARGUMENTS_SCHEMA,
-            progress=ConversationProgress.WEB_SEARCH_STARTED,
         )
 
     async def execute(

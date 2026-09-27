@@ -93,9 +93,12 @@ class OrchestratorStatus(StrEnum):
     TOOL_FAILED = "TOOL_FAILED"
 
 
-class ConversationProgress(StrEnum):
-    WEB_SEARCH_STARTED = "WEB_SEARCH_STARTED"
-    COMPLETE = "COMPLETE"
+@dataclass(frozen=True, slots=True)
+class ConversationStep:
+    """What Jev chose, reported before it runs; not the outcome of the step."""
+
+    next_action: str
+    arguments_json: str = "{}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +140,6 @@ class ReadToolDefinition:
     ]
     # Only a tool that needs model-written input declares a schema.
     arguments_schema: Mapping[str, Any] | None = None
-    progress: ConversationProgress | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,7 +263,8 @@ class ConversationOrchestrator:
         token_budget: ModelTokenBudget,
         model_id: str,
         explicit_memory_failure_notice: str,
-        progress: Callable[[str, str, ConversationProgress], Awaitable[None]]
+        # (user_key, turn_id, step); step None means the Turn has ended.
+        progress: Callable[[str, str, ConversationStep | None], Awaitable[None]]
         | None = None,
         read_tools: tuple[ReadToolDefinition, ...] = (),
         execution_tools: tuple[ExecutionToolDefinition, ...] = (),
@@ -475,6 +478,12 @@ class ConversationOrchestrator:
             deadline = (
                 asyncio.get_running_loop().time() + self._read_routing_timeout_seconds
             )
+
+            async def report_step(step: ConversationStep) -> None:
+                nonlocal progress_started
+                progress_started = True
+                await self._report_progress(user_key, batch[-1].value.turn_id, step)
+
             while True:
                 if not await self._is_current(state, generation_id):
                     return
@@ -483,6 +492,8 @@ class ConversationOrchestrator:
                     deadline, self._choose_next(assembled, options)
                 )
                 _validate_next_action_decision(choice, options)
+                if choice.next_action in ("answer", CONFIRM_OPTION):
+                    await report_step(ConversationStep(choice.next_action))
                 if choice.next_action == "answer":
                     memory_action = choice.memory_action
                     break
@@ -512,6 +523,7 @@ class ConversationOrchestrator:
                     _validate_read_tool_call(call, WEB_FETCH_TOOL)
                     if not await self._is_current(state, generation_id):
                         return
+                    await report_step(ConversationStep(call.name, call.arguments_json))
                     fetched = True
                     observation = await self._web_fetch(
                         deadline, call, _conversation_urls(assembled)
@@ -535,15 +547,7 @@ class ConversationOrchestrator:
                         _validate_read_tool_call(call, tool.name)
                     if not await self._is_current(state, generation_id):
                         return
-                    if (
-                        isinstance(tool, ReadToolDefinition)
-                        and tool.progress is not None
-                        and not progress_started
-                    ):
-                        progress_started = True
-                        await self._report_progress(
-                            user_key, batch[-1].value.turn_id, tool.progress
-                        )
+                    await report_step(ConversationStep(call.name, call.arguments_json))
                     try:
                         if isinstance(tool, ExecutionToolDefinition):
                             # Preparing only drafts the action; it runs after confirm.
@@ -722,9 +726,7 @@ class ConversationOrchestrator:
             )
         finally:
             if progress_started:
-                await self._report_progress(
-                    user_key, batch[-1].value.turn_id, ConversationProgress.COMPLETE
-                )
+                await self._report_progress(user_key, batch[-1].value.turn_id, None)
 
     def _next_action_options(
         self,
@@ -803,14 +805,14 @@ class ConversationOrchestrator:
         self,
         user_key: str,
         progress_id: str,
-        event: ConversationProgress,
+        step: ConversationStep | None,
     ) -> None:
         # Progress is best effort; a stuck callback must not hold the Turn.
         if self._progress is None:
             return
         try:
             await asyncio.wait_for(
-                self._progress(user_key, progress_id, event), PROGRESS_TIMEOUT_SECONDS
+                self._progress(user_key, progress_id, step), PROGRESS_TIMEOUT_SECONDS
             )
         except asyncio.CancelledError:
             raise

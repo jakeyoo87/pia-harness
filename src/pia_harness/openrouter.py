@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import math
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -33,10 +32,6 @@ from .memory import (
 )
 from .orchestrator import GeneratedAnswer, ToolCall
 from .session import MEMORY_MAX_CHARS, CompletedTurn
-
-
-logger = logging.getLogger(__name__)
-
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 RETRY_DELAY_SECONDS = 1.0
@@ -212,8 +207,7 @@ class OpenRouterModelAdapter:
         payload = self._answer_payload(context.parts)
         _add_cache_key(payload, context.user_key)
         return await self._retry_async(
-            lambda: self._generate_answer_once(context, payload),
-            stage="answer",
+            lambda: self._generate_answer_once(context, payload)
         )
 
     async def generate_tool_call(
@@ -255,7 +249,7 @@ class OpenRouterModelAdapter:
                 raise OpenRouterModelError("openrouter.invalid_output", retryable=True)
             return ToolCall(tool.name, arguments_json)
 
-        return await self._retry_async(generate_once, stage="tool_arguments")
+        return await self._retry_async(generate_once)
 
     async def _generate_answer_once(
         self,
@@ -295,10 +289,7 @@ class OpenRouterModelAdapter:
             schema=_memory_schema(request.max_characters),
             output_token_limit=None,
         )
-        return self._retry_sync(
-            lambda: self._review_memory_once(request, payload),
-            stage="memory_review",
-        )
+        return self._retry_sync(lambda: self._review_memory_once(request, payload))
 
     def _review_memory_once(
         self,
@@ -338,7 +329,7 @@ class OpenRouterModelAdapter:
             schema=_SUMMARY_SCHEMA,
             output_token_limit=request.max_output_tokens,
         )
-        return self._retry_sync(lambda: self._summarize_once(payload), stage="summary")
+        return self._retry_sync(lambda: self._summarize_once(payload))
 
     def _summarize_once(self, payload: dict[str, Any]) -> SummaryOutput:
         content, response_model, usage = _chat_result(self._post(payload))
@@ -354,61 +345,25 @@ class OpenRouterModelAdapter:
     async def _retry_async(
         self,
         operation: Callable[[], Awaitable[_Result]],
-        *,
-        stage: str,
     ) -> _Result:
         for attempt in range(self.max_attempts):
-            started = time.monotonic()
             try:
                 return await operation()
             except OpenRouterModelError as error:
-                self._log_attempt_failure(stage, attempt, started, error)
                 if not error.retryable or attempt + 1 >= self.max_attempts:
                     raise
-                self._log_retry(stage, attempt)
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
         raise AssertionError("retry loop did not return or raise")
 
-    def _retry_sync(self, operation: Callable[[], _Result], *, stage: str) -> _Result:
+    def _retry_sync(self, operation: Callable[[], _Result]) -> _Result:
         for attempt in range(self.max_attempts):
-            started = time.monotonic()
             try:
                 return operation()
             except OpenRouterModelError as error:
-                self._log_attempt_failure(stage, attempt, started, error)
                 if not error.retryable or attempt + 1 >= self.max_attempts:
                     raise
-                self._log_retry(stage, attempt)
                 time.sleep(RETRY_DELAY_SECONDS)
         raise AssertionError("retry loop did not return or raise")
-
-    def _log_attempt_failure(
-        self,
-        stage: str,
-        attempt: int,
-        started: float,
-        error: OpenRouterModelError,
-    ) -> None:
-        logger.debug(
-            "model.attempt_failed stage=%s attempt=%d max_attempts=%d "
-            "event=%s status=%s error_type=%s retryable=%s elapsed_ms=%d",
-            stage,
-            attempt + 1,
-            self.max_attempts,
-            error.event,
-            error.status if error.status is not None else "none",
-            error.error_type if error.error_type is not None else "none",
-            str(error.retryable).lower(),
-            round((time.monotonic() - started) * 1000),
-        )
-
-    def _log_retry(self, stage: str, attempt: int) -> None:
-        logger.debug(
-            "model.retry_scheduled stage=%s next_attempt=%d delay_seconds=%s",
-            stage,
-            attempt + 2,
-            RETRY_DELAY_SECONDS,
-        )
 
     def close(self) -> None:
         if self._owns_sync_client:

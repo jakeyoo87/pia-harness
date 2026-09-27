@@ -14,7 +14,7 @@ from pia_harness import (
     ConversationAbandoned,
     ConversationContext,
     ConversationOrchestrator,
-    ConversationProgress,
+    ConversationStep,
     ExecutionToolDefinition,
     GeneratedAnswer,
     MemoryAction,
@@ -249,16 +249,12 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             self.orchestrator(generate, progress="not callable")
 
-    def progress_search(self, execute=None):
+    @staticmethod
+    def plain_search(execute=None):
         async def default_execute(user_key, call, inputs):
             return ReadToolResult("searched")
 
-        return ReadToolDefinition(
-            "search",
-            "Search news",
-            execute or default_execute,
-            progress=ConversationProgress.WEB_SEARCH_STARTED,
-        )
+        return ReadToolDefinition("search", "Search news", execute or default_execute)
 
     @staticmethod
     def search_then_answer():
@@ -269,14 +265,25 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         return choose_next
 
-    async def test_progress_wraps_delivery_and_is_best_effort(self) -> None:
+    async def test_progress_reports_each_choice_then_none_after_delivery(
+        self,
+    ) -> None:
         ordered: list[tuple] = []
+        url = "https://n.news.naver.com/a"
+        results = [ReadToolResult("News", (ToolLink("기사", url),))]
+        choices = iter(("search", "web_fetch", "answer"))
 
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
-        async def progress(user_key, progress_id, event):
-            ordered.append(("progress", user_key, progress_id, event))
+        async def choose_next(context, options):
+            return NextActionDecision(next(choices))
+
+        async def read_url(url):
+            return "본문"
+
+        async def progress(user_key, progress_id, step):
+            ordered.append(("progress", user_key, progress_id, step))
 
         async def deliver(user_key, text):
             ordered.append(("deliver", user_key, text))
@@ -285,43 +292,61 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             generate,
             deliver=deliver,
             progress=progress,
-            read_tools=(self.progress_search(),),
-            choose_next=self.search_then_answer(),
+            read_tools=(self.news_search(results),),
+            read_url=read_url,
+            choose_next=choose_next,
+            build_tool_call=self.build_calls([url]),
         ).submit(user_key="user", message="question", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual("progress", ordered[0][0])
-        self.assertEqual("user", ordered[0][1])
-        self.assertIsInstance(ordered[0][2], str)
-        self.assertEqual(ConversationProgress.WEB_SEARCH_STARTED, ordered[0][3])
-        self.assertEqual(("deliver", "user", "answer"), ordered[1])
+        progress_id = ordered[0][2]
         self.assertEqual(
-            ("progress", "user", ordered[0][2], ConversationProgress.COMPLETE),
-            ordered[2],
+            [
+                (
+                    "progress",
+                    "user",
+                    progress_id,
+                    ConversationStep("search", '{"query":"삼성전자 주가"}'),
+                ),
+                (
+                    "progress",
+                    "user",
+                    progress_id,
+                    ConversationStep("web_fetch", json.dumps({"urls": [url]})),
+                ),
+                ("progress", "user", progress_id, ConversationStep("answer")),
+                ("deliver", "user", "answer"),
+                ("progress", "user", progress_id, None),
+            ],
+            ordered,
         )
 
-        async def failing_progress(user_key, progress_id, event):
+    async def test_failing_progress_callback_does_not_stop_the_answer(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def failing_progress(user_key, progress_id, step):
             raise RuntimeError("progress unavailable")
 
         result = await self.orchestrator(
             generate,
             progress=failing_progress,
-            read_tools=(self.progress_search(),),
+            read_tools=(self.plain_search(),),
             choose_next=self.search_then_answer(),
-        ).submit(user_key="other", message="question", accepted_at=self.now)
+        ).submit(user_key="user", message="question", accepted_at=self.now)
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
     async def test_stuck_progress_callback_does_not_hold_the_turn(self) -> None:
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
-        async def stuck_progress(user_key, progress_id, event):
+        async def stuck_progress(user_key, progress_id, step):
             await asyncio.Event().wait()
 
         orchestrator = self.orchestrator(
             generate,
             progress=stuck_progress,
-            read_tools=(self.progress_search(),),
+            read_tools=(self.plain_search(),),
             choose_next=self.search_then_answer(),
         )
         with patch.object(orchestrator_module, "PROGRESS_TIMEOUT_SECONDS", 0.01):
@@ -342,9 +367,50 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([("user", "answer")], self.delivered)
         self.assertEqual([], still_running)
 
-    async def test_superseded_progress_is_completed_with_its_own_turn_id(self) -> None:
+    async def test_jev_failure_ends_progress_only_after_a_step(self) -> None:
+        steps: list[ConversationStep | None] = []
+        calls = 0
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        def fail_on(call_number):
+            async def choose_next(context, options):
+                nonlocal calls
+                calls += 1
+                if calls == call_number:
+                    raise RuntimeError("Jev unavailable")
+                return NextActionDecision("search")
+
+            return choose_next
+
+        async def progress(user_key, progress_id, step):
+            steps.append(step)
+
+        # The first Jev call fails: nothing was reported, so no end either.
+        result = await self.orchestrator(
+            generate,
+            progress=progress,
+            read_tools=(self.plain_search(),),
+            choose_next=fail_on(1),
+        ).submit(user_key="user", message="question", accepted_at=self.now)
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual([], steps)
+
+        # Jev fails after one step: that step, then the end.
+        calls = 0
+        result = await self.orchestrator(
+            generate,
+            progress=progress,
+            read_tools=(self.plain_search(),),
+            choose_next=fail_on(2),
+        ).submit(user_key="other", message="question", accepted_at=self.now)
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual([ConversationStep("search"), None], steps)
+
+    async def test_superseded_progress_is_ended_with_its_own_turn_id(self) -> None:
         first_started = asyncio.Event()
-        events: list[tuple[str, ConversationProgress]] = []
+        events: list[tuple[str, ConversationStep | None]] = []
 
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
@@ -355,13 +421,13 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 await asyncio.Event().wait()
             return ReadToolResult("searched")
 
-        async def progress(user_key, progress_id, event):
-            events.append((progress_id, event))
+        async def progress(user_key, progress_id, step):
+            events.append((progress_id, step))
 
         orchestrator = self.orchestrator(
             generate,
             progress=progress,
-            read_tools=(self.progress_search(execute),),
+            read_tools=(self.plain_search(execute),),
             choose_next=self.search_then_answer(),
         )
         first = asyncio.create_task(
@@ -378,10 +444,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         progress_ids = {progress_id for progress_id, _ in events}
         self.assertEqual(2, len(progress_ids))
         for progress_id in progress_ids:
-            self.assertIn(
-                (progress_id, ConversationProgress.WEB_SEARCH_STARTED), events
-            )
-            self.assertIn((progress_id, ConversationProgress.COMPLETE), events)
+            self.assertIn((progress_id, ConversationStep("search")), events)
+            self.assertIn((progress_id, None), events)
 
     async def test_new_message_interrupts_and_only_combined_answer_commits(
         self,
@@ -1590,6 +1654,52 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             ["buy", "yes", "and news?"],
             [turn.user_message for turn in self.store.turns],
         )
+
+    async def test_new_message_while_reporting_confirm_runs_nothing(self) -> None:
+        executed: list[str] = []
+        reporting = asyncio.Event()
+        confirms = 0
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose_next(context, options):
+            nonlocal confirms
+            names = [option.name for option in options]
+            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
+                return NextActionDecision("answer")
+            if "confirm" in names and confirms == 0:
+                confirms += 1
+                return NextActionDecision("confirm")
+            return NextActionDecision("answer" if "confirm" in names else "order")
+
+        async def progress(user_key, progress_id, step):
+            # The confirm step is only Jev's choice; the claim comes after it.
+            if step == ConversationStep("confirm"):
+                reporting.set()
+                await asyncio.Event().wait()
+
+        orchestrator = self.orchestrator(
+            generate,
+            progress=progress,
+            execution_tools=(self.order_tool(executed=executed),),
+            choose_next=choose_next,
+            build_tool_call=self.order_call(),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        later = self.now + timedelta(minutes=1)
+        confirm = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="yes", accepted_at=later)
+        )
+        await reporting.wait()
+        other = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="wait", accepted_at=later)
+        )
+        confirm_result, other_result = await asyncio.gather(confirm, other)
+
+        self.assertEqual(OrchestratorStatus.SUPERSEDED, confirm_result.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, other_result.status)
+        self.assertEqual([], executed)
 
     async def test_answer_failure_after_execution_sends_the_fixed_result(self) -> None:
         calls = 0

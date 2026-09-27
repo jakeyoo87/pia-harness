@@ -8,7 +8,6 @@ import httpx
 
 from pia_harness import (
     ConversationInput,
-    ConversationProgress,
     NaverNewsSearch,
     ToolCall,
     ToolLink,
@@ -47,14 +46,13 @@ class NaverNewsSearchTest(unittest.IsolatedAsyncioTestCase):
         if hasattr(self, "client"):
             await self.client.aclose()
 
-    async def test_tool_definition_declares_query_and_progress(self) -> None:
+    async def test_tool_definition_declares_query(self) -> None:
         tool = self.search(
             lambda request: httpx.Response(200, json={"items": []})
         ).tool()
 
         self.assertEqual("search", tool.name)
         self.assertEqual(["query"], tool.arguments_schema["required"])
-        self.assertEqual(ConversationProgress.WEB_SEARCH_STARTED, tool.progress)
 
     async def test_one_request_returns_five_clean_candidates(self) -> None:
         requests: list[httpx.Request] = []

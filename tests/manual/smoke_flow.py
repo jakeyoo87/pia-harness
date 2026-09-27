@@ -232,7 +232,6 @@ async def run(
         description=tool.description,
         execute=logged_search,
         arguments_schema=tool.arguments_schema,
-        progress=tool.progress,
     )
     store = InMemoryConversationStore()
     orders: list[dict[str, Any]] = []

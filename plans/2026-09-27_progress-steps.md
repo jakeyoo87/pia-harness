@@ -28,7 +28,7 @@ progress: Callable[[str, str, ConversationStep | None], Awaitable[None]]
 
 ## 보내는 시점
 
-- `answer`, `confirm`: Jev 선택을 검증한 직후, 인자 `"{}"`.
+- `answer`, `confirm`: Jev 선택을 검증한 직후, 인자 `"{}"`. 단계는 **Jev가 고른 것**이지 실행 결과가 아니다. `confirm` 단계 뒤에도 새 메시지가 오면 실행권(`_claim_commit`)을 못 얻어 주문이 나가지 않을 수 있다.
 - 인자가 있는 도구와 `web_fetch`: 인자를 만든 뒤, 실행 전. 인자 없는 도구는 선택 직후 `"{}"`.
 - 한 번이라도 단계를 보냈으면, Turn이 어떻게 끝나든(성공·실패·취소) 마지막에 `None`을 보낸다. 지금 `COMPLETE`를 보내는 `finally` 자리를 그대로 쓴다.
 - 기존과 같이 최선 노력이다. 콜백이 5초 안에 안 끝나거나 실패해도 Turn은 계속된다.
@@ -42,7 +42,8 @@ progress: Callable[[str, str, ConversationStep | None], Awaitable[None]]
 
 - 단계 순서: search → web_fetch → answer 흐름에서 세 단계가 인자와 함께 순서대로 오고 마지막에 `None`.
 - 도구 없이 answer만: 단계 1개 + `None`.
-- 도구 실패·Jev 실패로 끝나도 `None`이 온다.
+- 단계를 보낸 뒤 도구 실패·Jev 실패로 끝나도 마지막에 `None`이 온다. 첫 Jev 호출부터 실패하면 보낸 단계가 없으므로 `None`도 없다.
+- `confirm` 콜백을 기다리는 동안 새 메시지가 오면 주문 실행은 0회다.
 - 콜백이 멈추거나 예외를 내도 답변이 나간다(기존 테스트를 새 신호로 바꿈).
 - 검색 도구 전용 progress 테스트는 삭제한다.
 
@@ -67,3 +68,8 @@ progress: Callable[[str, str, ConversationStep | None], Awaitable[None]]
 
 - 45행 테스트 항목은 첫 Jev 호출 자체가 실패하는 경우와, 앞선 단계가 전송된 뒤 다음 Jev 호출이 실패하는 경우를 구분해야 한다. 33행 계약상 전자는 전송한 단계가 없어 `None`도 없고, 후자만 마지막 `None`이 온다. 테스트 문장만 정확히 하면 된다.
 - 나머지 단계 순서, 인자 생성 뒤·실행 전 통지, 5초 best-effort 콜백, 완료 신호는 현재 구조와 맞는다. 별도 큐나 상태를 추가할 이유는 없다.
+
+### 검토 반영 (Claude, 사용자 확인 2026-09-27)
+
+- Blocker `confirm`: 계약을 "Jev가 confirm을 고름"으로 정했다(보내는 시점 절). 알리는 시점은 그대로 두고, PIA 문구를 `확정 선택`으로 바꾼다. 주문 결과는 기존 답변이 알린다. supersede 테스트를 추가한다.
+- Non-blocker 테스트 문구: 첫 Jev 실패(`None` 없음)와 단계 뒤 실패(`None` 있음)를 나눠 적었다.
