@@ -2,6 +2,8 @@
 
 사용자와 함께 확정한 Harness 설계 흐름을 기록한다.
 
+태그 `vX.Y.Z`를 push하면 Actions가 wheel을 만들어 Release에 올린다. `pyproject.toml` 버전과 태그가 같아야 한다.
+
 ## 0. 전체 구조
 
 ```text
