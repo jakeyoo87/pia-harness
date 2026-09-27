@@ -73,3 +73,16 @@ progress: Callable[[str, str, ConversationStep | None], Awaitable[None]]
 
 - Blocker `confirm`: 계약을 "Jev가 confirm을 고름"으로 정했다(보내는 시점 절). 알리는 시점은 그대로 두고, PIA 문구를 `확정 선택`으로 바꾼다. 주문 결과는 기존 답변이 알린다. supersede 테스트를 추가한다.
 - Non-blocker 테스트 문구: 첫 Jev 실패(`None` 없음)와 단계 뒤 실패(`None` 있음)를 나눠 적었다.
+
+## Codex 구현 검토
+
+대상 `main 64b2278...cdf8501`의 전체 구현 diff를 계획·PIA 연결 경로에 대조했다. 코드·README 수정, 병합, 릴리스, 외부 API 호출은 하지 않았다. 진행 관련 targeted unittest 79개가 통과했다.
+
+### Blocker
+
+- 없음.
+
+### Non-blocker
+
+- 없음. `answer`·`confirm`은 Jev 선택 검증 뒤, 인자 있는 도구는 인자 검증 뒤 실행 전에 통지한다(`orchestrator.py:492-554`). `confirm`은 `_claim_commit` 전에 보낸 **선택 신호**이며, 콜백 대기 중 supersede되면 주문 실행 0회인 테스트가 있다(`tests/test_orchestrator.py:1655`). 단계가 있던 generation은 성공·실패·취소 후 `finally`에서 `None`을 보내고, 콜백 실패·5초 제한은 기존 best-effort 경계로 처리한다(`orchestrator.py:726-730`, `807-822`).
+- `ConversationProgress`와 도구별 `progress` 필드, DEBUG 모델 재시도 로그가 제거됐고 공개 export·테스트도 맞춰졌다. 추가 상태나 추상화를 줄일 곳은 보이지 않는다. PIA가 아직 0.4.1 wheel을 고정한 것은 별도 0.5.0 릴리스·lock 갱신 단계의 선행 조건이지 이 구현의 결함은 아니다.
