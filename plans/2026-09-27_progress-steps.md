@@ -54,3 +54,16 @@ progress: Callable[[str, str, ConversationStep | None], Awaitable[None]]
 ## 문서
 
 - README의 진행 신호 설명을 새 방식으로 바꾼다.
+
+## Codex 계획 검토
+
+현재 `orchestrator.py`의 Jev 선택·인자 생성·실행 확정 경로와 PIA의 진행 콜백을 대조했다. 계획만 검토했으며 코드·README, 릴리스, AWS는 변경하지 않았다.
+
+### Blocker (두 계획의 계약 불일치)
+
+1. `confirm`은 Jev 선택 직후에도 아직 **실행 확정이 아니다**. 현재 코드에서는 그 뒤 `_claim_commit`이 성공해야 주문 실행으로 넘어간다(`orchestrator.py:489-498`). 진행 콜백을 기다리는 사이 새 메시지가 오면 기존 generation은 취소되고 주문은 나가지 않는다(`orchestrator.py:378-390`). 따라서 이 신호는 "Jev가 confirm을 선택함"으로만 계약하고, PIA가 이 시점에 "주문 확정"이라고 표시하지 않도록 두 계획을 맞춰야 한다. 실행 확정 표시가 꼭 필요하다면 `_claim_commit` 성공 뒤, 취소되지 않는 owned commit 안에서만 보내야 한다. 선택을 보여주는 것이 목적이므로 **표시 문구만 고치는 쪽**이 더 단순하다. confirm 콜백 대기 중 새 입력으로 supersede되는 테스트에서 주문 호출 0회를 확인한다.
+
+### Non-blocker
+
+- 45행 테스트 항목은 첫 Jev 호출 자체가 실패하는 경우와, 앞선 단계가 전송된 뒤 다음 Jev 호출이 실패하는 경우를 구분해야 한다. 33행 계약상 전자는 전송한 단계가 없어 `None`도 없고, 후자만 마지막 `None`이 온다. 테스트 문장만 정확히 하면 된다.
+- 나머지 단계 순서, 인자 생성 뒤·실행 전 통지, 5초 best-effort 콜백, 완료 신호는 현재 구조와 맞는다. 별도 큐나 상태를 추가할 이유는 없다.
