@@ -195,6 +195,48 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("10주", requests[0]["state"][2]["content"])
 
+    async def test_tool_results_are_cut_for_routing_only(self) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "answers": {
+                        "next_action": {"type": "choice", "choice": "answer"},
+                        "memory_action": {"type": "choice", "choice": "NONE"},
+                    }
+                },
+            )
+
+        adapter = JevDecisionAdapter(
+            api_key="synthetic-key",
+            async_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="https://openrouter.ai",
+            ),
+        )
+        data = PromptTrust.UNTRUSTED_DATA
+        body = "- https://a.example: read.\n" + "본문" * 5_000
+        context = AssembledPromptContext(
+            (
+                PromptContextPart(PromptContextKind.CURRENT_USER, "읽어줘", data),
+                PromptContextPart(PromptContextKind.TOOL_REQUEST, "web_fetch", data),
+                PromptContextPart(PromptContextKind.TOOL_RESULT, body, data),
+            ),
+            10,
+            100,
+        )
+        await adapter.choose_next(context, ())
+        result = requests[0]["state"][2]
+
+        self.assertEqual("TOOL_RESULT", result["kind"])
+        self.assertEqual(body[:1_000], result["content"])
+        self.assertIn(
+            "web_fetch", requests[0]["questions"]["next_action"]["instructions"]
+        )
+
     async def test_answer_selects_memory_action_in_the_same_request(self) -> None:
         requests = []
 

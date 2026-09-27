@@ -4,7 +4,7 @@
   {"id": "2-1", "message": "SK하이닉스 최근 뉴스도 알려줘", "expect": "search"},
   {"id": "2-2", "message": "아까 그 종목 최신 뉴스 다시 확인해줘", "expect": "search"},
   {"id": "2-3", "message": "고마워", "expect": "answer"},
-  {"id": "3", "message": "https://n.news.naver.com/mnews/article/018/0006375530?sid=101 이 기사 요약해줘", "expect": "read"},
+  {"id": "3", "message": "https://n.news.naver.com/mnews/article/018/0006375530?sid=101 이 기사 요약해줘", "expect": "web_fetch"},
   {"id": "6", "message": "아까 삼성전자 답변 세 줄로 줄여줘", "expect": "answer"},
   {"id": "6-1", "message": "아까 그 목표주가 기사 링크 다시 줘", "expect": "answer"},
   {"id": "4", "message": "나는 보수적인 투자 성향이라고 기억해줘", "expect": "answer", "expect_memory": "UPDATE"},
@@ -17,5 +17,8 @@
   {"id": "11", "message": "PER이 뭐야?", "expect": "answer"},
   {"id": "12", "message": "삼성전자 지금 주가 얼마야?", "expect": "search"},
   {"id": "13", "message": "크발로닉스테크 최근 뉴스 알려줘", "expect": "search"},
-  {"id": "14", "message": "https://www.reuters.com/world/china/how-trumps-diplomatic-week-exposed-limits-his-power-2026-09-25/ 이 기사 요약해줘", "expect": "read"}
+  {"id": "14", "message": "https://www.reuters.com/world/china/how-trumps-diplomatic-week-exposed-limits-his-power-2026-09-25/ 이 기사 요약해줘", "expect": "web_fetch"},
+  {"id": "15", "message": "전력기기 회사 관련 주요 이슈는 ?", "expect": "search"},
+  {"id": "15-1", "message": "기사들 본문 읽어보고 요약해줘", "expect": "web_fetch"},
+  {"id": "15-2", "message": "그중 두 번째 기사만 자세히 알려줘", "expect": "web_fetch"}
 ]

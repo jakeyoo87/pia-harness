@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import unittest
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -908,11 +909,18 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
     async def build_query(context, tool):
         return ToolCall(tool.name, '{"query":"삼성전자 주가"}')
 
-    async def test_search_candidates_can_be_read_one_by_one_before_answer(
-        self,
-    ) -> None:
+    @staticmethod
+    def build_calls(urls):
+        async def build(context, tool):
+            if tool.name == "web_fetch":
+                return ToolCall(tool.name, json.dumps({"urls": urls}))
+            return ToolCall(tool.name, '{"query":"삼성전자 주가"}')
+
+        return build
+
+    async def test_search_links_are_listed_and_only_chosen_ones_fetched(self) -> None:
         offered = []
-        read_urls = []
+        fetched = []
         answer_contexts = []
         request = "삼성전자 왜 떨어져? 배당주 선호도 기억해줘"
         results = [
@@ -938,11 +946,11 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             if len(offered) == 1:
                 return NextActionDecision("search")
             if len(offered) == 2:
-                return NextActionDecision("read:c2")
+                return NextActionDecision("web_fetch")
             return NextActionDecision("answer", MemoryAction.UPDATE)
 
         async def read_url(url):
-            read_urls.append(url)
+            fetched.append(url)
             return "실적 전망 하향 본문"
 
         result = await self.orchestrator(
@@ -950,31 +958,28 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             read_tools=(self.news_search(results),),
             read_url=read_url,
             choose_next=choose_next,
-            build_tool_call=self.build_query,
+            build_tool_call=self.build_calls(["https://n.news.naver.com/b"]),
         ).submit(user_key="member", message=request, accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(("search",), offered[0])
-        self.assertEqual(("search", "read:c1", "read:c2"), offered[1])
-        self.assertEqual(("search", "read:c1"), offered[2])
-        self.assertEqual(["https://n.news.naver.com/b"], read_urls)
-        self.assertEqual(1, len(answer_contexts))
+        # No link yet, then one from search, then gone after the one fetch.
+        self.assertEqual([("search",), ("search", "web_fetch"), ("search",)], offered)
+        self.assertEqual(["https://n.news.naver.com/b"], fetched)
         results_text = [
             part.content
             for part in answer_contexts[0].parts
             if part.kind.value == "TOOL_RESULT"
         ]
         self.assertIn(
-            "c1 [2026-09-24] 외국인 순매도 <https://n.news.naver.com/a>",
-            results_text[0],
+            "[2026-09-24] 외국인 순매도 <https://n.news.naver.com/a>", results_text[0]
         )
         self.assertIn(
-            "c2 실적 전망 하향 — 요약 <https://n.news.naver.com/b>", results_text[0]
+            "실적 전망 하향 — 요약 <https://n.news.naver.com/b>", results_text[0]
         )
-        self.assertEqual("실적 전망 하향 본문", results_text[1])
+        self.assertIn("- https://n.news.naver.com/b: read.", results_text[1])
+        self.assertIn("실적 전망 하향 본문", results_text[1])
         stored = self.store.turns[0].assistant_message
         # Only the request and final answer are stored; tool results stay in this Turn.
-        self.assertNotIn("Tool request", stored)
         self.assertNotIn("실적 전망 하향 본문", stored)
         self.assertEqual(request, self.memory.explicit_inputs[0][0].user_message)
 
@@ -1015,16 +1020,68 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         ).submit(user_key="user", message="news", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertIn("c1 같은 기사", seen[0])
+        self.assertIn("같은 기사 <https://n.news.naver.com/a>", seen[0])
         self.assertNotIn("같은 기사", seen[1])
-        self.assertIn("c2 새 기사", seen[1])
+        self.assertIn("새 기사 <https://n.news.naver.com/b>", seen[1])
         self.assertIn("No new candidates", seen[2])
 
-    async def test_user_url_can_be_read_and_failed_reads_are_observations(
+    async def test_links_in_an_earlier_answer_can_be_fetched_next_turn(self) -> None:
+        # The real failure: articles summarized in one Turn, "read them" in the next.
+        fetched = []
+        answer_contexts = []
+        offered = []
+
+        async def generate(context):
+            answer_contexts.append(context)
+            if len(answer_contexts) == 1:
+                return GeneratedAnswer(
+                    "요약입니다. [기사 1](https://n.news.naver.com/a?sid=101), "
+                    "[기사 2](https://n.news.naver.com/b)",
+                    "model",
+                    10,
+                )
+            return GeneratedAnswer("본문 요약", "model", 10)
+
+        async def choose_next(context, options):
+            offered.append(tuple(option.name for option in options))
+            if len(offered) == 2:
+                return NextActionDecision("web_fetch")
+            return NextActionDecision("answer")
+
+        async def read_url(url):
+            fetched.append(url)
+            return f"본문 {url}"
+
+        orchestrator = self.orchestrator(
+            generate,
+            read_url=read_url,
+            choose_next=choose_next,
+            build_tool_call=self.build_calls(
+                ["https://n.news.naver.com/a?sid=101", "https://n.news.naver.com/b"]
+            ),
+        )
+        await orchestrator.submit(
+            user_key="user", message="전력기기 이슈는?", accepted_at=self.now
+        )
+        result = await orchestrator.submit(
+            user_key="user",
+            message="기사들 본문 읽고 요약해줘",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual((), offered[0])
+        self.assertEqual(("web_fetch",), offered[1])
+        self.assertEqual(
+            ["https://n.news.naver.com/a?sid=101", "https://n.news.naver.com/b"],
+            sorted(fetched),
+        )
+
+    async def test_fetch_reads_only_conversation_links_and_reports_failures(
         self,
     ) -> None:
-        offered = []
         answer_contexts = []
+        offered = []
 
         async def generate(context):
             answer_contexts.append(context)
@@ -1033,7 +1090,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def choose_next(context, options):
             offered.append(tuple(option.name for option in options))
             if len(offered) == 1:
-                return NextActionDecision("read:u1")
+                return NextActionDecision("web_fetch")
             return NextActionDecision("answer")
 
         async def read_url(url):
@@ -1043,6 +1100,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             generate,
             read_url=read_url,
             choose_next=choose_next,
+            build_tool_call=self.build_calls(
+                ["https://example.com/news/1", "https://invented.example/x"]
+            ),
         ).submit(
             user_key="user",
             message="이거 요약해줘 https://example.com/news/1.",
@@ -1050,29 +1110,85 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual([("read:u1",), ()], offered)
-        tool_parts = "\n".join(
+        # Offered once; after a failed fetch it is not offered again.
+        self.assertEqual([("web_fetch",), ()], offered)
+        text = "\n".join(
             part.content
             for part in answer_contexts[0].parts
-            if part.kind.value in ("TOOL_REQUEST", "TOOL_RESULT")
+            if part.kind.value == "TOOL_RESULT"
         )
-        self.assertIn('"url":"https://example.com/news/1"', tool_parts)
-        self.assertIn("could not be read", tool_parts)
+        self.assertIn(
+            "- https://example.com/news/1: could not be read; do not describe it as read.",
+            text,
+        )
+        self.assertIn(
+            "- https://invented.example/x: not a link from this conversation; not read.",
+            text,
+        )
 
-    async def test_selecting_an_unavailable_read_option_fails_before_commit(
+    async def test_memory_links_are_not_fetchable(self) -> None:
+        offered = []
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose_next(context, options):
+            offered.append(tuple(option.name for option in options))
+            return NextActionDecision("answer")
+
+        async def read_url(url):
+            raise AssertionError("not offered")
+
+        self.store.memories["user"] = MemoryDocument(
+            "user",
+            "블로그 https://blog.example/post",
+            new_turn_id(self.now - timedelta(seconds=1)),
+            self.now,
+        )
+        await self.orchestrator(
+            generate,
+            read_url=read_url,
+            choose_next=choose_next,
+            build_tool_call=self.build_calls([]),
+        ).submit(user_key="user", message="그 블로그 읽어줘", accepted_at=self.now)
+
+        self.assertEqual([()], offered)
+
+    async def test_web_fetch_needs_argument_generation_and_is_reserved(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def read_url(url):
+            return "body"
+
+        async def execute(user_key, call, inputs):
+            return ReadToolResult("x")
+
+        with self.assertRaises(ValueError):
+            self.orchestrator(generate, read_url=read_url)
+        with self.assertRaises(ValueError):
+            self.orchestrator(
+                generate,
+                read_tools=(ReadToolDefinition("web_fetch", "x", execute),),
+            )
+
+    async def test_selecting_web_fetch_when_not_offered_fails_before_commit(
         self,
     ) -> None:
         async def generate(context):
             raise AssertionError("invalid Jev choice must stop before generation")
 
         async def choose_next(context, options):
-            return NextActionDecision("read:c9")
+            return NextActionDecision("web_fetch")
 
         async def read_url(url):
             raise AssertionError("unavailable option must not be read")
 
         result = await self.orchestrator(
-            generate, read_url=read_url, choose_next=choose_next
+            generate,
+            read_url=read_url,
+            choose_next=choose_next,
+            build_tool_call=self.build_calls([]),
         ).submit(user_key="user", message="question", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
