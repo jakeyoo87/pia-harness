@@ -1177,6 +1177,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         async def choose_next(context, tools):
             choices.append("search")
+            if len(choices) == 3:
+                # Routing hangs here, so only the deadline can end the Turn; no
+                # assumption about how fast one loop runs on this machine.
+                await asyncio.Event().wait()
             return NextActionDecision("search")
 
         async def execute_search(user_key, call, inputs):
@@ -1188,13 +1192,13 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             generate,
             read_tools=(tool,),
             choose_next=choose_next,
-            read_routing_timeout_seconds=0.01,
+            read_routing_timeout_seconds=0.5,
         )
         result = await orchestrator.submit(
             user_key="user", message="question", accepted_at=self.now
         )
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
-        self.assertGreater(len(choices), 1)
+        self.assertEqual(3, len(choices))
         self.assertEqual([], self.delivered)
         self.assertEqual([], self.store.turns)
         self.assertNotIn("user", orchestrator._states)
