@@ -19,6 +19,10 @@ _WHITESPACE = re.compile(r"\s+")
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _URL = re.compile(r"https?://\S+")
+# The model's reply to this page's text: cut off, malformed, or refused.
+_PAGE_CAUSED = frozenset(
+    {"openrouter.output_truncated", "openrouter.invalid_output", "openrouter.refusal"}
+)
 
 
 class JinaPageExtractor:
@@ -55,7 +59,11 @@ class JinaPageExtractor:
             raise PageReadError("no text")
         try:
             summary, quotes = await self._read_notes(goal, request, source)
-        except OpenRouterModelError:
+        except OpenRouterModelError as error:
+            # Only failures this page caused; a shared fault such as a bad key
+            # would fail every page and ends the Turn.
+            if error.event not in _PAGE_CAUSED:
+                raise
             raise PageReadError("page notes failed") from None
         # Links may only come from the page itself, so none are kept from the
         # model's own words.

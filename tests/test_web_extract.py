@@ -169,15 +169,23 @@ class JinaPageExtractorTest(unittest.IsolatedAsyncioTestCase):
             await tool.extract("https://a.example", "goal", REQUEST)
         self.assertEqual([], calls)
 
-        async def failing_notes(goal: str, request: str, page: str):
-            raise OpenRouterModelError("openrouter.http_error")
+        for event, expected in (
+            ("openrouter.output_truncated", PageReadError),
+            # A key or provider fault is not this page's; it ends the Turn.
+            ("openrouter.http_error", OpenRouterModelError),
+        ):
 
-        tool = JinaPageExtractor(
-            failing_notes,
-            async_client=httpx.AsyncClient(transport=httpx.MockTransport(page_reply)),
-        )
-        with self.assertRaises(PageReadError):
-            await tool.extract("https://a.example", "goal", REQUEST)
+            async def failing_notes(goal: str, request: str, page: str, event=event):
+                raise OpenRouterModelError(event, status=401)
+
+            tool = JinaPageExtractor(
+                failing_notes,
+                async_client=httpx.AsyncClient(
+                    transport=httpx.MockTransport(page_reply)
+                ),
+            )
+            with self.subTest(event), self.assertRaises(expected):
+                await tool.extract("https://a.example", "goal", REQUEST)
 
     async def test_key_is_sent_as_a_bearer_header(self) -> None:
         requests: list[httpx.Request] = []

@@ -1366,6 +1366,40 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             delivered,
         )
 
+    async def test_code_and_spacing_are_left_as_written(self) -> None:
+        delivered = []
+        given = "https://fund.example/kodex"
+        code = f"```python\nurl = '{given}'\nif  items[1]:\n    pass\n```"
+        text = f"값은 `rows[2]` 기준  {given} 입니다 [7].\n\n{code}"
+
+        async def generate(context):
+            return GeneratedAnswer(text, "model", 10)
+
+        async def deliver(user_key, text):
+            delivered.append(text)
+
+        await self.orchestrator(generate, deliver=deliver).submit(
+            user_key="user", message=f"이거 봐줘 {given}", accepted_at=self.now
+        )
+
+        # Only prose links and stand-alone numbers change; code, indexes and
+        # the answer's own spacing stay.
+        self.assertEqual(
+            [f"값은 `rows[2]` 기준  [1] 입니다.\n\n{code}\n\n출처\n[1] {given}"],
+            delivered,
+        )
+
+    async def test_an_answer_of_only_removed_links_fails(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("<https://made.up/x> [1]", "model", 10)
+
+        result = await self.orchestrator(generate).submit(
+            user_key="user", message="질문", accepted_at=self.now
+        )
+
+        # Restoring the original would bring back what was removed.
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+
     async def test_memory_links_are_not_fetchable(self) -> None:
         offered = []
 
