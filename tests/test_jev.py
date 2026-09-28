@@ -14,7 +14,11 @@ from pia_harness.context import (
 )
 from pia_harness.jev import JevDecisionAdapter, JevDecisionError
 from pia_harness.memory import MemoryReviewRequest
-from pia_harness.orchestrator import MemoryAction, NextActionDecision
+from pia_harness.orchestrator import (
+    MemoryAction,
+    NextActionDecision,
+    NextActionInputTooLarge,
+)
 
 
 @dataclass(frozen=True)
@@ -195,7 +199,7 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("10주", requests[0]["state"][2]["content"])
 
-    async def test_only_fetched_page_text_is_cut_for_routing(self) -> None:
+    async def test_tool_results_reach_routing_whole_within_a_size_limit(self) -> None:
         requests = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -233,7 +237,7 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
                 PromptContextPart(PromptContextKind.TOOL_RESULT, candidates, data),
                 PromptContextPart(
                     PromptContextKind.TOOL_REQUEST,
-                    'web_fetch {"urls":["https://a.example"]}',
+                    'web_extract {"urls":["https://a.example"],"goal":"x"}',
                     data,
                 ),
                 PromptContextPart(PromptContextKind.TOOL_RESULT, body, data),
@@ -247,10 +251,16 @@ class JevDecisionAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(candidates, search_result["content"])
         self.assertIn("https://n.news.naver.com/5", search_result["content"])
         self.assertEqual("TOOL_RESULT", fetch_result["kind"])
-        self.assertEqual(body[:1_000], fetch_result["content"])
+        self.assertEqual(body, fetch_result["content"])
         self.assertIn(
-            "web_fetch", requests[0]["questions"]["next_action"]["instructions"]
+            "web_extract", requests[0]["questions"]["next_action"]["instructions"]
         )
+
+        # Past the byte limit nothing is sent; the orchestrator answers instead.
+        adapter.max_request_bytes = 1_000
+        with self.assertRaises(NextActionInputTooLarge):
+            await adapter.choose_next(context, ())
+        self.assertEqual(1, len(requests))
 
     async def test_answer_selects_memory_action_in_the_same_request(self) -> None:
         requests = []

@@ -256,3 +256,10 @@ harness 0.6.0. 도구 이름이 바뀌고, `read_url`과 `UrlReader`가 삭제�
   - 원문 30,000자 선확정과 "일부만 확인" 표기, Jev 요청 전체 UTF-8 크기 판정, 강제 답변 시 Memory 미변경 알림, `DNT` 헤더: 반영했다.
   - 후처리 hook 일반화 안 함, 같은 URL 반복 캐시 안 함: 그대로 따른다.
 - **엔진 호출 방식 변경(사용자 결정)**: Exa는 Search API 키 대신 **키 없는 MCP**로 시작한다. 1차 검토 blocker 3의 조건(해석 규칙과 fixture 고정, 키는 같은 주소에 헤더로)을 지킨다. Jina도 키 없이 시작한다.
+
+## 구현 메모 (Claude, 2026-09-28)
+
+- `read_url` 대신 `extract_page(url, goal) -> PageExcerpt` 하나를 orchestrator에 넘긴다. URL 경계는 orchestrator가, 페이지 읽기·발췌·원문 대조는 `JinaPageExtractor`가 맡는다. 계획의 "특별 처리는 URL 경계 확인 하나"와 같다.
+- 구현 중 발견: 지금 `web_fetch`는 거부한 URL을 결과 문장에 그대로 적었다. 결과에 적힌 URL은 다음 호출에서 허용되므로, 지어낸 URL이 한 번 거부된 뒤 읽힐 수 있었다. 거부한 URL은 개수만 적도록 고쳤다.
+- 발췌 LLM 호출은 `OpenRouterModelAdapter.extract_passages(goal, page)`다. goal과 페이지만 보내고 캐시 키는 붙이지 않는다.
+- 측정용으로 `smoke_flow.py` 요약에 호출 수(Jev/인자 LLM/검색/페이지/발췌 LLM)를 추가했다. 조사형 시나리오 19~21을 `read.json`에 넣었다.

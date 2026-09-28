@@ -180,6 +180,35 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("tools", requests[0])
 
+    async def test_passages_see_only_the_goal_and_the_page(self) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            if len(requests) == 1:
+                return chat_response(json.dumps({"passages": ["삼성전기 23.3%"]}))
+            return chat_response(json.dumps({"passages": [1]}))
+
+        adapter = self.adapter(handler, max_attempts=1)
+        passages = await adapter.extract_passages(
+            "비중", "상위 구성종목은 삼성전기 23.3%"
+        )
+
+        self.assertEqual(("삼성전기 23.3%",), passages)
+        body = requests[0]
+        self.assertEqual(
+            "pia_page_passages", body["response_format"]["json_schema"]["name"]
+        )
+        self.assertEqual(
+            ["system", "user", "user"],
+            [message["role"] for message in body["messages"]],
+        )
+        self.assertIn("exactly as written", body["messages"][0]["content"])
+        self.assertIn("상위 구성종목은", body["messages"][2]["content"])
+        self.assertNotIn("prompt_cache_key", body)
+        with self.assertRaisesRegex(OpenRouterModelError, "invalid_output"):
+            await adapter.extract_passages("비중", "page")
+
     async def test_answer_and_tool_calls_send_a_hashed_per_user_cache_key(
         self,
     ) -> None:
