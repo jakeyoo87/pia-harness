@@ -1,4 +1,4 @@
-"""Read one page through Jina Reader and keep only verified passages for a goal."""
+"""Read one page through Jina Reader: a summary plus quotes checked against it."""
 
 from __future__ import annotations
 
@@ -11,7 +11,13 @@ from .orchestrator import PageExcerpt
 
 JINA_READER_URL = "https://r.jina.ai/"
 EXTRACT_SOURCE_MAX_CHARS = 30_000
+# Summary and quotes of one page together; five pages stay well inside Jev's
+# request limit.
+PAGE_NOTES_MAX_CHARS = 2_000
 _WHITESPACE = re.compile(r"\s+")
+_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_URL = re.compile(r"https?://\S+")
 
 
 class PageReadError(RuntimeError):
@@ -23,14 +29,14 @@ class JinaPageExtractor:
 
     def __init__(
         self,
-        extract_passages: Callable[[str, str], Awaitable[tuple[str, ...]]],
+        read_notes: Callable[[str, str, str], Awaitable[tuple[str, tuple[str, ...]]]],
         *,
         api_key: str | None = None,
         timeout_seconds: float = 30.0,
         max_source_chars: int = EXTRACT_SOURCE_MAX_CHARS,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._extract_passages = extract_passages
+        self._read_notes = read_notes
         self._max_source_chars = max_source_chars
         # DNT asks Jina not to cache or log the request.
         self._headers = {"Accept": "text/plain", "DNT": "1"}
@@ -43,24 +49,41 @@ class JinaPageExtractor:
             trust_env=False,
         )
 
-    async def extract(self, url: str, goal: str) -> PageExcerpt:
-        page = await self._read(url)
+    async def extract(self, url: str, goal: str, request: str) -> PageExcerpt:
+        # Jina's markdown is mostly link targets; the link text is kept.
+        page = _LINK.sub(r"\1", _IMAGE.sub("", await self._read(url)))
         truncated = len(page) > self._max_source_chars
         source = page[: self._max_source_chars]
-        passages = await self._extract_passages(goal, source)
-        if not passages:
+        summary, quotes = await self._read_notes(goal, request, source)
+        # Links may only come from the page itself, so none are kept from the
+        # model's own words.
+        summary = _URL.sub("", summary).strip()
+        # A quote must be on the page as is; otherwise a changed figure or a
+        # made-up link would reach the answer and the readable-link list.
+        normalized = _normalize(source)
+        verified = [q for q in quotes if _normalize(q) in normalized]
+        kept: list[str] = []
+        used = len(summary)
+        for quote in verified:
+            if used + len(quote) > PAGE_NOTES_MAX_CHARS:
+                break
+            kept.append(quote)
+            used += len(quote)
+        if not kept and not summary:
             if truncated:
                 return PageExcerpt(
                     f"nothing about the goal in the first {self._max_source_chars:,} "
                     "characters; the rest was not checked"
                 )
             return PageExcerpt("nothing about the goal on the page")
-        # A passage must be on the page as is; otherwise a changed figure or a
-        # made-up link would reach the answer and the readable-link list.
-        normalized = _normalize(source)
-        if any(_normalize(passage) not in normalized for passage in passages):
-            return PageExcerpt("passages did not match the page; nothing was used")
-        return PageExcerpt("passages copied from the page", passages)
+        status = f"read; {len(kept)} quote(s) checked against the page"
+        if len(verified) < len(quotes):
+            status += f", {len(quotes) - len(verified)} dropped as not on the page"
+        if truncated:
+            status += (
+                f"; only the first {self._max_source_chars:,} characters were read"
+            )
+        return PageExcerpt(status, tuple(kept), summary)
 
     async def _read(self, url: str) -> str:
         try:

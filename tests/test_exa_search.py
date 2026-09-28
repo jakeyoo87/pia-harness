@@ -99,9 +99,9 @@ class ExaWebSearchTest(unittest.IsolatedAsyncioTestCase):
         }
         expected = {
             "status": "failed with status 429",
-            "error reply": "response was invalid",
-            "tool error": "response was invalid",
-            "unreadable text": "could not be read",
+            "error reply": "response was an error or invalid",
+            "tool error": "response was an error or invalid",
+            "unreadable text": "could not be read (14 characters, no result blocks)",
             "empty": "No pages were found",
         }
         for name, handler in cases.items():

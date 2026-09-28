@@ -108,13 +108,20 @@ class ExaWebSearch:
                 f"{response.status_code}."
             )
         text = _tool_text(response.content.decode("utf-8", "replace"))
+        # Diagnostics carry sizes only: the reply may hold queries and page text.
         if text is None:
-            return ReadToolResult(f"{heading}. The search response was invalid.")
+            return ReadToolResult(
+                f"{heading}. The search response was an error or invalid "
+                f"({len(response.content)} bytes)."
+            )
         if not text.strip():
             return ReadToolResult(f"{heading}. No pages were found.")
         links = parse_results(text)[:WEB_SEARCH_RESULT_COUNT]
         if not links:
-            return ReadToolResult(f"{heading}. The search results could not be read.")
+            return ReadToolResult(
+                f"{heading}. The search results could not be read "
+                f"({len(text)} characters, no result blocks)."
+            )
         return ReadToolResult(f"{heading}. Found {len(links)} candidates.", links)
 
     async def aclose(self) -> None:

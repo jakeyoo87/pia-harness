@@ -90,7 +90,11 @@ def _instrument(
     post_async = jev._post_async
 
     async def jev_post(payload: dict[str, Any]) -> dict[str, Any]:
-        result = await post_async(payload)
+        try:
+            result = await post_async(payload)
+        except Exception as error:
+            _log(state["started"], "JEV failed", type(error).__name__)
+            raise
         answers = result.get("answers", {})
         choice = answers.get("next_action", {}).get("choice")
         memory = answers.get("memory_action", {}).get("choice")
@@ -118,13 +122,42 @@ def _instrument(
 
     model.generate_tool_call = logged_tool_call  # type: ignore[method-assign]
 
-    passages = model.extract_passages
+    notes = model.read_page_notes
 
-    async def counted_passages(goal: str, page: str) -> tuple[str, ...]:
+    async def counted_notes(goal: str, request: str, page: str):
         state["record"].calls["passages"] += 1
-        return await passages(goal, page)
+        return await notes(goal, request, page)
 
-    model.extract_passages = counted_passages  # type: ignore[method-assign]
+    model.read_page_notes = counted_notes  # type: ignore[method-assign]
+
+    # Each HTTP attempt to Jev or the model: host, status, time. No content.
+    async def on_request(request: httpx.Request) -> None:
+        request.extensions["started"] = time.monotonic()
+
+    async def on_response(response: httpx.Response) -> None:
+        began = response.request.extensions.get("started", time.monotonic())
+        path = response.request.url.path.rsplit("/", 1)[-1]
+        _log(
+            state["started"],
+            "HTTP",
+            f"{path} {response.status_code} {time.monotonic() - began:.1f}s",
+        )
+
+    answer = model.generate_answer
+
+    async def logged_answer(context):
+        try:
+            return await answer(context)
+        except Exception as error:
+            event = getattr(error, "event", "")
+            _log(state["started"], "ANSWER failed", f"{type(error).__name__} {event}")
+            raise
+
+    model.generate_answer = logged_answer  # type: ignore[method-assign]
+
+    hooks = {"request": [on_request], "response": [on_response]}
+    jev._async.event_hooks = hooks
+    model._async_client.event_hooks = hooks
 
     execute = search.execute
 
@@ -144,14 +177,14 @@ def _instrument(
 
 
 def _logged_extract(state: dict[str, Any], extractor: JinaPageExtractor):
-    async def logged_extract(url: str, goal: str) -> PageExcerpt:
+    async def logged_extract(url: str, goal: str, request: str) -> PageExcerpt:
         state["record"].calls["page"] += 1
         try:
-            excerpt = await extractor.extract(url, goal)
+            excerpt = await extractor.extract(url, goal, request)
         except Exception as error:
             _log(state["started"], "EXTRACT failed", f"{url} ({error})")
             raise
-        chars = sum(len(passage) for passage in excerpt.passages)
+        chars = len(excerpt.summary) + sum(map(len, excerpt.passages))
         _log(state["started"], "EXTRACT", f"{url} {excerpt.status} chars={chars}")
         return excerpt
 
@@ -247,7 +280,7 @@ async def run(
     search = ExaWebSearch()
     state, logged_search = _instrument(jev, model, search)
     # Built after _instrument so it calls the counted passages method.
-    extractor = JinaPageExtractor(model.extract_passages)
+    extractor = JinaPageExtractor(model.read_page_notes)
     tool = search.tool()
     tool = type(tool)(
         name=tool.name,
