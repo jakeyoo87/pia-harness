@@ -35,7 +35,6 @@ from .memory import (
     MemoryReviewStatus,
     MemoryReviewValidationError,
 )
-from .news_search import NaverNewsSearch
 from .openrouter import (
     OpenRouterModelAdapter,
     OpenRouterModelError,
@@ -55,6 +54,7 @@ from .orchestrator import (
     NextActionOption,
     OrchestratorStatus,
     PageExcerpt,
+    PageReadError,
     PreparationResult,
     PreparedAction,
     ReadToolDefinition,
@@ -79,7 +79,7 @@ from .session import (
     RollingSummary,
     new_turn_id,
 )
-from .web_extract import JinaPageExtractor, PageReadError
+from .web_extract import JinaPageExtractor
 
 __all__ = [
     "CONFIRMATION_EXPIRED_NOTICE",
@@ -112,7 +112,6 @@ __all__ = [
     "JinaPageExtractor",
     "JevDecisionError",
     "MemoryAction",
-    "NaverNewsSearch",
     "NextActionDecision",
     "NextActionInputTooLarge",
     "NextActionOption",

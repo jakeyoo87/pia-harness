@@ -5,7 +5,7 @@ import json
 import math
 import re
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, TypeVar
@@ -84,6 +84,20 @@ _RESERVED_OPTIONS = frozenset({"answer", CONFIRM_OPTION, WEB_EXTRACT_TOOL})
 _TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _MESSAGE_URL = re.compile(r"https?://[^\s<>\"'()\[\]{}]+", re.IGNORECASE)
 _URL_TRAILING = ".,;:!?…。，、"
+# The answer cites a link as a Markdown link or <url>; bare URLs count too.
+_ANSWER_LINK = re.compile(
+    r"\[([^\]\n]*)\]\((https?://[^\s)]+)\)|<(https?://[^\s>]+)>|"
+    + _MESSAGE_URL.pattern,
+    re.IGNORECASE,
+)
+# A citation-style number standing alone, not an index such as items[1].
+_MODEL_NUMBER = re.compile(r"(?<![\w\])])\[\d{1,3}\](?!\()")
+# Code is left as written: its URLs and brackets are not citations.
+_CODE = re.compile(r"(```.*?(?:```|\Z)|`[^`\n]*`)", re.DOTALL)
+# Marks a removal so only the space next to it goes, not the answer's own.
+_REMOVED = "\x00"
+_REMOVED_SPACE = re.compile(r"[ \t]+\x00|\x00[ \t]*")
+SOURCES_HEADING = "출처"
 _T = TypeVar("_T")
 _KST = timezone(timedelta(hours=9))
 
@@ -147,6 +161,14 @@ class ToolLink:
 class ReadToolResult:
     observation_text: str
     links: tuple[ToolLink, ...] = ()
+
+
+class PageReadError(RuntimeError):
+    """A page could not be read: an expected failure reported as unread.
+
+    ``extract_page`` raises only this for such failures; any other error is a
+    code error and ends the Turn.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -504,8 +526,8 @@ class ConversationOrchestrator:
             tool_observations: tuple[ToolObservation, ...] = ()
             memory_action = MemoryAction.NONE
             # Search links already listed this Turn, so repeated searches show
-            # only new ones.
-            listed_urls: set[str] = set()
+            # only new ones. Their titles name the answer's sources.
+            listed_urls: dict[str, str] = {}
             # A page does not change in seconds, so a link is read once a Turn.
             read_urls: set[str] = set()
             read_calls = 0
@@ -578,13 +600,31 @@ class ConversationOrchestrator:
                             ConversationStep(call.name, call.arguments_json)
                         )
                         read_calls += 1
-                        observation = await self._web_extract(
-                            deadline,
-                            call,
-                            _conversation_urls(assembled),
-                            read_urls,
-                            _combined_message(batch),
-                        )
+                        try:
+                            observation = await self._web_extract(
+                                deadline,
+                                call,
+                                _conversation_urls(assembled),
+                                read_urls,
+                                _combined_message(batch),
+                            )
+                        except (ConversationAbandoned, TimeoutError):
+                            raise
+                        # Unreadable pages are results; anything else is a code
+                        # error, which ends the Turn like any other tool's.
+                        except Exception:
+                            await self._finish_generation(
+                                user_key,
+                                state,
+                                generation_id,
+                                batch,
+                                ConversationResult(
+                                    OrchestratorStatus.TOOL_FAILED,
+                                    turn_id=batch[-1].value.turn_id,
+                                ),
+                                clear_pending=True,
+                            )
+                            return
                     else:
                         tool: ReadToolDefinition | ExecutionToolDefinition = (
                             execution_tool
@@ -737,6 +777,7 @@ class ConversationOrchestrator:
             if confirmed is None:
                 answer = await self._generate_answer(assembled)
                 _validate_generated_answer(answer)
+                answer = _with_sources(answer, assembled, listed_urls)
                 if not await self._claim_commit(state, generation_id, len(batch)):
                     return
                 owned = self._commit_response(
@@ -884,13 +925,11 @@ class ConversationOrchestrator:
                 excerpt = await _before_deadline(
                     deadline, extract_page(url, goal, request)
                 )
-            except ConversationAbandoned:
-                raise
-            except TimeoutError:
-                raise
-            except Exception:
+            except PageReadError:
                 return None
-            return excerpt if isinstance(excerpt, PageExcerpt) else None
+            if not isinstance(excerpt, PageExcerpt):
+                raise TypeError("extract_page returned the wrong type")
+            return excerpt
 
         rejected = sum(1 for url in urls if url not in allowed)
         repeated = sum(1 for url in urls if url in allowed and url in read_urls)
@@ -1130,7 +1169,7 @@ class ConversationOrchestrator:
                 return fixed
             answer = await self._generate_answer(assembled)
             _validate_generated_answer(answer)
-            return answer
+            return _with_sources(answer, assembled, {})
         except ConversationAbandoned:
             raise
         # The action already ran, so any failure still reports its outcome with
@@ -1439,7 +1478,55 @@ def _conversation_urls(context: AssembledPromptContext) -> set[str]:
     return urls
 
 
-def _tool_result_text(result: ReadToolResult, listed_urls: set[str]) -> str:
+def _with_sources(
+    answer: GeneratedAnswer, context: AssembledPromptContext, titles: dict[str, str]
+) -> GeneratedAnswer:
+    """Turn the answer's links into [n] and append the list of their sources.
+
+    Only links that appear in the conversation or this Turn's tool results are
+    kept, so every listed source is one a tool or the user actually gave. That
+    says where a link came from, not that its page was read or backs the claim.
+    """
+    allowed = _conversation_urls(context)
+    numbers: dict[str, int] = {}
+
+    def cite(match: re.Match[str]) -> str:
+        text, marked = match.group(1), match.group(2) or match.group(3)
+        raw = marked or match.group(0)
+        url = raw.rstrip(_URL_TRAILING)
+        # A bare URL's closing punctuation belongs to the sentence.
+        trailing = "" if marked else raw[len(url) :]
+        if url not in allowed:
+            return (text or _REMOVED) + trailing
+        number = numbers.setdefault(url, len(numbers) + 1)
+        return f"{text} [{number}]" if text else f"[{number}]{trailing}"
+
+    def cite_prose(prose: str) -> str:
+        # Numbers the model wrote itself (say, copied from an earlier answer's
+        # list) point at nothing in this answer's list.
+        prose = prose.replace(_REMOVED, "")
+        prose = _ANSWER_LINK.sub(cite, _MODEL_NUMBER.sub(_REMOVED, prose))
+        return _REMOVED_SPACE.sub("", prose)
+
+    pieces = _CODE.split(answer.text)
+    body = "".join(
+        piece if index % 2 else cite_prose(piece) for index, piece in enumerate(pieces)
+    )
+    # Never fall back to the original: that would restore what was removed.
+    if not body.strip():
+        raise ValueError("the answer is empty once uncited links are removed")
+    if not numbers:
+        return replace(answer, text=body)
+    sources = [
+        f"[{number}] {titles[url]} {url}" if titles.get(url) else f"[{number}] {url}"
+        for url, number in numbers.items()
+    ]
+    return replace(
+        answer, text=f"{body.rstrip()}\n\n{SOURCES_HEADING}\n" + "\n".join(sources)
+    )
+
+
+def _tool_result_text(result: ReadToolResult, listed_urls: dict[str, str]) -> str:
     if not result.links:
         return result.observation_text
     lines = [result.observation_text]
@@ -1447,7 +1534,7 @@ def _tool_result_text(result: ReadToolResult, listed_urls: set[str]) -> str:
     for link in result.links:
         if link.url in listed_urls:
             continue
-        listed_urls.add(link.url)
+        listed_urls[link.url] = link.title
         added += 1
         line = f"[{link.published}] {link.title}" if link.published else link.title
         if link.summary:

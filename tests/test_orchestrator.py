@@ -27,6 +27,7 @@ from pia_harness import (
     NextActionInputTooLarge,
     OrchestratorStatus,
     PageExcerpt,
+    PageReadError,
     PreparationResult,
     PreparedAction,
     PromptContextAssembler,
@@ -1128,11 +1129,20 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 )
             return GeneratedAnswer("본문 요약", "model", 10)
 
+        # An answer keeps only links a tool or message gave, so they come
+        # from a search in the first Turn.
+        found = ReadToolResult(
+            "News",
+            (
+                ToolLink("기사 1", "https://n.news.naver.com/a?sid=101"),
+                ToolLink("기사 2", "https://n.news.naver.com/b"),
+            ),
+        )
+        choices = iter(("search", "answer", "web_extract", "answer"))
+
         async def choose_next(context, options):
             offered.append(tuple(option.name for option in options))
-            if len(offered) == 2:
-                return NextActionDecision("web_extract")
-            return NextActionDecision("answer")
+            return NextActionDecision(next(choices))
 
         async def extract_page(url, goal, request):
             fetched.append(url)
@@ -1140,6 +1150,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         orchestrator = self.orchestrator(
             generate,
+            read_tools=(self.news_search([found]),),
             extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls(
@@ -1156,8 +1167,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual((), offered[0])
-        self.assertEqual(("web_extract",), offered[1])
+        self.assertEqual(("search",), offered[0])
+        self.assertEqual(("search", "web_extract"), offered[2])
         self.assertEqual(
             ["https://n.news.naver.com/a?sid=101", "https://n.news.naver.com/b"],
             sorted(fetched),
@@ -1178,11 +1189,14 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def generate(context):
             return GeneratedAnswer(next(answers), "model", 10)
 
+        found = ReadToolResult(
+            "News", (ToolLink("기사", "https://n.news.naver.com/a"),)
+        )
+        choices = iter(("search", "answer", "answer", "web_extract", "answer"))
+
         async def choose_next(context, options):
             offered.append(tuple(option.name for option in options))
-            if len(offered) == 3:
-                return NextActionDecision("web_extract")
-            return NextActionDecision("answer")
+            return NextActionDecision(next(choices))
 
         async def extract_page(url, goal, request):
             fetched.append(url)
@@ -1190,6 +1204,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         orchestrator = self.orchestrator(
             generate,
+            read_tools=(self.news_search([found]),),
             extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls(["https://n.news.naver.com/a"]),
@@ -1202,7 +1217,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(("web_extract",), offered[2])
+        self.assertEqual(("search", "web_extract"), offered[3])
         self.assertEqual(["https://n.news.naver.com/a"], fetched)
 
     async def test_fetch_reads_at_most_five_links(self) -> None:
@@ -1247,7 +1262,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             return NextActionDecision("answer")
 
         async def extract_page(url, goal, request):
-            raise RuntimeError("blocked page")
+            raise PageReadError("blocked page")
 
         result = await self.orchestrator(
             generate,
@@ -1280,6 +1295,110 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         # A rejected link is not echoed, or it would become readable next time.
         self.assertNotIn("invented.example", text)
+
+    async def test_a_broken_extractor_ends_the_turn(self) -> None:
+        choices = iter(("web_extract", "answer"))
+
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose_next(context, options):
+            return NextActionDecision(next(choices))
+
+        async def extract_page(url, goal, request):
+            raise AttributeError("bug")
+
+        result = await self.orchestrator(
+            generate,
+            extract_page=extract_page,
+            choose_next=choose_next,
+            build_tool_call=self.build_calls(["https://example.com/news/1"]),
+        ).submit(
+            user_key="user",
+            message="이거 요약해줘 https://example.com/news/1",
+            accepted_at=self.now,
+        )
+
+        # A code error is not an unreadable page; Jev would keep choosing it.
+        self.assertEqual(OrchestratorStatus.TOOL_FAILED, result.status)
+
+    async def test_answer_links_become_numbered_sources(self) -> None:
+        delivered = []
+        found = "https://etf.example/091160"
+        given = "https://fund.example/kodex"
+        results = [ReadToolResult("News", (ToolLink("KODEX 반도체", found),))]
+        choices = iter(("search", "answer"))
+
+        async def generate(context):
+            return GeneratedAnswer(
+                f"SK하이닉스 36.8% <{found}>, 삼성전자 23.9% [3] {given}.\n"
+                f"기준일은 8월 [ETF쇼핑]({found}). 참고 https://made.up/x 와 "
+                "[다른 곳](https://made.up/y)",
+                "model",
+                10,
+            )
+
+        async def choose_next(context, options):
+            return NextActionDecision(next(choices))
+
+        async def deliver(user_key, text):
+            delivered.append(text)
+
+        await self.orchestrator(
+            generate,
+            deliver=deliver,
+            read_tools=(self.news_search(results),),
+            choose_next=choose_next,
+            build_tool_call=self.build_calls([]),
+        ).submit(user_key="user", message=f"비중 알려줘 {given}", accepted_at=self.now)
+
+        # Links become numbers in order of first use, the model's own numbers
+        # and links that no tool or message gave are dropped, and the list
+        # carries the links the tools actually returned.
+        self.assertEqual(
+            [
+                "SK하이닉스 36.8% [1], 삼성전자 23.9% [2].\n"
+                "기준일은 8월 ETF쇼핑 [1]. 참고 와 다른 곳\n\n"
+                "출처\n"
+                f"[1] KODEX 반도체 {found}\n"
+                f"[2] {given}"
+            ],
+            delivered,
+        )
+
+    async def test_code_and_spacing_are_left_as_written(self) -> None:
+        delivered = []
+        given = "https://fund.example/kodex"
+        code = f"```python\nurl = '{given}'\nif  items[1]:\n    pass\n```"
+        text = f"값은 `rows[2]` 기준  {given} 입니다 [7].\n\n{code}"
+
+        async def generate(context):
+            return GeneratedAnswer(text, "model", 10)
+
+        async def deliver(user_key, text):
+            delivered.append(text)
+
+        await self.orchestrator(generate, deliver=deliver).submit(
+            user_key="user", message=f"이거 봐줘 {given}", accepted_at=self.now
+        )
+
+        # Only prose links and stand-alone numbers change; code, indexes and
+        # the answer's own spacing stay.
+        self.assertEqual(
+            [f"값은 `rows[2]` 기준  [1] 입니다.\n\n{code}\n\n출처\n[1] {given}"],
+            delivered,
+        )
+
+    async def test_an_answer_of_only_removed_links_fails(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("<https://made.up/x> [1]", "model", 10)
+
+        result = await self.orchestrator(generate).submit(
+            user_key="user", message="질문", accepted_at=self.now
+        )
+
+        # Restoring the original would bring back what was removed.
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
 
     async def test_memory_links_are_not_fetchable(self) -> None:
         offered = []
@@ -1661,7 +1780,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         async def extract_page(url, goal, request):
             read.append(url)
-            raise RuntimeError("blocked")
+            raise PageReadError("blocked")
 
         async def build_call(context, tool):
             return ToolCall(
@@ -1675,8 +1794,12 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             choose_next=choose_next,
             build_tool_call=build_call,
         )
-        await orchestrator.submit(user_key="user", message="이전", accepted_at=self.now)
-        # The older answer keeps another link in the conversation, so the option
+        await orchestrator.submit(
+            user_key="user",
+            message="이전 https://example.com/old",
+            accepted_at=self.now,
+        )
+        # The older Turn keeps another link in the conversation, so the option
         # stays; asking again for the failed link must still end the research.
         result = await orchestrator.submit(
             user_key="user",
