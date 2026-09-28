@@ -69,7 +69,19 @@ class JinaPageExtractor:
                 break
             kept.append(quote)
             used += len(quote)
-        if not kept and not summary:
+        cut_note = (
+            f"; only the first {self._max_source_chars:,} characters were read"
+            if truncated
+            else ""
+        )
+        # The summary is the model's own words; without a checked quote it
+        # is not evidence, so it is not passed on.
+        if not kept and quotes:
+            return PageExcerpt(
+                "read, but no quote could be checked against the page; "
+                f"nothing from it can be cited{cut_note}"
+            )
+        if not kept:
             if truncated:
                 return PageExcerpt(
                     f"nothing about the goal in the first {self._max_source_chars:,} "
@@ -79,11 +91,7 @@ class JinaPageExtractor:
         status = f"read; {len(kept)} quote(s) checked against the page"
         if len(verified) < len(quotes):
             status += f", {len(quotes) - len(verified)} dropped as not on the page"
-        if truncated:
-            status += (
-                f"; only the first {self._max_source_chars:,} characters were read"
-            )
-        return PageExcerpt(status, tuple(kept), summary)
+        return PageExcerpt(status + cut_note, tuple(kept), summary)
 
     async def _read(self, url: str) -> str:
         try:

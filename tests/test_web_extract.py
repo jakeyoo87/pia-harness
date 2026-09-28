@@ -89,6 +89,19 @@ class JinaPageExtractorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(("기준일 2026.09.28 (장마감)",), excerpt.passages)
 
+    async def test_a_summary_without_a_checked_quote_is_not_passed_on(self) -> None:
+        tool, _ = extractor(
+            page_reply, "기준일 2026.09.30, 삼성전기 30%", ("삼성전기 30.0%",)
+        )
+        excerpt = await tool.extract("https://a.example", "비중", REQUEST)
+
+        self.assertEqual(
+            "read, but no quote could be checked against the page; "
+            "nothing from it can be cited",
+            excerpt.status,
+        )
+        self.assertEqual(("", ()), (excerpt.summary, excerpt.passages))
+
     async def test_quotes_stop_at_the_page_budget(self) -> None:
         page = "\n".join(f"문장 {n} " + "가" * 490 for n in range(10))
         quotes = tuple(line for line in page.splitlines())

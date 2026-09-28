@@ -1709,7 +1709,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         received = self.now.astimezone(timezone(timedelta(hours=9)))
         self.assertEqual(
-            f"[Received {received:%Y-%m-%d %H:%M} KST]\n오늘 뉴스", current
+            f"[Received {received:%Y-%m-%d %H:%M} KST. This is the current time, "
+            "not the as-of date of any source.]\n오늘 뉴스",
+            current,
         )
         self.assertEqual("오늘 뉴스", self.store.turns[0].user_message)
 

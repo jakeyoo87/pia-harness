@@ -1340,7 +1340,10 @@ def _conversation_input(
 def _received_line(batch: tuple[_Submission, ...]) -> str:
     # Models do not know today's date; KST because PIA's users are in Korea.
     received = batch[-1].value.accepted_at.astimezone(_KST)
-    return f"[Received {received:%Y-%m-%d %H:%M} KST]\n"
+    return (
+        f"[Received {received:%Y-%m-%d %H:%M} KST. This is the current time, "
+        "not the as-of date of any source.]\n"
+    )
 
 
 def _missing_arguments(call: ToolCall, schema: Mapping[str, Any] | None) -> bool:
