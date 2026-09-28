@@ -83,10 +83,12 @@ class JevDecisionAdapter:
         self, context: AssembledPromptContext, tools: Sequence[ToolOption]
     ) -> NextActionDecision:
         options = {
-            "answer": "Answer now. Choose this when the reply can be written from "
-            "what the conversation already contains (earlier answers, facts, links, "
-            "Memory) or from general knowledge, without fetching new information. "
-            "The answer model sees the full conversation history."
+            "answer": "Answer now. Choose this when what the user asked is already "
+            "backed by the conversation (earlier answers, facts, links, Memory), by "
+            "this Turn's tool results, or, for general questions, by general "
+            "knowledge. Search titles and short snippets do not back questions that "
+            "need details such as holdings, weights, figures or comparisons; read the "
+            "pages first. The answer model sees the full conversation history."
         }
         for tool in tools:
             if not tool.name or tool.name == "answer" or tool.name in options:

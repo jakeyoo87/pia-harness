@@ -563,7 +563,13 @@ class ConversationOrchestrator:
                             self._build_tool_call(assembled, _WEB_EXTRACT_SPEC),
                         )
                         _validate_read_tool_call(call, WEB_EXTRACT_TOOL)
-                        if _missing_arguments(call, WEB_EXTRACT_ARGUMENTS_SCHEMA):
+                        # No goal, or only links already read or never shown:
+                        # nothing is left to read, so answer from what was gathered.
+                        if _missing_arguments(
+                            call, WEB_EXTRACT_ARGUMENTS_SCHEMA
+                        ) or not _new_links(
+                            call, _conversation_urls(assembled), read_urls
+                        ):
                             limit_reached = True
                             break
                         if not await self._is_current(state, generation_id):
@@ -1342,6 +1348,14 @@ def _missing_arguments(call: ToolCall, schema: Mapping[str, Any] | None) -> bool
     return any(
         arguments.get(name) in (None, "", [], {})
         for name in (schema or {}).get("required", ())
+    )
+
+
+def _new_links(call: ToolCall, allowed: set[str], read_urls: set[str]) -> bool:
+    requested = json.loads(call.arguments_json).get("urls")
+    return any(
+        isinstance(url, str) and url.strip() in allowed - read_urls
+        for url in (requested if isinstance(requested, list) else ())
     )
 
 

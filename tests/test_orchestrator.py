@@ -1646,6 +1646,51 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("=== https://example.com/b\nSummary: 요약\nQuotes:\n> 본문", text)
 
+    async def test_an_extract_with_no_new_link_ends_the_research(self) -> None:
+        read = []
+        answer_contexts = []
+        answers = iter(("[기사](https://example.com/old)", "could not open it"))
+        choices = iter(("answer", "web_extract", "web_extract", "web_extract"))
+
+        async def generate(context):
+            answer_contexts.append(context)
+            return GeneratedAnswer(next(answers), "model", 10)
+
+        async def choose_next(context, options):
+            return NextActionDecision(next(choices))
+
+        async def extract_page(url, goal, request):
+            read.append(url)
+            raise RuntimeError("blocked")
+
+        async def build_call(context, tool):
+            return ToolCall(
+                tool.name,
+                json.dumps({"urls": ["https://example.com/a"], "goal": GOAL}),
+            )
+
+        orchestrator = self.orchestrator(
+            generate,
+            extract_page=extract_page,
+            choose_next=choose_next,
+            build_tool_call=build_call,
+        )
+        await orchestrator.submit(user_key="user", message="이전", accepted_at=self.now)
+        # The older answer keeps another link in the conversation, so the option
+        # stays; asking again for the failed link must still end the research.
+        result = await orchestrator.submit(
+            user_key="user",
+            message="https://example.com/a 요약해줘",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(["https://example.com/a"], read)
+        self.assertIn(
+            RESEARCH_LIMIT_NOTICE,
+            [part.content for part in answer_contexts[1].parts],
+        )
+
     async def test_the_prompt_carries_the_received_time_but_not_the_turn(self) -> None:
         contexts = []
 
