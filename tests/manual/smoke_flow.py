@@ -1,12 +1,13 @@
-"""Run the README section 1 flow with real Jev, OpenRouter, NAVER, and web pages.
+"""Run the README section 1 flow with real Jev, OpenRouter, Exa, and Jina.
 
 Manual only: it calls paid APIs and model decisions vary, so it is not part of pytest
 or CI. Scenarios run in order in one conversation, so later ones can refer to earlier
-answers. Keys come from the environment and are never printed. The execution set
-uses a fake pia-broker with fixed replies; no real order is ever sent.
+answers. Keys come from the environment and are never printed; Exa and Jina are
+called without keys. The execution set uses a fake pia-broker with fixed replies; no
+real order is ever sent.
 
-    OPENROUTER_API_KEY=... NAVER_API_HUB_CLIENT_ID=... NAVER_API_HUB_CLIENT_SECRET=... \\
-        python -m tests.manual.smoke_flow [--set read|execution] [--only 1,2]
+    OPENROUTER_API_KEY=... python -m tests.manual.smoke_flow \\
+        [--set read|execution] [--only 1,2]
 """
 
 from __future__ import annotations
@@ -27,11 +28,12 @@ import httpx
 from pia_harness import (
     BrokerOrderTool,
     ConversationOrchestrator,
+    ExaWebSearch,
     JevDecisionAdapter,
+    JinaPageExtractor,
     ModelTokenBudget,
-    NaverNewsSearch,
     OpenRouterModelAdapter,
-    UrlReader,
+    PageExcerpt,
 )
 from pia_harness.compaction import TokenCompactor
 from pia_harness.context import PromptContextAssembler
@@ -65,6 +67,12 @@ class Record:
 
     jev: list[dict[str, Any]] = field(default_factory=list)
     current_user: str = ""
+    # Model and provider calls besides Jev, for the cost of one question.
+    calls: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(
+            ("tool_args", "search", "page", "passages"), 0
+        )
+    )
 
 
 def _log(started: float, event: str, detail: str = "") -> None:
@@ -73,14 +81,20 @@ def _log(started: float, event: str, detail: str = "") -> None:
     )
 
 
-def _instrument(jev: JevDecisionAdapter, model: OpenRouterModelAdapter, search, reader):
+def _instrument(
+    jev: JevDecisionAdapter, model: OpenRouterModelAdapter, search: ExaWebSearch
+):
     """Wrap calls to log decisions. Jev probabilities and token counts are only in
     the raw response, so this reaches into the adapter's private post method."""
     state: dict[str, Any] = {"record": Record(), "started": time.monotonic()}
     post_async = jev._post_async
 
     async def jev_post(payload: dict[str, Any]) -> dict[str, Any]:
-        result = await post_async(payload)
+        try:
+            result = await post_async(payload)
+        except Exception as error:
+            _log(state["started"], "JEV failed", type(error).__name__)
+            raise
         answers = result.get("answers", {})
         choice = answers.get("next_action", {}).get("choice")
         memory = answers.get("memory_action", {}).get("choice")
@@ -101,15 +115,54 @@ def _instrument(jev: JevDecisionAdapter, model: OpenRouterModelAdapter, search, 
     tool_call = model.generate_tool_call
 
     async def logged_tool_call(context, tool):
+        state["record"].calls["tool_args"] += 1
         call = await tool_call(context, tool)
         _log(state["started"], "TOOL_ARGS", call.arguments_json)
         return call
 
     model.generate_tool_call = logged_tool_call  # type: ignore[method-assign]
 
+    notes = model.read_page_notes
+
+    async def counted_notes(goal: str, request: str, page: str):
+        state["record"].calls["passages"] += 1
+        return await notes(goal, request, page)
+
+    model.read_page_notes = counted_notes  # type: ignore[method-assign]
+
+    # Each HTTP attempt to Jev or the model: host, status, time. No content.
+    async def on_request(request: httpx.Request) -> None:
+        request.extensions["started"] = time.monotonic()
+
+    async def on_response(response: httpx.Response) -> None:
+        began = response.request.extensions.get("started", time.monotonic())
+        path = response.request.url.path.rsplit("/", 1)[-1]
+        _log(
+            state["started"],
+            "HTTP",
+            f"{path} {response.status_code} {time.monotonic() - began:.1f}s",
+        )
+
+    answer = model.generate_answer
+
+    async def logged_answer(context):
+        try:
+            return await answer(context)
+        except Exception as error:
+            event = getattr(error, "event", "")
+            _log(state["started"], "ANSWER failed", f"{type(error).__name__} {event}")
+            raise
+
+    model.generate_answer = logged_answer  # type: ignore[method-assign]
+
+    hooks = {"request": [on_request], "response": [on_response]}
+    jev._async.event_hooks = hooks
+    model._async_client.event_hooks = hooks
+
     execute = search.execute
 
     async def logged_search(user_key, call, inputs):
+        state["record"].calls["search"] += 1
         result = await execute(user_key, call, inputs)
         _log(state["started"], "SEARCH", result.observation_text)
         for link in result.links:
@@ -120,18 +173,22 @@ def _instrument(jev: JevDecisionAdapter, model: OpenRouterModelAdapter, search, 
             )
         return result
 
-    read = reader.read
+    return state, logged_search
 
-    async def logged_read(url: str) -> str:
+
+def _logged_extract(state: dict[str, Any], extractor: JinaPageExtractor):
+    async def logged_extract(url: str, goal: str, request: str) -> PageExcerpt:
+        state["record"].calls["page"] += 1
         try:
-            text = await read(url)
+            excerpt = await extractor.extract(url, goal, request)
         except Exception as error:
-            _log(state["started"], "READ failed", f"{url} ({error})")
+            _log(state["started"], "EXTRACT failed", f"{url} ({error})")
             raise
-        _log(state["started"], "READ", f"{url} chars={len(text)}")
-        return text
+        chars = len(excerpt.summary) + sum(map(len, excerpt.passages))
+        _log(state["started"], "EXTRACT", f"{url} {excerpt.status} chars={chars}")
+        return excerpt
 
-    return state, logged_search, logged_read
+    return logged_extract
 
 
 def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
@@ -220,12 +277,10 @@ async def run(
         max_attempts=2,
     )
     jev = JevDecisionAdapter(api_key=key, timeout_seconds=20)
-    search = NaverNewsSearch(
-        client_id=environ["NAVER_API_HUB_CLIENT_ID"],
-        client_secret=environ["NAVER_API_HUB_CLIENT_SECRET"],
-    )
-    reader = UrlReader()
-    state, logged_search, logged_read = _instrument(jev, model, search, reader)
+    search = ExaWebSearch()
+    state, logged_search = _instrument(jev, model, search)
+    # Built after _instrument so it calls the counted passages method.
+    extractor = JinaPageExtractor(model.read_page_notes)
     tool = search.tool()
     tool = type(tool)(
         name=tool.name,
@@ -266,7 +321,7 @@ async def run(
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
         read_tools=(tool,),
         execution_tools=execution_tools,
-        read_url=logged_read,
+        extract_page=_logged_extract(state, extractor),
         choose_next=jev.choose_next,
         build_tool_call=model.generate_tool_call,
     )
@@ -297,6 +352,7 @@ async def run(
                 json.dumps(memory.memory_text if memory else None, ensure_ascii=False),
             )
             tokens = [j["tokens"] for j in record.jev if j["tokens"] is not None]
+            _log(state["started"], "CALLS", f"jev={len(record.jev)} {record.calls}")
             if scenario_set == "execution":
                 _log(state["started"], "ORDERS SENT", str(len(orders)))
             rows.append(
@@ -307,17 +363,21 @@ async def run(
                     _check(scenario, record),
                     f"{time.monotonic() - state['started']:.1f}s",
                     max(tokens, default=0),
+                    "/".join(str(n) for n in (len(record.jev), *record.calls.values())),
                 )
             )
     finally:
         await search.aclose()
-        await reader.aclose()
+        await extractor.aclose()
         await jev.aclose()
         await model.aclose()
         if broker_client is not None:
             await broker_client.aclose()
 
-    print("\n===== summary (id | expect | Jev choices | check | time | max Jev tokens)")
+    print(
+        "\n===== summary (id | expect | Jev choices | check | time | max Jev tokens"
+        " | calls jev/args/search/page/passages)"
+    )
     for row in rows:
         print(" | ".join(str(value) for value in row))
     return 0 if all(row[3] != "CHECK" for row in rows) else 1
@@ -333,15 +393,7 @@ def main() -> None:
     if args.only:
         wanted = set(args.only.split(","))
         scenarios = [s for s in scenarios if s["id"] in wanted]
-    missing = [
-        name
-        for name in (
-            "OPENROUTER_API_KEY",
-            "NAVER_API_HUB_CLIENT_ID",
-            "NAVER_API_HUB_CLIENT_SECRET",
-        )
-        if not os.environ.get(name)
-    ]
+    missing = [name for name in ("OPENROUTER_API_KEY",) if not os.environ.get(name)]
     if missing:
         print(f"missing environment variables: {', '.join(missing)}", file=sys.stderr)
         raise SystemExit(2)

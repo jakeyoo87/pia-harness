@@ -19,6 +19,7 @@ from .context import (
     PromptTrust,
     ToolObservation,
 )
+from .exa_search import ExaWebSearch
 from .jev import JevDecisionAdapter, JevDecisionError
 from .memory import (
     MAX_CHANGE_SUMMARY_CHARS,
@@ -50,8 +51,10 @@ from .orchestrator import (
     GeneratedAnswer,
     MemoryAction,
     NextActionDecision,
+    NextActionInputTooLarge,
     NextActionOption,
     OrchestratorStatus,
+    PageExcerpt,
     PreparationResult,
     PreparedAction,
     ReadToolDefinition,
@@ -76,7 +79,7 @@ from .session import (
     RollingSummary,
     new_turn_id,
 )
-from .url_reader import UrlReader, UrlReadError
+from .web_extract import JinaPageExtractor, PageReadError
 
 __all__ = [
     "CONFIRMATION_EXPIRED_NOTICE",
@@ -102,13 +105,16 @@ __all__ = [
     "ConversationStep",
     "ConversationStore",
     "CurrentMemoryInput",
+    "ExaWebSearch",
     "ExecutionToolDefinition",
     "GeneratedAnswer",
     "JevDecisionAdapter",
+    "JinaPageExtractor",
     "JevDecisionError",
     "MemoryAction",
     "NaverNewsSearch",
     "NextActionDecision",
+    "NextActionInputTooLarge",
     "NextActionOption",
     "MemoryDocument",
     "MemoryReviewAction",
@@ -122,6 +128,8 @@ __all__ = [
     "OpenRouterModelAdapter",
     "OpenRouterModelError",
     "OrchestratorStatus",
+    "PageExcerpt",
+    "PageReadError",
     "PreparationResult",
     "PreparedAction",
     "PromptContextAssembler",
@@ -143,8 +151,6 @@ __all__ = [
     "ToolObservation",
     "TurnConflictError",
     "TurnTooLargeError",
-    "UrlReadError",
-    "UrlReader",
     "conservative_token_estimate",
     "new_turn_id",
 ]

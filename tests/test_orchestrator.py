@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pia_harness.orchestrator as orchestrator_module
+from pia_harness.orchestrator import RESEARCH_LIMIT_NOTICE
 from pia_harness import (
     CONFIRMATION_EXPIRED_NOTICE,
     MESSAGE_SEPARATOR,
@@ -23,7 +24,9 @@ from pia_harness import (
     MemoryReviewResult,
     MemoryReviewStatus,
     ModelTokenBudget,
+    NextActionInputTooLarge,
     OrchestratorStatus,
+    PageExcerpt,
     PreparationResult,
     PreparedAction,
     PromptContextAssembler,
@@ -33,6 +36,15 @@ from pia_harness import (
     ToolLink,
     new_turn_id,
 )
+
+
+GOAL = "기사 핵심 내용"
+
+
+def _message(context):
+    """The current user message without the received-time line."""
+    content = context.parts[-1].content
+    return content.split("\n", 1)[1] if content.startswith("[Received ") else content
 
 
 class FakeStore:
@@ -202,7 +214,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         progress=None,
         read_tools=(),
         execution_tools=(),
-        read_url=None,
+        extract_page=None,
         choose_next=None,
         build_tool_call=None,
         read_routing_timeout_seconds=120.0,
@@ -230,7 +242,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             progress=progress,
             read_tools=read_tools,
             execution_tools=execution_tools,
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next or default_choose_next,
             build_tool_call=build_tool_call,
             read_routing_timeout_seconds=read_routing_timeout_seconds,
@@ -271,7 +283,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         ordered: list[tuple] = []
         url = "https://n.news.naver.com/a"
         results = [ReadToolResult("News", (ToolLink("기사", url),))]
-        choices = iter(("search", "web_fetch", "answer"))
+        choices = iter(("search", "web_extract", "answer"))
 
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
@@ -279,8 +291,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def choose_next(context, options):
             return NextActionDecision(next(choices))
 
-        async def read_url(url):
-            return "본문"
+        async def extract_page(url, goal, request):
+            return PageExcerpt("passages copied from the page", ("본문",))
 
         async def progress(user_key, progress_id, step):
             ordered.append(("progress", user_key, progress_id, step))
@@ -293,7 +305,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             deliver=deliver,
             progress=progress,
             read_tools=(self.news_search(results),),
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls([url]),
         ).submit(user_key="user", message="question", accepted_at=self.now)
@@ -312,7 +324,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                     "progress",
                     "user",
                     progress_id,
-                    ConversationStep("web_fetch", json.dumps({"urls": [url]})),
+                    ConversationStep(
+                        "web_extract", json.dumps({"urls": [url], "goal": GOAL})
+                    ),
                 ),
                 ("progress", "user", progress_id, ConversationStep("answer")),
                 ("deliver", "user", "answer"),
@@ -455,7 +469,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         seen = []
 
         async def generate(context):
-            current = context.parts[-1].content
+            current = _message(context)
             seen.append(current)
             if current == "A":
                 first_started.set()
@@ -491,7 +505,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         async def generate(context):
             generation_tasks.append(asyncio.current_task())
-            current = context.parts[-1].content
+            current = _message(context)
             if current == "A":
                 first_started.set()
                 try:
@@ -528,7 +542,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         generated = []
 
         async def generate(context):
-            current = context.parts[-1].content
+            current = _message(context)
             generated.append(current)
             return GeneratedAnswer(f"answer:{current}", "model", 10)
 
@@ -560,7 +574,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         first_started = asyncio.Event()
 
         async def generate(context):
-            current = context.parts[-1].content
+            current = _message(context)
             if current == "A":
                 first_started.set()
                 await asyncio.Event().wait()
@@ -748,7 +762,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         attempts = []
 
         async def generate(context):
-            attempts.append(context.parts[-1].content)
+            attempts.append(_message(context))
             return GeneratedAnswer("answer", "model", 10)
 
         delivery_calls = 0
@@ -791,7 +805,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         started = set()
 
         async def generate(context):
-            started.add(context.parts[-1].content)
+            started.add(_message(context))
             if len(started) == 2:
                 both_started.set()
             await both_started.wait()
@@ -814,7 +828,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         seen = []
 
         async def generate(context):
-            seen.append(context.parts[-1].content)
+            seen.append(_message(context))
             return GeneratedAnswer("answer", "model", 10)
 
         orchestrator = self.orchestrator(generate)
@@ -890,7 +904,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         delivery_calls = 0
 
         async def generate(context):
-            seen.append(context.parts[-1].content)
+            seen.append(_message(context))
             return GeneratedAnswer("answer", "model", 10)
 
         async def abandon_once(user_key, text):
@@ -976,8 +990,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def build_calls(urls):
         async def build(context, tool):
-            if tool.name == "web_fetch":
-                return ToolCall(tool.name, json.dumps({"urls": urls}))
+            if tool.name == "web_extract":
+                return ToolCall(tool.name, json.dumps({"urls": urls, "goal": GOAL}))
             return ToolCall(tool.name, '{"query":"삼성전자 주가"}')
 
         return build
@@ -1010,25 +1024,30 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             if len(offered) == 1:
                 return NextActionDecision("search")
             if len(offered) == 2:
-                return NextActionDecision("web_fetch")
+                return NextActionDecision("web_extract")
             return NextActionDecision("answer", MemoryAction.UPDATE)
 
-        async def read_url(url):
-            fetched.append(url)
-            return "실적 전망 하향 본문"
+        async def extract_page(url, goal, request):
+            fetched.append((url, goal))
+            return PageExcerpt(
+                "passages copied from the page", ("실적 전망 하향 본문",)
+            )
 
         result = await self.orchestrator(
             generate,
             read_tools=(self.news_search(results),),
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls(["https://n.news.naver.com/b"]),
         ).submit(user_key="member", message=request, accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        # No link yet, then one from search, then gone after the one fetch.
-        self.assertEqual([("search",), ("search", "web_fetch"), ("search",)], offered)
-        self.assertEqual(["https://n.news.naver.com/b"], fetched)
+        # No link yet, then offered for as long as the conversation has links.
+        self.assertEqual(
+            [("search",), ("search", "web_extract"), ("search", "web_extract")],
+            offered,
+        )
+        self.assertEqual([("https://n.news.naver.com/b", GOAL)], fetched)
         results_text = [
             part.content
             for part in answer_contexts[0].parts
@@ -1040,7 +1059,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             "실적 전망 하향 — 요약 <https://n.news.naver.com/b>", results_text[0]
         )
-        self.assertIn("- https://n.news.naver.com/b: read.", results_text[1])
+        self.assertIn(
+            "- https://n.news.naver.com/b: passages copied from the page.",
+            results_text[1],
+        )
         self.assertIn("실적 전망 하향 본문", results_text[1])
         stored = self.store.turns[0].assistant_message
         # Only the request and final answer are stored; tool results stay in this Turn.
@@ -1072,13 +1094,13 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             )
             return NextActionDecision("search" if searches < 3 else "answer")
 
-        async def read_url(url):
+        async def extract_page(url, goal, request):
             raise AssertionError("not selected")
 
         result = await self.orchestrator(
             generate,
             read_tools=(self.news_search(results),),
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_query,
         ).submit(user_key="user", message="news", accepted_at=self.now)
@@ -1109,16 +1131,16 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def choose_next(context, options):
             offered.append(tuple(option.name for option in options))
             if len(offered) == 2:
-                return NextActionDecision("web_fetch")
+                return NextActionDecision("web_extract")
             return NextActionDecision("answer")
 
-        async def read_url(url):
+        async def extract_page(url, goal, request):
             fetched.append(url)
-            return f"본문 {url}"
+            return PageExcerpt("passages copied from the page", (f"본문 {url}",))
 
         orchestrator = self.orchestrator(
             generate,
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls(
                 ["https://n.news.naver.com/a?sid=101", "https://n.news.naver.com/b"]
@@ -1135,7 +1157,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertEqual((), offered[0])
-        self.assertEqual(("web_fetch",), offered[1])
+        self.assertEqual(("web_extract",), offered[1])
         self.assertEqual(
             ["https://n.news.naver.com/a?sid=101", "https://n.news.naver.com/b"],
             sorted(fetched),
@@ -1159,16 +1181,16 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def choose_next(context, options):
             offered.append(tuple(option.name for option in options))
             if len(offered) == 3:
-                return NextActionDecision("web_fetch")
+                return NextActionDecision("web_extract")
             return NextActionDecision("answer")
 
-        async def read_url(url):
+        async def extract_page(url, goal, request):
             fetched.append(url)
-            return "본문"
+            return PageExcerpt("passages copied from the page", ("본문",))
 
         orchestrator = self.orchestrator(
             generate,
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls(["https://n.news.naver.com/a"]),
         )
@@ -1180,7 +1202,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(("web_fetch",), offered[2])
+        self.assertEqual(("web_extract",), offered[2])
         self.assertEqual(["https://n.news.naver.com/a"], fetched)
 
     async def test_fetch_reads_at_most_five_links(self) -> None:
@@ -1193,15 +1215,15 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def choose_next(context, options):
             if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
                 return NextActionDecision("answer")
-            return NextActionDecision("web_fetch")
+            return NextActionDecision("web_extract")
 
-        async def read_url(url):
+        async def extract_page(url, goal, request):
             fetched.append(url)
-            return "본문"
+            return PageExcerpt("passages copied from the page", ("본문",))
 
         await self.orchestrator(
             generate,
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls(links),
         ).submit(user_key="user", message=" ".join(links), accepted_at=self.now)
@@ -1221,15 +1243,15 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def choose_next(context, options):
             offered.append(tuple(option.name for option in options))
             if len(offered) == 1:
-                return NextActionDecision("web_fetch")
+                return NextActionDecision("web_extract")
             return NextActionDecision("answer")
 
-        async def read_url(url):
+        async def extract_page(url, goal, request):
             raise RuntimeError("blocked page")
 
         result = await self.orchestrator(
             generate,
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls(
                 ["https://example.com/news/1", "https://invented.example/x"]
@@ -1241,8 +1263,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        # Offered once; after a failed fetch it is not offered again.
-        self.assertEqual([("web_fetch",), ()], offered)
+        # The one conversation link was tried, so the option is gone.
+        self.assertEqual([("web_extract",), ()], offered)
         text = "\n".join(
             part.content
             for part in answer_contexts[0].parts
@@ -1253,9 +1275,11 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             text,
         )
         self.assertIn(
-            "- https://invented.example/x: not a link from this conversation; not read.",
+            "- 1 requested link(s) did not appear in this conversation; not read.",
             text,
         )
+        # A rejected link is not echoed, or it would become readable next time.
+        self.assertNotIn("invented.example", text)
 
     async def test_memory_links_are_not_fetchable(self) -> None:
         offered = []
@@ -1267,7 +1291,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             offered.append(tuple(option.name for option in options))
             return NextActionDecision("answer")
 
-        async def read_url(url):
+        async def extract_page(url, goal, request):
             raise AssertionError("not offered")
 
         self.store.memories["user"] = MemoryDocument(
@@ -1278,46 +1302,46 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         await self.orchestrator(
             generate,
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls([]),
         ).submit(user_key="user", message="그 블로그 읽어줘", accepted_at=self.now)
 
         self.assertEqual([()], offered)
 
-    async def test_web_fetch_needs_argument_generation_and_is_reserved(self) -> None:
+    async def test_web_extract_needs_argument_generation_and_is_reserved(self) -> None:
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
-        async def read_url(url):
-            return "body"
+        async def extract_page(url, goal, request):
+            return PageExcerpt("passages copied from the page", ("body",))
 
         async def execute(user_key, call, inputs):
             return ReadToolResult("x")
 
         with self.assertRaises(ValueError):
-            self.orchestrator(generate, read_url=read_url)
+            self.orchestrator(generate, extract_page=extract_page)
         with self.assertRaises(ValueError):
             self.orchestrator(
                 generate,
-                read_tools=(ReadToolDefinition("web_fetch", "x", execute),),
+                read_tools=(ReadToolDefinition("web_extract", "x", execute),),
             )
 
-    async def test_selecting_web_fetch_when_not_offered_fails_before_commit(
+    async def test_selecting_web_extract_when_not_offered_fails_before_commit(
         self,
     ) -> None:
         async def generate(context):
             raise AssertionError("invalid Jev choice must stop before generation")
 
         async def choose_next(context, options):
-            return NextActionDecision("web_fetch")
+            return NextActionDecision("web_extract")
 
-        async def read_url(url):
+        async def extract_page(url, goal, request):
             raise AssertionError("unavailable option must not be read")
 
         result = await self.orchestrator(
             generate,
-            read_url=read_url,
+            extract_page=extract_page,
             choose_next=choose_next,
             build_tool_call=self.build_calls([]),
         ).submit(user_key="user", message="question", accepted_at=self.now)
@@ -1416,11 +1440,13 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([("user", "current answer")], self.delivered)
         self.assertEqual(1, len(self.store.turns))
 
-    async def test_read_routing_deadline_stops_repeated_choices(self) -> None:
+    async def test_read_routing_deadline_answers_from_what_was_gathered(self) -> None:
         choices = []
+        answer_contexts = []
 
         async def generate(context):
-            raise AssertionError("routing did not select answer")
+            answer_contexts.append(context)
+            return GeneratedAnswer("partial answer", "model", 10)
 
         async def choose_next(context, tools):
             choices.append("search")
@@ -1444,11 +1470,18 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         result = await orchestrator.submit(
             user_key="user", message="question", accepted_at=self.now
         )
-        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertEqual(3, len(choices))
-        self.assertEqual([], self.delivered)
-        self.assertEqual([], self.store.turns)
-        self.assertNotIn("user", orchestrator._states)
+        results = [
+            part.content
+            for part in answer_contexts[0].parts
+            if part.kind.value == "TOOL_RESULT"
+        ]
+        self.assertEqual(
+            ["short observation", "short observation", RESEARCH_LIMIT_NOTICE],
+            results,
+        )
+        self.assertEqual([("user", "partial answer")], self.delivered)
 
     async def test_no_tool_timeout_keeps_the_existing_pending_behavior(self) -> None:
         async def generate(context):
@@ -1460,6 +1493,255 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
         self.assertEqual(1, len(orchestrator._states["user"].pending))
+
+    async def test_read_tool_limit_answers_with_the_notice(self) -> None:
+        searches = []
+        answer_contexts = []
+
+        async def generate(context):
+            answer_contexts.append(context)
+            return GeneratedAnswer("partial answer", "model", 10)
+
+        async def choose_next(context, options):
+            return NextActionDecision("search")
+
+        async def execute(user_key, call, inputs):
+            searches.append(call.arguments_json)
+            return ReadToolResult("observation")
+
+        with patch.object(orchestrator_module, "MAX_READ_TOOL_CALLS", 2):
+            result = await self.orchestrator(
+                generate,
+                read_tools=(ReadToolDefinition("search", "Search", execute),),
+                choose_next=choose_next,
+            ).submit(user_key="user", message="조사해줘", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(2, len(searches))
+        self.assertIn(
+            RESEARCH_LIMIT_NOTICE,
+            [part.content for part in answer_contexts[0].parts],
+        )
+
+    async def test_too_large_routing_input_answers_without_a_memory_change(
+        self,
+    ) -> None:
+        calls = 0
+
+        async def generate(context):
+            return GeneratedAnswer("partial answer", "model", 10)
+
+        async def choose_next(context, options):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise NextActionInputTooLarge("too large")
+            return NextActionDecision("search")
+
+        async def execute(user_key, call, inputs):
+            return ReadToolResult("long observation")
+
+        result = await self.orchestrator(
+            generate,
+            read_tools=(ReadToolDefinition("search", "Search", execute),),
+            choose_next=choose_next,
+        ).submit(user_key="user", message="조사하고 기억해줘", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([], self.memory.explicit_inputs)
+
+    async def test_empty_arguments_end_the_research_with_the_notice(self) -> None:
+        answer_contexts = []
+
+        async def generate(context):
+            answer_contexts.append(context)
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose_next(context, options):
+            return NextActionDecision("web_extract")
+
+        async def extract_page(url, goal, request):
+            raise AssertionError("nothing is read without a goal")
+
+        async def build_call(context, tool):
+            return ToolCall(tool.name, json.dumps({"urls": ["https://example.com/a"]}))
+
+        result = await self.orchestrator(
+            generate,
+            extract_page=extract_page,
+            choose_next=choose_next,
+            build_tool_call=build_call,
+        ).submit(
+            user_key="user",
+            message="https://example.com/a 읽어줘",
+            accepted_at=self.now,
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertIn(
+            RESEARCH_LIMIT_NOTICE,
+            [part.content for part in answer_contexts[0].parts],
+        )
+
+    async def test_a_link_is_read_once_a_turn(self) -> None:
+        read = []
+        answer_contexts = []
+        offered = []
+
+        async def generate(context):
+            answer_contexts.append(context)
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose_next(context, options):
+            offered.append(tuple(option.name for option in options))
+            return NextActionDecision("web_extract" if len(offered) < 3 else "answer")
+
+        async def extract_page(url, goal, request):
+            read.append((url, goal, request))
+            return PageExcerpt("read", ("본문",), "요약")
+
+        calls = iter(
+            (
+                ["https://example.com/a"],
+                ["https://example.com/a", "https://example.com/b"],
+            )
+        )
+
+        async def build_call(context, tool):
+            return ToolCall(tool.name, json.dumps({"urls": next(calls), "goal": GOAL}))
+
+        await self.orchestrator(
+            generate,
+            extract_page=extract_page,
+            choose_next=choose_next,
+            build_tool_call=build_call,
+        ).submit(
+            user_key="user",
+            message="https://example.com/a https://example.com/b 비교해줘",
+            accepted_at=self.now,
+        )
+
+        # b is read on the second call; a is not read again.
+        self.assertEqual(
+            [
+                ("https://example.com/a", GOAL, read[0][2]),
+                ("https://example.com/b", GOAL, read[0][2]),
+            ],
+            read,
+        )
+        # The extractor gets the user's request, without the received time.
+        self.assertEqual(
+            "https://example.com/a https://example.com/b 비교해줘", read[0][2]
+        )
+        # Once both links were read, web_extract is no longer offered.
+        self.assertEqual([("web_extract",), ("web_extract",), ()], offered)
+        text = "\n".join(
+            part.content
+            for part in answer_contexts[0].parts
+            if part.kind.value == "TOOL_RESULT"
+        )
+        self.assertIn(
+            "- 1 requested link(s) were already read in this Turn; not read again.",
+            text,
+        )
+        self.assertIn("=== https://example.com/b\nSummary: 요약\nQuotes:\n> 본문", text)
+
+    async def test_an_extract_with_no_new_link_ends_the_research(self) -> None:
+        read = []
+        answer_contexts = []
+        answers = iter(("[기사](https://example.com/old)", "could not open it"))
+        choices = iter(("answer", "web_extract", "web_extract", "web_extract"))
+
+        async def generate(context):
+            answer_contexts.append(context)
+            return GeneratedAnswer(next(answers), "model", 10)
+
+        async def choose_next(context, options):
+            return NextActionDecision(next(choices))
+
+        async def extract_page(url, goal, request):
+            read.append(url)
+            raise RuntimeError("blocked")
+
+        async def build_call(context, tool):
+            return ToolCall(
+                tool.name,
+                json.dumps({"urls": ["https://example.com/a"], "goal": GOAL}),
+            )
+
+        orchestrator = self.orchestrator(
+            generate,
+            extract_page=extract_page,
+            choose_next=choose_next,
+            build_tool_call=build_call,
+        )
+        await orchestrator.submit(user_key="user", message="이전", accepted_at=self.now)
+        # The older answer keeps another link in the conversation, so the option
+        # stays; asking again for the failed link must still end the research.
+        result = await orchestrator.submit(
+            user_key="user",
+            message="https://example.com/a 요약해줘",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(["https://example.com/a"], read)
+        self.assertIn(
+            RESEARCH_LIMIT_NOTICE,
+            [part.content for part in answer_contexts[1].parts],
+        )
+
+    async def test_the_prompt_carries_the_received_time_but_not_the_turn(self) -> None:
+        contexts = []
+
+        async def generate(context):
+            contexts.append(context)
+            return GeneratedAnswer("answer", "model", 10)
+
+        await self.orchestrator(generate).submit(
+            user_key="user", message="오늘 뉴스", accepted_at=self.now
+        )
+
+        current = next(
+            part.content
+            for part in contexts[0].parts
+            if part.kind.value == "CURRENT_USER"
+        )
+        received = self.now.astimezone(timezone(timedelta(hours=9)))
+        self.assertEqual(
+            f"[Received {received:%Y-%m-%d %H:%M} KST. This is the current time, "
+            "not the as-of date of any source.]\n오늘 뉴스",
+            current,
+        )
+        self.assertEqual("오늘 뉴스", self.store.turns[0].user_message)
+
+    async def test_empty_search_arguments_also_end_the_research(self) -> None:
+        async def generate(context):
+            return GeneratedAnswer("answer", "model", 10)
+
+        async def choose_next(context, options):
+            return NextActionDecision("search")
+
+        async def build_call(context, tool):
+            return ToolCall(tool.name, "{}")
+
+        async def execute(user_key, call, inputs):
+            raise AssertionError("an empty call is not run")
+
+        search = ReadToolDefinition(
+            "search",
+            "Search",
+            execute,
+            arguments_schema={"type": "object", "required": ["query"]},
+        )
+        result = await self.orchestrator(
+            generate,
+            read_tools=(search,),
+            choose_next=choose_next,
+            build_tool_call=build_call,
+        ).submit(user_key="user", message="뉴스", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
 
     def order_tool(self, *, executed=None, execute=None, action=True):
         executed = executed if executed is not None else []
@@ -1620,7 +1902,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         generated: list[str] = []
 
         async def generate(context):
-            generated.append(context.parts[-1].content)
+            generated.append(_message(context))
             return GeneratedAnswer("answer", "model", 10)
 
         async def execute(user_key, prepared):

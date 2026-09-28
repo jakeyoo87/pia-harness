@@ -180,6 +180,40 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("tools", requests[0])
 
+    async def test_page_notes_see_only_goal_request_and_page(self) -> None:
+        requests = []
+        notes = {"summary": "상위 비중이 있다.", "quotes": ["삼성전기 23.3%"]}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            if len(requests) == 1:
+                # A cut-off reading is tried once more.
+                return chat_response("{", finish_reason="length")
+            if len(requests) == 2:
+                return chat_response(json.dumps(notes))
+            return chat_response(json.dumps({"summary": "x", "quotes": [1]}))
+
+        adapter = self.adapter(handler, max_attempts=2)
+        summary, quotes = await adapter.read_page_notes(
+            "비중", "기판 ETF 조사해줘", "상위 구성종목은 삼성전기 23.3%"
+        )
+
+        self.assertEqual(("상위 비중이 있다.", ("삼성전기 23.3%",)), (summary, quotes))
+        body = requests[1]
+        self.assertEqual(
+            "pia_page_notes", body["response_format"]["json_schema"]["name"]
+        )
+        self.assertEqual(
+            ["system", "user", "user", "user"],
+            [message["role"] for message in body["messages"]],
+        )
+        self.assertIn("character for character", body["messages"][0]["content"])
+        self.assertIn("기판 ETF 조사해줘", body["messages"][2]["content"])
+        self.assertIn("상위 구성종목은", body["messages"][3]["content"])
+        self.assertNotIn("prompt_cache_key", body)
+        with self.assertRaisesRegex(OpenRouterModelError, "invalid_output"):
+            await adapter.read_page_notes("비중", "요청", "page")
+
     async def test_answer_and_tool_calls_send_a_hashed_per_user_cache_key(
         self,
     ) -> None:

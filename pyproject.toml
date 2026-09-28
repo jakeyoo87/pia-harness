@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pia-harness"
-version = "0.5.0"
+version = "0.6.0"
 description = "Minimal multi-user conversation harness for PIA"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Jaehyoung Yoo" }]
 requires-python = ">=3.12"
-dependencies = ["httpx>=0.28,<1", "readability-lxml>=0.8,<1"]
+dependencies = ["httpx>=0.28,<1"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
