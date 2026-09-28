@@ -5,7 +5,7 @@ import unittest
 
 import httpx
 
-from pia_harness import JinaPageExtractor, PageReadError
+from pia_harness import JinaPageExtractor, OpenRouterModelError, PageReadError
 from pia_harness.web_extract import JINA_READER_URL
 
 PAGE = (
@@ -158,6 +158,26 @@ class JinaPageExtractorTest(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(PageReadError):
                     await tool.extract("https://a.example", "goal", REQUEST)
                 self.assertEqual([], calls)
+
+    async def test_a_page_without_text_or_notes_is_unread(self) -> None:
+        tool, calls = extractor(
+            lambda request: httpx.Response(200, text="![로고](https://img.example/a)"),
+            "x",
+            ("x",),
+        )
+        with self.assertRaises(PageReadError):
+            await tool.extract("https://a.example", "goal", REQUEST)
+        self.assertEqual([], calls)
+
+        async def failing_notes(goal: str, request: str, page: str):
+            raise OpenRouterModelError("openrouter.http_error")
+
+        tool = JinaPageExtractor(
+            failing_notes,
+            async_client=httpx.AsyncClient(transport=httpx.MockTransport(page_reply)),
+        )
+        with self.assertRaises(PageReadError):
+            await tool.extract("https://a.example", "goal", REQUEST)
 
     async def test_key_is_sent_as_a_bearer_header(self) -> None:
         requests: list[httpx.Request] = []

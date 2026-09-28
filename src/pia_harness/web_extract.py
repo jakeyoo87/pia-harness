@@ -7,7 +7,8 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
-from .orchestrator import PageExcerpt
+from .openrouter import OpenRouterModelError
+from .orchestrator import PageExcerpt, PageReadError
 
 JINA_READER_URL = "https://r.jina.ai/"
 EXTRACT_SOURCE_MAX_CHARS = 30_000
@@ -18,10 +19,6 @@ _WHITESPACE = re.compile(r"\s+")
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _URL = re.compile(r"https?://\S+")
-
-
-class PageReadError(RuntimeError):
-    """The page could not be read; the orchestrator reports it as unread."""
 
 
 class JinaPageExtractor:
@@ -54,7 +51,12 @@ class JinaPageExtractor:
         page = _LINK.sub(r"\1", _IMAGE.sub("", await self._read(url)))
         truncated = len(page) > self._max_source_chars
         source = page[: self._max_source_chars]
-        summary, quotes = await self._read_notes(goal, request, source)
+        if not source.strip():
+            raise PageReadError("no text")
+        try:
+            summary, quotes = await self._read_notes(goal, request, source)
+        except OpenRouterModelError:
+            raise PageReadError("page notes failed") from None
         # Links may only come from the page itself, so none are kept from the
         # model's own words.
         summary = _URL.sub("", summary).strip()
