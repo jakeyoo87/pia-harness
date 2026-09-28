@@ -35,7 +35,7 @@ from .persistence import (
 from .session import ActiveSession, as_utc, new_turn_id
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
-READ_ROUTING_TIMEOUT_SECONDS = 120.0
+READ_ROUTING_TIMEOUT_SECONDS = 60.0
 PROGRESS_TIMEOUT_SECONDS = 5.0
 WEB_EXTRACT_TOOL = "web_extract"
 WEB_EXTRACT_MAX_URLS = 5
