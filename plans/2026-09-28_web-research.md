@@ -155,3 +155,20 @@ harness 0.6.0. 도구 이름이 바뀌고, `read_url`과 `UrlReader`가 삭제�
 2. web_extract에서 대화 링크 제한을 없애는 것이 안전한지. 업체가 읽는 구조에서 추가로 지켜야 할 최소 조건이 있는지. 예: URL 안의 비밀값.
 3. 4번의 한도와 시간 초과 처리가 최소한으로 충분한지.
 4. 빼도 되거나, 측정 뒤로 미뤄도 되는 부분.
+
+## Codex 계획 검토
+
+`8929c27` 계획을 pia-harness 0.5.0의 Jev·도구·시간 제한 코드와 대조하고 Exa MCP·Search API, Jina Reader의 공식 계약을 확인했다. 계획 검토만 했으며 코드·README 수정, 실제 Exa/Jina/모델 호출, 병합·AWS 변경·배포는 하지 않았다. 엔진을 하나씩 고르고 A안을 측정한 뒤 B를 결정하는 방향은 맞다.
+
+### Blocker
+
+1. **대화 링크 제한은 로컬 SSRF 방지만이 아니라 URL을 통한 정보 유출 방지 경계다(100~112행).** 현재 `build_tool_call`은 전체 Context를 보고 인자를 쓴다(`openrouter.py:215-250`). 악의적인 웹 본문이 다음 호출에서 계좌·보유정보를 담은 새 공개 URL을 만들도록 유도하면, 제한이 없는 `web_extract`가 그 URL을 Jina에 보내고 Jina가 해당 사이트를 방문한다. 우리 EC2가 대상 사이트에 직접 접속하지 않는다는 사실은 이를 막지 못한다. `orchestrator.py:220-230, 760-802`의 **대화·검색 결과에 실제로 등장한 URL만 허용**하는 규칙을 유지하고, Turn당 1회 제한만 독립적으로 없애는 것이 가장 작은 수정이다. 명시적으로 주어진 URL이라도 사용자정보·서명 토큰이 든 URL은 제3자 Jina로 전달하지 않는 규칙을 정해야 한다. Jina는 기본적으로 URL 내용을 캐시한다([공식 Reader 문서](https://jina.ai/reader/)). HTTP client도 목적지를 Jina의 고정 HTTPS origin으로 제한하고 자동 redirect를 따르지 않아야 '우리 서버는 Jina에만 접속'이라는 전제가 성립한다.
+2. **페이지별 10,000자와 도구 20회 상한은 Jev의 누적 입력 한도를 보장하지 않는다(80~84, 102~108, 115~121행).** 한 번에 다섯 페이지면 본문만 최대 50,000자이고 다음 검색·추출 결과가 같은 Turn에 계속 쌓인다. 기존 `jev.py:204-216`의 1,000자 제한을 제거하면 모델의 약 32k-token 입력 한도에 도달해, A안 측정 대신 Jev 요청 실패가 날 수 있다. `ContextBudgetExceeded`는 답변 모델의 예산을 검사할 뿐 Jev 예산이 아니다. Jev 호출 **직전 전체 state**에 대한 보수적인 총 입력 상한을 두고, 초과하면 새 도구 호출 없이 현재까지 완료된 근거로 부분 답변을 생성하도록 정한다. 별도 요약 LLM이나 페이지별 예외 상태는 필요 없다. 이 한도에 걸린 횟수도 A안 측정에 기록한다.
+3. **Exa MCP의 반환 형식이 91행의 구조화된 5개 후보 계약과 다르다.** 공식 `web_search_exa`는 결과를 `Title / URL / Published / Highlights`가 이어진 **하나의 텍스트 블록**으로 반환한다([공식 MCP 구현](https://github.com/exa-labs/exa-mcp-server/blob/main/src/tools/webSearch.ts)). 이를 `ReadToolResult.links`로 파싱하면 표시 텍스트 형식에 의존한다. 반면 [Exa Search API](https://exa.ai/docs/reference/search)는 구조화된 `results` 배열을 반환하고 무료 Starter의 API 키로도 시작할 수 있다([공식 가격](https://exa.ai/pricing)). Simple-first 권장은 **API 키를 Secrets Manager에 둔 Search API 한 경로**다. 키 없는 MCP를 반드시 유지하려면, 텍스트에서 URL·제목·날짜를 안정적으로 추출하고 실패 시 어떻게 할지 계약과 fixture를 먼저 정해야 한다. 공식 MCP는 같은 endpoint에 선택적으로 `x-api-key` 또는 Authorization header를 받으므로 키 유무 때문에 두 MCP 경로가 필요한 것은 아니다([공식 MCP README](https://github.com/exa-labs/exa-mcp-server)). 키를 URL query에 넣지는 않는다.
+
+### Non-blocker
+
+- **시간 초과 → answer는 읽기 루프 안에서만 처리한다.** 현재 `_before_deadline`의 `TimeoutError`는 바깥에서 `GENERATION_FAILED`가 되고(`orchestrator.py:697-710`), 정상 최종 답변 생성은 그 뒤의 별도 경로다(`633-650`). 제한에 도달하면 완료된 관측만 남겨 도구 선택을 끝내고, '확인하지 못한 부분' 지침과 함께 답변을 생성한다. 개별 Jev/provider 장애나 주문 `confirm`을 시간 초과의 부분 답변으로 바꾸지 않는다. 호출 상한도 읽기 도구에만 적용한다. 이 규칙이면 한 라우팅 시간 제한과 한 읽기 호출 수 상한으로 충분하다.
+- **Jina keyless 사용량을 A안 성능과 구분한다.** 공식 Reader의 키 없는 한도는 현재 20 RPM이다([공식 Reader 문서](https://jina.ai/reader/)). 5개 URL 동시 읽기를 여러 번 하면 429가 날 수 있으므로, 테스트 기록에 공급자 한도 실패를 Jev의 '너무 일찍 멈춤'과 별도로 적으면 된다. 자동 fallback·큐는 이번에 필요 없다.
+- **PIA 연동 때 NAVER의 기동 의존성도 끊어야 한다.** PIA `app/main.py`는 현재 NAVER Secret을 무조건 로드하고 `NaverNewsSearch`를 만든다. 등록만 빼면 사용하지 않는 Secret이 Bot 기동의 필수 조건으로 남는다. NAVER 코드·키의 삭제는 미뤄도 되지만, PIA 계획에는 기동 시 로드·생성·종료 경로 정리를 명시한다.
+- 출처 번호 계약과 긴 페이지 저장을 측정 뒤로 미루는 결정은 적절하다. 이번 시나리오에서는 수치의 기준일·실제 URL 인용 여부를 먼저 확인하고, 실패 시 검색/추출 품질·Jev 판단·공급자 한도를 분리해 기록하면 B 전환 판단이 선명해진다. 과한 provider registry, 검색 캐시, reflection 모델은 추가하지 않는다.
