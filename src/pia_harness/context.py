@@ -214,7 +214,7 @@ def _parts(
                 PromptTrust.UNTRUSTED_DATA,
             )
         )
-    if conversation.turns:
+    if conversation.summary is not None or conversation.turns:
         parts.append(_note(EARLIER_TURNS_NOTE))
     parts.append(
         PromptContextPart(

@@ -178,6 +178,24 @@ class PromptContextAssemblerTest(unittest.TestCase):
         self.assertFalse(hasattr(result, "context_limit"))
         self.assertFalse(hasattr(result, "reserved_response_tokens"))
 
+    def test_a_summary_alone_still_closes_earlier_turns(self) -> None:
+        # Turns past their retention are gone while the Summary stays.
+        result = self.assemble(
+            lambda parts: 1,
+            conversation=ConversationContext(summary=self.summary, turns=()),
+        )
+        self.assertEqual(
+            (
+                PromptContextKind.SYSTEM,
+                PromptContextKind.MEMORY,
+                PromptContextKind.SUMMARY,
+                PromptContextKind.HARNESS_NOTE,
+                PromptContextKind.CURRENT_USER,
+            ),
+            tuple(part.kind for part in result.parts),
+        )
+        self.assertEqual(EARLIER_TURNS_NOTE, result.parts[-2].content)
+
     def test_optional_empty_context_is_omitted(self) -> None:
         empty_memory = MemoryDocument(
             self.user_key,

@@ -251,3 +251,11 @@ Codex 보완 검토를 받아 사용자와 다시 정했다. A는 참고 블록 
 - **Compaction 정책의 단위를 정확히 표기하라.** `trigger_tokens=256_000`은 동일 모델의 `usage.total_tokens`가 있으면 그 **실제 사용량**을 우선한다(`compaction.py` 55–74행). 반면 지난 기록의 “최대 입력 약 34만”과 이번 보고의 “약 24만”은 UTF-8 바이트 기반 추정치라 서로 비교는 가능해도 256K 실토큰 도달 여부를 증명하지 않는다. `tail_tokens=32_000`도 현재 보수적 바이트 추정으로 Turns를 고른다. 정책 자체는 단순하고 PIA의 실제 `context_limit=1,050,000`과 양립한다. 이번 재측정에 Compaction 실측이 없었다는 점은 병합 차단보다 **0.6.0 릴리스/PIA 연동 전 별도 수용 항목**으로 둔다. 실제 사용량과 압축 발생·실패를 수치로 확인하라.
 - **품질 측정의 증거 범위를 분명히 하라.** 보고된 13·19번 정상화와 429 0건은 긍정적이지만 경계선·저장본 축소·동시성·90초가 함께 바뀌었으므로 어느 하나를 단독 원인으로 확정할 수 없다. 현재 저장소의 `tests/manual/records/2026-09-29_turn-tools.md`는 이전 1,050,000 예산 측정만 담고 있다. 재측정의 안전한 요약(시나리오 판정·실제 사용량·압축 횟수)을 기록하고, 재발할 때만 조건을 나눠 측정하면 된다. 더 많은 라우팅 규칙은 지금 필요 없다.
 - **작은 지침 불일치:** `openrouter.py`의 `AGENT_INSTRUCTION`에는 “later Turns keep only the answer”가 남아 있으나 이제 완료 Turn에는 도구 기록도 저장한다. 다음 한 줄 정리 때 맞춰 두면 된다. 동작 차단은 아니다.
+
+## Codex 최종 검토 반영 (Claude)
+
+- 경계선: Summary만 남은 경우(Turn 보존기간 만료)에도 넣는다(`conversation.summary is not None or conversation.turns`). 위 "Summary만 있고 Turn이 없는 경우는 없다"는 틀렸다. 테스트 추가.
+- `AGENT_INSTRUCTION`의 "later Turns keep only the answer" 문장을 "so the user can check it"으로 바꿨다.
+- 출처 목록 중복은 이 브랜치에서 빼고 다음 브랜치에서 다룬다(사용자 결정). 번호만 남은 줄을 지우는 규칙은 실제 6건 중 4건만 잡았고(언론사 이름 + 번호 모양 2건), 원인은 과거 답변의 Harness 목록을 흉내 내는 것이라 근본 해결(Context의 과거 답변을 모델이 쓴 모양으로)과 함께 정한다.
+- 재측정 기록: `tests/manual/records/2026-09-30_turn-tools-remeasure.md`. Compaction 실측은 릴리스·PIA 연동 전 수용 항목으로 남긴다.
+- 테스트 162개 통과, ruff 결과는 기존과 같다.
