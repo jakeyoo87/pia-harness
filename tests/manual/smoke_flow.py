@@ -29,7 +29,6 @@ from pia_harness import (
     BrokerOrderTool,
     ConversationOrchestrator,
     ExaWebSearch,
-    JevDecisionAdapter,
     JinaPageExtractor,
     ModelTokenBudget,
     OpenRouterModelAdapter,
@@ -37,7 +36,7 @@ from pia_harness import (
 )
 from pia_harness.compaction import TokenCompactor
 from pia_harness.context import PromptContextAssembler
-from pia_harness.memory import AutomaticMemoryReviewer
+from pia_harness.memory import MemoryReviewer
 from pia_harness.testing import InMemoryConversationStore
 
 SCENARIOS = Path(__file__).with_name("scenarios")
@@ -265,8 +264,6 @@ async def run(
         timeout_seconds=60,
         max_attempts=2,
     )
-    # Jev only decides whether the automatic Memory Review rewrites Memory.
-    jev = JevDecisionAdapter(api_key=key, timeout_seconds=20)
     search = ExaWebSearch()
     state, logged_search = _instrument(model, search)
     extractor = JinaPageExtractor(model.read_json)
@@ -296,11 +293,8 @@ async def run(
     orchestrator = ConversationOrchestrator(
         store=store,
         assembler=PromptContextAssembler(model.count_input_tokens),
-        memory_reviewer=AutomaticMemoryReviewer(
-            store,
-            model.review_memory,
-            decide_change=jev.decide_memory_change,
-            instruction=MEMORY_INSTRUCTION,
+        memory_reviewer=MemoryReviewer(
+            store, model.review_memory, instruction=MEMORY_INSTRUCTION
         ),
         compactor=TokenCompactor(store, model.summarize),
         generate_reply=model.generate_reply,
@@ -357,7 +351,6 @@ async def run(
     finally:
         await search.aclose()
         await extractor.aclose()
-        await jev.aclose()
         await model.aclose()
         if broker_client is not None:
             await broker_client.aclose()

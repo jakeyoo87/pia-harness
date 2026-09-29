@@ -32,7 +32,6 @@ from pia_harness import (
     ReadToolResult,
     ToolCall,
     ToolLink,
-    new_turn_id,
 )
 from pia_harness.orchestrator import RESEARCH_LIMIT_NOTICE
 
@@ -137,38 +136,12 @@ class FakeMemoryReviewer:
         self.explicit_inputs = []
         self.calls = []
         self.fail = False
-        self.force_changes = ()
         self.abandon_on: str | None = None
 
     def _check(self, operation: str) -> None:
         if self.abandon_on == operation:
             self.abandon_on = None
             raise ConversationAbandoned(operation)
-
-    def review_if_due(self, **values):
-        self.calls.append("revisit")
-        self._check("revisit")
-        if self.fail:
-            raise RuntimeError("memory failed")
-        return None
-
-    def force_review(self, **values):
-        self.calls.append("force")
-        self._check("force")
-        if self.fail:
-            raise RuntimeError("memory failed")
-        if self.force_changes:
-            return MemoryReviewResult(
-                MemoryReviewStatus.REPLACED,
-                MemoryDocument(
-                    "user",
-                    "memory",
-                    new_turn_id(values["now"] - timedelta(seconds=1)),
-                    values["now"],
-                ),
-                self.force_changes,
-            )
-        return None
 
     def review_explicit_input(self, **values):
         self.calls.append("explicit")
@@ -534,33 +507,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["explicit"], self.memory.calls)
         self.assertTrue(self.memory.explicit_inputs[0][1])
 
-    async def test_failure_notice_survives_automatic_change_summaries(self) -> None:
-        self.memory.fail = False
-        self.compactor.due = True
-        self.memory.force_changes = ("첫째", "둘째", "셋째")
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        class FailingExplicit(FakeMemoryReviewer):
-            def review_explicit_input(self, **values):
-                self.calls.append("explicit")
-                raise RuntimeError("memory failed")
-
-        self.memory = FailingExplicit()
-        self.memory.force_changes = ("첫째", "둘째", "셋째")
-        result = await self.orchestrator(
-            generate,
-            failure_notice="기억에 반영하지 못했어요.",
-            memory_action=MemoryAction.UPDATE,
-        ).submit(user_key="user", message="remember", accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertTrue(result.memory_failed)
-        # The explicit failure must not be pushed out of the three-item budget by
-        # summaries an automatic pre-Compaction Review added afterwards.
-        self.assertIn("기억에 반영하지 못했어요.", result.final_text)
-
     async def test_explicit_memory_failure_appends_caller_notice(self) -> None:
         self.memory.fail = True
 
@@ -772,26 +718,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.ABANDONED, result.status)
         self.assertEqual([], self.delivered)
 
-    async def test_due_and_overflow_abandonment_stop_before_delivery(self) -> None:
+    async def test_compaction_abandonment_stops_before_delivery(self) -> None:
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
-        self.memory.abandon_on = "revisit"
-        due = await self.orchestrator(generate).submit(
-            user_key="due", message="question", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.ABANDONED, due.status)
-
-        self.memory = FakeMemoryReviewer()
-        self.memory.abandon_on = "force"
-        forced = await self.orchestrator(generate, counter=lambda parts: 901).submit(
-            user_key="overflow-review", message="question", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.ABANDONED, forced.status)
-        self.assertFalse(any(call[0] == "compact" for call in self.compactor.calls))
-
-        self.memory = FakeMemoryReviewer()
-        self.compactor = FakeCompactor()
         self.compactor.abandon = True
         compacted = await self.orchestrator(generate, counter=lambda parts: 901).submit(
             user_key="overflow-compact", message="question", accepted_at=self.now
@@ -1142,7 +1072,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         ).submit(user_key="user", message="remember", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(["revisit"], self.memory.calls)
+        self.assertEqual([], self.memory.calls)
         self.assertIn('"update" or "forget"', _results(contexts[1])[0])
 
     # --- Reading ----------------------------------------------------------------

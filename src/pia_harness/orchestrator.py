@@ -24,7 +24,7 @@ from .context import (
 from .memory import (
     MAX_CHANGE_SUMMARY_CHARS,
     MAX_CHANGE_SUMMARY_ITEMS,
-    AutomaticMemoryReviewer,
+    MemoryReviewer,
     CurrentMemoryInput,
     MemoryReviewResult,
     MemoryReviewStatus,
@@ -316,7 +316,7 @@ class ConversationOrchestrator:
         *,
         store: ConversationStore,
         assembler: PromptContextAssembler,
-        memory_reviewer: AutomaticMemoryReviewer,
+        memory_reviewer: MemoryReviewer,
         compactor: TokenCompactor,
         # One model step over the context and the tools it offers.
         generate_reply: Callable[[AssembledPromptContext], Awaitable[ModelReply]],
@@ -517,7 +517,6 @@ class ConversationOrchestrator:
                 (
                     assembled,
                     overflow_result,
-                    review_failed,
                     compact_failed,
                 ) = await self._assemble_with_overflow(
                     user_key,
@@ -531,7 +530,6 @@ class ConversationOrchestrator:
                     closing_note=closing_note,
                     compact=not compacted,
                 )
-                memory_failed = memory_failed or review_failed
                 compaction_failed = compaction_failed or compact_failed
                 if overflow_result is not None:
                     if not answer_only:
@@ -906,12 +904,8 @@ class ConversationOrchestrator:
         note: str | None = None,
         closing_note: str | None = None,
         compact: bool = True,
-    ) -> tuple[
-        AssembledPromptContext | None,
-        ConversationResult | None,
-        bool,
-        bool,
-    ]:
+    ) -> tuple[AssembledPromptContext | None, ConversationResult | None, bool]:
+        """(context, overflow result, whether Compaction failed)."""
         combined = _received_line(batch) + _combined_message(batch)
         memory, conversation = await asyncio.gather(
             asyncio.to_thread(self._store.get_memory, user_key),
@@ -945,35 +939,18 @@ class ConversationOrchestrator:
             estimated_context_tokens=required_tokens,
         )
         if assembled is not None and not should_compact:
-            return assembled, None, False, False
+            return assembled, None, False
         if not compact:
             # Compaction already ran for this request; running it again would
             # only repeat its model calls.
             if assembled is not None:
-                return assembled, None, False, False
-            return (
-                None,
-                ConversationResult(OrchestratorStatus.CONTEXT_OVERFLOW),
-                False,
-                False,
-            )
+                return assembled, None, False
+            return None, ConversationResult(OrchestratorStatus.CONTEXT_OVERFLOW), False
 
-        memory_failed = False
         compaction_failed = False
         async with state.commit_lock:
             if not await self._is_current(state, generation_id):
                 raise asyncio.CancelledError from None
-            try:
-                await _durable_call(
-                    self._memory_reviewer.force_review,
-                    user_key=user_key,
-                    session_id=session.session_id,
-                    now=batch[-1].value.accepted_at,
-                )
-            except ConversationAbandoned:
-                raise
-            except Exception:
-                memory_failed = True
             try:
                 await _durable_call(
                     self._compactor.compact,
@@ -1016,13 +993,11 @@ class ConversationOrchestrator:
                 None,
                 ConversationResult(
                     OrchestratorStatus.CONTEXT_OVERFLOW,
-                    memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
                 ),
-                memory_failed,
                 compaction_failed,
             )
-        return assembled, None, memory_failed, compaction_failed
+        return assembled, None, compaction_failed
 
     def _assemble(
         self,
@@ -1129,7 +1104,7 @@ class ConversationOrchestrator:
     ) -> GeneratedAnswer:
         fixed = GeneratedAnswer(executed_text, "fixed-text", 0)
         try:
-            assembled, _overflow, _, _ = await self._assemble_with_overflow(
+            assembled, _overflow, _ = await self._assemble_with_overflow(
                 user_key,
                 state,
                 generation_id,
@@ -1210,20 +1185,6 @@ class ConversationOrchestrator:
                 except Exception:
                     memory_failed = True
                     explicit_memory_failed = True
-            else:
-                try:
-                    review = await _durable_call(
-                        self._memory_reviewer.review_if_due,
-                        user_key=user_key,
-                        session_id=session.session_id,
-                        request_at=now,
-                    )
-                    _add_changes(changes, review)
-                except ConversationAbandoned:
-                    raise
-                except Exception:
-                    memory_failed = True
-
             if explicit_memory_failed:
                 _add_notice(changes, self._explicit_memory_failure_notice)
             if confirmation_expired:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from .persistence import (
@@ -47,27 +47,6 @@ class MemoryReviewValidationError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class MemoryReviewPolicy:
-    revisit_gap: timedelta = timedelta(hours=12)
-
-    def __post_init__(self) -> None:
-        if self.revisit_gap <= timedelta(0):
-            raise ValueError("revisit_gap must be positive")
-
-    def should_review(
-        self,
-        *,
-        turns: Sequence[CompletedTurn],
-        request_at: datetime,
-    ) -> bool:
-        request_at = as_utc(request_at)
-        if not turns:
-            return False
-        latest = max(turn.created_at for turn in turns)
-        return request_at - latest >= self.revisit_gap
-
-
-@dataclass(frozen=True, slots=True)
 class CurrentMemoryInput:
     user_key: str
     session_id: str
@@ -100,87 +79,25 @@ class MemoryReviewResult:
     change_summary: tuple[str, ...] = ()
 
 
-class AutomaticMemoryReviewer:
+class MemoryReviewer:
+    """Rewrites Memory when the loop model called the memory tool.
+
+    The model decides what is worth remembering; there is no timed or
+    pre-Compaction review.
+    """
+
     def __init__(
         self,
         store: ConversationStore,
         review: Callable[[MemoryReviewRequest], MemoryReviewOutput],
         *,
-        policy: MemoryReviewPolicy | None = None,
-        decide_change: Callable[[MemoryReviewRequest], bool] | None = None,
         instruction: str,
     ) -> None:
-        if decide_change is not None and not callable(decide_change):
-            raise ValueError("decide_change must be callable")
         if not isinstance(instruction, str) or not instruction.strip():
             raise ValueError("Memory instruction is required")
         self._store = store
         self._review = review
-        self._policy = policy or MemoryReviewPolicy()
-        self._decide_change = decide_change
         self._instruction = instruction
-
-    def has_unreviewed(
-        self,
-        *,
-        user_key: str,
-        session_id: str,
-        now: datetime | None = None,
-    ) -> bool:
-        memory = validate_loaded_memory(
-            self._store.get_memory(user_key), user_key=user_key
-        )
-        boundary = None if memory is None else memory.last_reviewed_turn_id
-        checked_at = as_utc(now or datetime.now(UTC))
-        return bool(
-            self._load_turns(user_key, session_id, boundary=boundary, now=checked_at)
-        )
-
-    def review_if_due(
-        self,
-        *,
-        user_key: str,
-        session_id: str,
-        request_at: datetime | None = None,
-    ) -> MemoryReviewResult | None:
-        request_at = as_utc(request_at or datetime.now(UTC))
-        memory, turns = self._load(user_key, session_id, request_at)
-        if not self._policy.should_review(turns=turns, request_at=request_at):
-            return None
-        return self._apply(
-            user_key=user_key,
-            session_id=session_id,
-            memory=memory,
-            turns=turns,
-            allow_clear=False,
-            now=request_at,
-            boundary_turn_id=turns[-1].turn_id,
-            current_input=None,
-            expected_persisted_turn_ids=None,
-        )
-
-    def force_review(
-        self,
-        *,
-        user_key: str,
-        session_id: str,
-        now: datetime | None = None,
-    ) -> MemoryReviewResult | None:
-        now = as_utc(now or datetime.now(UTC))
-        memory, turns = self._load(user_key, session_id, now)
-        if not turns:
-            return None
-        return self._apply(
-            user_key=user_key,
-            session_id=session_id,
-            memory=memory,
-            turns=turns,
-            allow_clear=False,
-            now=now,
-            boundary_turn_id=turns[-1].turn_id,
-            current_input=None,
-            expected_persisted_turn_ids=None,
-        )
 
     def review_explicit_input(
         self,
@@ -284,13 +201,7 @@ class AutomaticMemoryReviewer:
             allow_clear=allow_clear,
             current_input=current_input,
         )
-        output = (
-            MemoryReviewOutput(MemoryReviewAction.UNCHANGED)
-            if current_input is None
-            and self._decide_change is not None
-            and not self._decide_change(request)
-            else self._review(request)
-        )
+        output = self._review(request)
         action, memory_text, change_summary = _validated_output(
             output,
             current_memory_text=("" if memory is None else memory.memory_text),
