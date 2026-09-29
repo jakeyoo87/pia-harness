@@ -37,7 +37,7 @@ from .persistence import (
 from .session import ActiveSession, as_utc, new_turn_id
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
-READ_ROUTING_TIMEOUT_SECONDS = 60.0
+RESEARCH_TIMEOUT_SECONDS = 60.0
 PROGRESS_TIMEOUT_SECONDS = 5.0
 # Research stops at whichever comes first: this many read-tool uses, the
 # research deadline, or a request too large to send with tools. All of them
@@ -330,7 +330,7 @@ class ConversationOrchestrator:
         | None = None,
         read_tools: tuple[ReadToolDefinition, ...] = (),
         execution_tools: tuple[ExecutionToolDefinition, ...] = (),
-        read_routing_timeout_seconds: float = READ_ROUTING_TIMEOUT_SECONDS,
+        research_timeout_seconds: float = RESEARCH_TIMEOUT_SECONDS,
         confirmation_ttl_seconds: float = CONFIRMATION_TTL_SECONDS,
     ) -> None:
         if not callable(generate_reply):
@@ -363,12 +363,12 @@ class ConversationOrchestrator:
         ):
             raise ValueError("confirmation TTL must be positive and finite")
         if (
-            isinstance(read_routing_timeout_seconds, bool)
-            or not isinstance(read_routing_timeout_seconds, (int, float))
-            or not math.isfinite(read_routing_timeout_seconds)
-            or read_routing_timeout_seconds <= 0
+            isinstance(research_timeout_seconds, bool)
+            or not isinstance(research_timeout_seconds, (int, float))
+            or not math.isfinite(research_timeout_seconds)
+            or research_timeout_seconds <= 0
         ):
-            raise ValueError("read routing timeout must be positive and finite")
+            raise ValueError("research timeout must be positive and finite")
         if not isinstance(system_prompt, str) or not system_prompt.strip():
             raise ValueError("system_prompt is required")
         if not isinstance(model_id, str) or not model_id:
@@ -394,7 +394,7 @@ class ConversationOrchestrator:
         # restart drops them and the user asks again.
         self._pending_actions: dict[str, tuple[_PendingAction, ...]] = {}
         self._action_ids = itertools.count(1)
-        self._read_routing_timeout_seconds = float(read_routing_timeout_seconds)
+        self._research_timeout_seconds = float(research_timeout_seconds)
         self._deliver = deliver
         self._system_prompt = system_prompt
         self._token_budget = token_budget
@@ -501,7 +501,7 @@ class ConversationOrchestrator:
             closing_note: str | None = None
             compacted = False
             loop = asyncio.get_running_loop()
-            deadline = loop.time() + self._read_routing_timeout_seconds
+            deadline = loop.time() + self._research_timeout_seconds
 
             async def report_step(step: ConversationStep) -> None:
                 nonlocal progress_started

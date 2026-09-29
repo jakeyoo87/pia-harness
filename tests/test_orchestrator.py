@@ -201,7 +201,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         progress=None,
         read_tools=(),
         execution_tools=(),
-        read_routing_timeout_seconds=120.0,
+        research_timeout_seconds=120.0,
         memory_action=MemoryAction.NONE,
     ):
         """generate returns a GeneratedAnswer (the model answers at once) or a
@@ -234,7 +234,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             progress=progress,
             read_tools=read_tools,
             execution_tools=execution_tools,
-            read_routing_timeout_seconds=read_routing_timeout_seconds,
+            research_timeout_seconds=research_timeout_seconds,
         )
 
     @staticmethod
@@ -1368,7 +1368,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 [("search", {"query": "q"})], "partial answer", contexts=contexts
             ),
             read_tools=(self.search(execute=execute),),
-            read_routing_timeout_seconds=0.05,
+            research_timeout_seconds=0.05,
         ).submit(user_key="user", message="question", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
