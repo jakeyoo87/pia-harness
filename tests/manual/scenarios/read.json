@@ -29,5 +29,7 @@
   {"id": "18", "message": "https://n.news.naver.com/mnews/article/001/0016330402?sid=101 https://n.news.naver.com/mnews/article/018/0006375530?sid=101 이 두 기사 비교해줘", "expect": "web_extract"},
   {"id": "19", "message": "혹시 기판 관련 ETF 뭐가 있는지 조사해볼 수 있어 ?", "expect": "web_search"},
   {"id": "20", "message": "삼성전기 2026년 2분기 실적 정리해줘. 영업이익이랑 전년 대비 증감 위주로", "expect": "web_search"},
-  {"id": "21", "message": "KODEX 반도체 ETF 구성종목 상위 5개랑 비중 알려줘", "expect": "web_search"}
+  {"id": "21", "message": "KODEX 반도체 ETF 구성종목 상위 5개랑 비중 알려줘", "expect": "web_search"},
+  {"id": "22", "message": "나 은퇴자금으로 장기투자하는 중이야", "expect": "answer", "expect_memory": "UPDATE"},
+  {"id": "23", "message": "HBM 관련 뉴스 찾아주고, 나 반도체 관심 많다고 기억해줘", "expect": "web_search", "expect_memory": "UPDATE"}
 ]
