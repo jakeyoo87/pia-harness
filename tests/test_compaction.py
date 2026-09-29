@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime, timedelta
-from math import floor
 
 from pia_harness import (
     ToolObservation,
@@ -24,10 +23,7 @@ class TokenCompactionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.store = InMemoryConversationStore()
         self.now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
-        self.policy = CompactionPolicy(
-            trigger_ratio=0.90,
-            protected_tail_ratio=0.20,
-        )
+        self.policy = CompactionPolicy(trigger_tokens=81, tail_tokens=20)
         self.token_budget = ModelTokenBudget(100, 10)
 
     def append_turns(
@@ -70,39 +66,37 @@ class TokenCompactionTest(unittest.TestCase):
             now=self.now + timedelta(minutes=1),
         )
 
-    def test_policy_uses_usable_budget_and_matching_provider_usage(self) -> None:
+    def test_policy_triggers_at_its_size_on_matching_provider_usage(self) -> None:
         policy = CompactionPolicy()
-        token_budget = ModelTokenBudget(262144)
-        self.assertEqual(206438, policy.trigger_tokens(token_budget))
-        self.assertTrue(
-            policy.should_compact(
-                token_budget=token_budget,
-                model_id="nemotron",
-                estimated_context_tokens=1,
-                usage=ContextUsage("nemotron", 206438),
-            )
-        )
-        self.assertFalse(
-            policy.should_compact(
-                token_budget=token_budget,
-                model_id="nemotron",
-                estimated_context_tokens=1,
-                usage=ContextUsage("another-model", 999999),
-            )
-        )
+        self.assertEqual((256_000, 32_000), (policy.trigger_tokens, policy.tail_tokens))
+        # The budget is the model's own window, far above the trigger.
+        token_budget = ModelTokenBudget(1_050_000)
 
-    def test_budget_derived_limits_keep_their_own_bases(self) -> None:
-        policy = CompactionPolicy()
-        token_budget = ModelTokenBudget(262_144)
-        # The tail is a share of the whole window; the trigger is a share of the
-        # input budget. Reading both from the same base would change behavior
-        # without changing any ratio.
-        self.assertEqual(32_768, policy.tail_budget(token_budget))
-        self.assertEqual(206_438, policy.trigger_tokens(token_budget))
-        self.assertNotEqual(
-            policy.tail_budget(token_budget),
-            floor(token_budget.input_tokens * policy.protected_tail_ratio),
-        )
+        def compacts(usage):
+            return policy.should_compact(
+                token_budget=token_budget,
+                model_id="luna",
+                estimated_context_tokens=1,
+                usage=usage,
+            )
+
+        self.assertTrue(compacts(ContextUsage("luna", 256_000)))
+        self.assertFalse(compacts(ContextUsage("luna", 255_999)))
+        self.assertFalse(compacts(ContextUsage("another-model", 999_999)))
+
+    def test_policy_sizes_are_checked(self) -> None:
+        for values in ({"trigger_tokens": 0}, {"tail_tokens": True}):
+            with self.assertRaises(ValueError):
+                CompactionPolicy(**values)
+        with self.assertRaisesRegex(ValueError, "below trigger_tokens"):
+            CompactionPolicy(trigger_tokens=100, tail_tokens=100)
+        # A trigger the model's input budget never reaches is a setup error.
+        with self.assertRaisesRegex(ValueError, "below the input budget"):
+            CompactionPolicy().should_compact(
+                token_budget=ModelTokenBudget(200_000),
+                model_id="luna",
+                estimated_context_tokens=1,
+            )
 
     def test_reported_summary_over_the_response_reserve_is_rejected(self) -> None:
         user_key = "compact-output-limit"

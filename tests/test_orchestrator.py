@@ -34,6 +34,7 @@ from pia_harness import (
     ToolLink,
     TurnTooLargeError,
 )
+from pia_harness.context import EARLIER_TURNS_NOTE
 from pia_harness.orchestrator import RESEARCH_LIMIT_NOTICE
 
 GOAL = "기사 핵심 내용"
@@ -64,7 +65,14 @@ def _results(context):
 
 
 def _notes(context):
-    return [part.content for part in context.parts if part.kind.value == "HARNESS_NOTE"]
+    """This Turn's Harness notes, not the line that closes earlier turns."""
+    kinds = [part.kind.value for part in context.parts]
+    start = kinds.index("CURRENT_USER")
+    return [
+        part.content
+        for part in context.parts[start:]
+        if part.kind.value == "HARNESS_NOTE"
+    ]
 
 
 class FakeStore:
@@ -1862,13 +1870,84 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 "TOOL_REQUEST",
                 "TOOL_RESULT",
                 "ASSISTANT_TURN",
+                "HARNESS_NOTE",
                 "CURRENT_USER",
             ],
             [part.kind.value for part in contexts[2].parts],
         )
+        # A line between them: the earlier Turn is done. The first Turn has none.
+        self.assertEqual(EARLIER_TURNS_NOTE, contexts[2].parts[-2].content)
+        self.assertNotIn(
+            "HARNESS_NOTE", [part.kind.value for part in contexts[0].parts]
+        )
         self.assertEqual(
             ["web_extract"], [i.name for i in self.store.turns[1].tool_observations]
         )
+
+    async def test_kept_search_results_drop_short_descriptions(self) -> None:
+        contexts = []
+        link = "https://etf.example/091160"
+        found = ReadToolResult(
+            "News", (ToolLink("KODEX 반도체", link, "2026-09-29", "편입 비중 요약"),)
+        )
+        orchestrator = self.orchestrator(
+            self.script(
+                [("search", {"query": "KODEX"})],
+                "찾았어요.",
+                "다음 답변",
+                contexts=contexts,
+            ),
+            read_tools=(self.search([found]),),
+        )
+        await orchestrator.submit(
+            user_key="user", message="KODEX", accepted_at=self.now
+        )
+        await orchestrator.submit(
+            user_key="user",
+            message="다음",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+
+        # This Turn's model sees the description; the kept copy does not.
+        self.assertIn("편입 비중 요약", _results(contexts[1])[0])
+        kept = self.store.turns[0].tool_observations[0].result_text
+        self.assertNotIn("편입 비중 요약", kept)
+        self.assertIn(f"[2026-09-29] KODEX 반도체 <{link}>", kept)
+        self.assertIn("titles only", kept)
+        replayed = [
+            part.content
+            for part in contexts[2].parts
+            if part.kind.value == "TOOL_RESULT"
+        ]
+        self.assertEqual([kept], replayed)
+
+    async def test_reads_run_at_most_three_at_a_time(self) -> None:
+        running = 0
+        most = 0
+
+        async def execute(user_key, call, inputs):
+            nonlocal running, most
+            running += 1
+            most = max(most, running)
+            await asyncio.sleep(0.01)
+            running -= 1
+            return ReadToolResult(json.loads(call.arguments_json)["query"])
+
+        contexts = []
+        queries = [f"q{number}" for number in range(5)]
+        result = await self.orchestrator(
+            self.script(
+                [("search", {"query": query}) for query in queries],
+                "answer",
+                contexts=contexts,
+            ),
+            read_tools=(self.search(execute=execute),),
+        ).submit(user_key="user", message="news", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(3, most)
+        # No call is dropped, and results keep the calls' order.
+        self.assertEqual(queries, _results(contexts[1]))
 
     async def test_call_ids_may_repeat_across_turns(self) -> None:
         contexts = []

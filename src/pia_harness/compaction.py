@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from math import floor
 
 from .budget import ModelTokenBudget
 from .persistence import ConversationStore, validate_loaded_context
@@ -38,20 +37,19 @@ class SummaryOutput:
 
 @dataclass(frozen=True, slots=True)
 class CompactionPolicy:
-    trigger_ratio: float = 0.80
-    protected_tail_ratio: float = 0.125
+    # Sizes, not shares of the model window: the window can be far larger than
+    # what is worth resending every Turn. The tail is the recent Turns kept
+    # word for word after Compaction.
+    trigger_tokens: int = 256_000
+    tail_tokens: int = 32_000
 
     def __post_init__(self) -> None:
-        if not 0 < self.trigger_ratio < 1:
-            raise ValueError("trigger_ratio must be between zero and one")
-        if not 0 < self.protected_tail_ratio < 1:
-            raise ValueError("protected_tail_ratio must be between zero and one")
-
-    def trigger_tokens(self, token_budget: ModelTokenBudget) -> int:
-        return floor(token_budget.input_tokens * self.trigger_ratio)
-
-    def tail_budget(self, token_budget: ModelTokenBudget) -> int:
-        return floor(token_budget.context_limit * self.protected_tail_ratio)
+        for name in ("trigger_tokens", "tail_tokens"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.tail_tokens >= self.trigger_tokens:
+            raise ValueError("tail_tokens must be below trigger_tokens")
 
     def should_compact(
         self,
@@ -61,6 +59,8 @@ class CompactionPolicy:
         estimated_context_tokens: int,
         usage: ContextUsage | None = None,
     ) -> bool:
+        if self.trigger_tokens >= token_budget.input_tokens:
+            raise ValueError("trigger_tokens must be below the input budget")
         if estimated_context_tokens < 0:
             raise ValueError("estimated_context_tokens cannot be negative")
         observed = estimated_context_tokens
@@ -68,7 +68,7 @@ class CompactionPolicy:
             if usage.total_tokens < 0:
                 raise ValueError("total_tokens cannot be negative")
             observed = usage.total_tokens
-        return observed >= self.trigger_tokens(token_budget)
+        return observed >= self.trigger_tokens
 
 
 class SummaryValidationError(RuntimeError):
@@ -135,7 +135,7 @@ class TokenCompactor:
         )
         covered, _tail = _split_turns(
             context.turns,
-            self._policy.tail_budget(token_budget),
+            self._policy.tail_tokens,
             self._estimate_tokens,
         )
         if not covered:

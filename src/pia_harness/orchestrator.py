@@ -38,12 +38,15 @@ from .persistence import (
 from .session import ActiveSession, as_utc, new_turn_id
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
-RESEARCH_TIMEOUT_SECONDS = 60.0
+RESEARCH_TIMEOUT_SECONDS = 90.0
 PROGRESS_TIMEOUT_SECONDS = 5.0
 # Research stops at whichever comes first: this many read-tool uses, the
 # research deadline, or a request too large to send with tools. All of them
 # answer from what was gathered.
 MAX_READ_TOOL_CALLS = 20
+# Reads of one response run at most this many at a time, so a burst of
+# searches does not trip the search service's rate limit. The rest wait.
+MAX_CONCURRENT_READS = 3
 RESEARCH_LIMIT_NOTICE = (
     "Research stopped at its limit (time, number of reads, or input size). Answer "
     "now from the results above, without tools, and say plainly which parts could "
@@ -290,6 +293,8 @@ class _Round:
     """What one model response's tool calls came to."""
 
     results: list[str | None]
+    # Read results as kept with the Turn, where they differ from `results`.
+    kept_results: dict[int, str] = field(default_factory=dict)
     read_calls: int = 0
     memory_action: MemoryAction | None = None
     prepared: list[_PendingAction] = field(default_factory=list)
@@ -491,6 +496,8 @@ class ConversationOrchestrator:
             tools = self._tools(offered)
             note = _waiting_note(offered)
             observations: tuple[ToolObservation, ...] = ()
+            # The same calls as kept with the Turn (see _tool_result_text).
+            kept_observations: tuple[ToolObservation, ...] = ()
             memory_action = MemoryAction.NONE
             # Search links already listed this Turn, so repeated searches show
             # only new ones. Their titles name the answer's sources.
@@ -616,13 +623,14 @@ class ConversationOrchestrator:
                             results=outcome.results,
                             round_index=round_index,
                             tool_observations=observations,
+                            kept_observations=kept_observations,
                             note=note,
                             memory_failed=memory_failed,
                             compaction_failed=compaction_failed,
                         ),
                     )
                     return
-                observations += tuple(
+                made = tuple(
                     ToolObservation(
                         call.name,
                         call.arguments_json,
@@ -633,6 +641,13 @@ class ConversationOrchestrator:
                     for call, result in zip(
                         reply.tool_calls, outcome.results, strict=True
                     )
+                )
+                observations += made
+                kept_observations += tuple(
+                    replace(observation, result_text=outcome.kept_results[index])
+                    if index in outcome.kept_results
+                    else observation
+                    for index, observation in enumerate(made)
                 )
                 read_calls += outcome.read_calls
                 if outcome.memory_action is not None:
@@ -663,7 +678,7 @@ class ConversationOrchestrator:
                     compaction_failed=compaction_failed,
                     prepared=tuple(prepared),
                     confirmation_expired=confirmation_expired,
-                    tool_observations=observations,
+                    tool_observations=kept_observations,
                 ),
             )
         except ConversationAbandoned:
@@ -839,14 +854,18 @@ class ConversationOrchestrator:
                 outcome.results[index] = f"Not run: there is no tool named {call.name}."
 
         inputs = tuple(item.value for item in batch)
+        slots = asyncio.Semaphore(MAX_CONCURRENT_READS)
+
+        async def execute(tool: ReadToolDefinition, call: ToolCall) -> ReadToolResult:
+            async with slots:
+                return await tool.execute(user_key, call, inputs)
 
         async def read(
             tool: ReadToolDefinition, call: ToolCall
         ) -> ReadToolResult | None:
+            # Waiting for a slot counts against the same deadline.
             try:
-                result = await _before_deadline(
-                    deadline, tool.execute(user_key, call, inputs)
-                )
+                result = await _before_deadline(deadline, execute(tool, call))
             except TimeoutError:
                 return None
             _validate_read_tool_result(result)
@@ -860,7 +879,10 @@ class ConversationOrchestrator:
                 outcome.results[index] = "Not finished: the research time ran out."
                 outcome.limit_hit = True
             else:
-                outcome.results[index] = _tool_result_text(result, listed_urls) + prefix
+                text, kept = _tool_result_text(result, listed_urls)
+                outcome.results[index] = text + prefix
+                if kept != text:
+                    outcome.kept_results[index] = kept + prefix
         outcome.read_calls = len(reads)
 
         request_at = batch[-1].value.accepted_at
@@ -1052,6 +1074,7 @@ class ConversationOrchestrator:
         results: list[str | None],
         round_index: int,
         tool_observations: tuple[ToolObservation, ...],
+        kept_observations: tuple[ToolObservation, ...],
         note: str | None,
         memory_failed: bool,
         compaction_failed: bool,
@@ -1068,21 +1091,19 @@ class ConversationOrchestrator:
         first_confirm = next(
             index for index, call in enumerate(calls) if call.name == CONFIRM_TOOL
         )
-        observations = (
-            *tool_observations,
-            *(
-                ToolObservation(
-                    call.name,
-                    call.arguments_json,
-                    executed_text
-                    if index == first_confirm
-                    else results[index] or "Not run.",
-                    call.call_id,
-                    round_index,
-                )
-                for index, call in enumerate(calls)
-            ),
+        made = tuple(
+            ToolObservation(
+                call.name,
+                call.arguments_json,
+                executed_text
+                if index == first_confirm
+                else results[index] or "Not run.",
+                call.call_id,
+                round_index,
+            )
+            for index, call in enumerate(calls)
         )
+        observations = (*tool_observations, *made)
         answer = await self._answer_after_execution(
             user_key,
             state,
@@ -1102,7 +1123,7 @@ class ConversationOrchestrator:
             memory_action=MemoryAction.NONE,
             memory_failed=memory_failed,
             compaction_failed=compaction_failed,
-            tool_observations=observations,
+            tool_observations=(*kept_observations, *made),
         )
 
     async def _answer_after_execution(
@@ -1590,10 +1611,19 @@ def _with_sources(
     )
 
 
-def _tool_result_text(result: ReadToolResult, listed_urls: dict[str, str]) -> str:
+def _tool_result_text(
+    result: ReadToolResult, listed_urls: dict[str, str]
+) -> tuple[str, str]:
+    """The result for this Turn, and the copy kept with the Turn.
+
+    The kept copy lists found links without their short descriptions: those
+    are most of a search's size, and a later Turn that needs more reads the
+    page.
+    """
     if not result.links:
-        return result.observation_text
+        return result.observation_text, result.observation_text
     lines = [result.observation_text]
+    kept = [result.observation_text]
     added = 0
     for link in result.links:
         if link.url in listed_urls:
@@ -1601,16 +1631,20 @@ def _tool_result_text(result: ReadToolResult, listed_urls: dict[str, str]) -> st
         listed_urls[link.url] = link.title
         added += 1
         line = f"[{link.published}] {link.title}" if link.published else link.title
+        kept.append(f"{line} <{link.url}>")
         if link.summary:
             line += f" — {link.summary}"
         lines.append(f"{line} <{link.url}>")
     if not added:
-        lines.append("No new candidates; every returned link was already listed.")
+        closing = "No new candidates; every returned link was already listed."
+        lines.append(closing)
+        kept.append(closing)
     else:
         lines.append(
             "Candidates are titles and short descriptions only; their bodies are unread."
         )
-    return "\n".join(lines)
+        kept.append("Candidates are titles only; their bodies are unread.")
+    return "\n".join(lines), "\n".join(kept)
 
 
 def _resolve_unfinished(

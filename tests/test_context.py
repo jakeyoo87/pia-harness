@@ -19,6 +19,7 @@ from pia_harness import (
     RollingSummary,
     new_turn_id,
 )
+from pia_harness.context import EARLIER_TURNS_NOTE
 
 
 class PromptContextAssemblerTest(unittest.TestCase):
@@ -144,6 +145,7 @@ class PromptContextAssemblerTest(unittest.TestCase):
                 PromptContextKind.ASSISTANT_TURN,
                 PromptContextKind.USER_TURN,
                 PromptContextKind.ASSISTANT_TURN,
+                PromptContextKind.HARNESS_NOTE,
                 PromptContextKind.CURRENT_USER,
             ),
             tuple(part.kind for part in result.parts),
@@ -157,13 +159,18 @@ class PromptContextAssemblerTest(unittest.TestCase):
                 "첫 답변",
                 "둘째 질문",
                 "둘째 답변",
+                EARLIER_TURNS_NOTE,
                 "현재 질문",
             ),
             tuple(part.content for part in result.parts),
         )
         self.assertEqual(PromptTrust.TRUSTED_INSTRUCTION, result.parts[0].trust)
+        self.assertEqual(PromptTrust.TRUSTED_INSTRUCTION, result.parts[-2].trust)
         self.assertTrue(
-            all(part.trust is PromptTrust.UNTRUSTED_DATA for part in result.parts[1:])
+            all(
+                part.trust is PromptTrust.UNTRUSTED_DATA
+                for part in (*result.parts[1:-2], result.parts[-1])
+            )
         )
         self.assertEqual((result.parts,), tuple(counted))
         self.assertEqual(123, result.estimated_input_tokens)

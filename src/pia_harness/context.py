@@ -18,9 +18,14 @@ class PromptContextKind(StrEnum):
     CURRENT_USER = "CURRENT_USER"
     TOOL_REQUEST = "TOOL_REQUEST"
     TOOL_RESULT = "TOOL_RESULT"
-    # Harness text inside the conversation: actions waiting for confirmation,
-    # or the note that research hit its limit.
+    # Harness text inside the conversation: where earlier turns end, actions
+    # waiting for confirmation, or the note that research hit its limit.
     HARNESS_NOTE = "HARNESS_NOTE"
+
+
+# Earlier turns replay as they happened, tool calls included; without a line
+# between them, research from an earlier question can read as this one's.
+EARLIER_TURNS_NOTE = "The messages above are earlier turns, each already answered."
 
 
 class PromptTrust(StrEnum):
@@ -209,6 +214,8 @@ def _parts(
                 PromptTrust.UNTRUSTED_DATA,
             )
         )
+    if conversation.turns:
+        parts.append(_note(EARLIER_TURNS_NOTE))
     parts.append(
         PromptContextPart(
             PromptContextKind.CURRENT_USER,
