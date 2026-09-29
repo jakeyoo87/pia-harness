@@ -88,6 +88,12 @@ class BrokerOrderToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Missing: quantity", missing.observation_text)
         invalid = await self.tool.prepare(MEMBER, call(quantity=0))
         self.assertIsNone(invalid.action)
+        # The model may send any JSON type; a wrong one is reported, not raised.
+        for wrong in ({"side": []}, {"order_type": ["LIMIT"]}):
+            with self.subTest(wrong=wrong):
+                wrong_type = await self.tool.prepare(MEMBER, call(**wrong))
+                self.assertIsNone(wrong_type.action)
+                self.assertIn("not valid", wrong_type.observation_text)
 
         self.broker.search = {
             "status": "AMBIGUOUS",

@@ -487,6 +487,35 @@ class MemoryReviewerTest(unittest.TestCase):
         self.assertEqual("memory-2", second_result.memory.memory_text)
         self.assertEqual(second_result.memory, self.store.get_memory(user_key))
 
+    def test_the_writer_sees_the_summary_of_compacted_turns(self) -> None:
+        user_key = "memory-summary"
+        session_id, turn = self.session_and_turn(user_key)
+        summary = RollingSummary(
+            user_key=user_key,
+            session_id=session_id,
+            summary_text="사용자는 위험 성향이 보수적이라고 말했다.",
+            through_turn_id=turn.turn_id,
+            summary_tokens=1,
+            model_id="test",
+            updated_at=self.now,
+        )
+        self.assertTrue(
+            self.store.replace_summary(summary, expected_through_turn_id=None)
+        )
+        self.store.delete_turns_through(
+            user_key=user_key, session_id=session_id, through_turn_id=turn.turn_id
+        )
+        requests = []
+
+        def review(request):
+            requests.append(request)
+            return MemoryReviewOutput(MemoryReviewAction.REPLACE, "- 보수적 위험 성향")
+
+        # "Remember what I said before": the Turn is gone, the Summary is not.
+        self.explicit(MemoryReviewer(self.store, review), user_key, session_id)
+        self.assertEqual((), requests[0].turns)
+        self.assertEqual(summary.summary_text, requests[0].summary_text)
+
     def test_unreviewed_query_ignores_summary_boundary_and_expired_turns(self) -> None:
         user_key = "memory-boundary"
         session = self.store.get_or_create_active_session(user_key, now=self.now)

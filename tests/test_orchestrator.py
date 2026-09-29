@@ -1066,14 +1066,20 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("memory", [tool.name for tool in contexts[0].tools])
 
     async def test_invalid_memory_action_changes_nothing(self) -> None:
-        contexts = []
-        result = await self.orchestrator(
-            self.script([("memory", {"action": "save"})], "answer", contexts=contexts)
-        ).submit(user_key="user", message="remember", accepted_at=self.now)
+        # A wrong value or a wrong JSON type is a bad call, reported to the model.
+        for action in ("save", []):
+            with self.subTest(action=action):
+                contexts = []
+                self.memory = FakeMemoryReviewer()
+                result = await self.orchestrator(
+                    self.script(
+                        [("memory", {"action": action})], "answer", contexts=contexts
+                    )
+                ).submit(user_key="user", message="remember", accepted_at=self.now)
 
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual([], self.memory.calls)
-        self.assertIn('"update" or "forget"', _results(contexts[1])[0])
+                self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+                self.assertEqual([], self.memory.calls)
+                self.assertIn('"update" or "forget"', _results(contexts[1])[0])
 
     # --- Reading ----------------------------------------------------------------
 

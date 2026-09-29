@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from .persistence import (
     ConversationStore,
+    validate_loaded_context,
     validate_loaded_memory,
     validate_loaded_turns,
 )
@@ -63,6 +64,9 @@ class MemoryReviewRequest:
     max_characters: int
     allow_clear: bool
     current_input: CurrentMemoryInput | None = None
+    # The session's Summary: older Turns that Compaction already folded in, so
+    # "remember what I said before" can still be found.
+    summary_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +197,12 @@ class MemoryReviewer:
         current_input: CurrentMemoryInput | None,
         expected_persisted_turn_ids: tuple[str, ...] | None,
     ) -> MemoryReviewResult:
+        summary = validate_loaded_context(
+            self._store.load_context(user_key=user_key, session_id=session_id, now=now),
+            user_key=user_key,
+            session_id=session_id,
+            now=now,
+        ).summary
         request = MemoryReviewRequest(
             instruction=self._instruction,
             current_memory_text=("" if memory is None else memory.memory_text),
@@ -200,6 +210,7 @@ class MemoryReviewer:
             max_characters=MEMORY_MAX_CHARS,
             allow_clear=allow_clear,
             current_input=current_input,
+            summary_text=None if summary is None else summary.summary_text,
         )
         output = self._review(request)
         action, memory_text, change_summary = _validated_output(

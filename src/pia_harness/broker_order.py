@@ -107,8 +107,10 @@ class BrokerOrderTool:
         price = arguments.get("price") if order_type == "LIMIT" else None
         if (
             not isinstance(name, str)
+            or not isinstance(side, str)
             or side not in _SIDES
             or not _positive_int(quantity)
+            or not isinstance(order_type, str)
             or order_type not in _ORDER_TYPES
             or (price is not None and not _positive_int(price))
         ):

@@ -766,7 +766,8 @@ class ConversationOrchestrator:
                     "Not run: the arguments were not a JSON object. Call again."
                 )
             elif call.name == MEMORY_TOOL:
-                action = _MEMORY_ACTIONS.get(parsed.get("action"))
+                value = parsed.get("action")
+                action = _MEMORY_ACTIONS.get(value) if isinstance(value, str) else None
                 if action is None:
                     outcome.results[index] = (
                         'Not run: action must be "update" or "forget".'
