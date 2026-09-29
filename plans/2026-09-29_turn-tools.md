@@ -27,7 +27,7 @@
 - `CompletedTurn`에 `tool_observations: tuple[ToolObservation, ...] = ()`를 둔다(호출 이름·인자·결과·호출 ID·round). `ConversationStore.append_completed_turn`이 이 값을 받아 저장하고 `load_context`가 돌려준다.
 - 저장 대상은 그 Turn의 도구 호출·결과 전부다. `confirm` Turn은 `confirm` 호출과 실행 결과 문장이 들어간다. `HARNESS_NOTE`(확인 대기 목록, 한도 알림)는 저장하지 않는다.
 - 저장 한도(`TurnTooLargeError`, 저장소의 바이트 한도)를 넘으면 그 Turn은 도구 기록 없이 질문·답변만 저장한다. 지금보다 나빠지지 않는다.
-- `InMemoryConversationStore`와 저장소 계약 테스트(`ConversationStoreContract`)를 맞춘다. PIA의 DynamoDB 저장소는 PIA 연동 때 이 칸을 저장한다(Turn 한 건 400KB 안에 충분히 들어감).
+- `InMemoryConversationStore`와 저장소 계약 테스트(`ConversationStoreContract`)를 맞춘다. PIA의 DynamoDB 저장소는 PIA 연동 때 이 칸을 저장한다(아래 Claude 반영의 저장소 계약, 기본 Turn 상한 256KiB).
 
 ### 2. Context 조립
 
@@ -87,3 +87,12 @@
 - **네이티브 메시지(34–36행).** 이전 Turn마다 `USER_TURN` → 같은 round의 assistant `tool_calls` 전체 → 각 ID의 `tool` 결과 → `ASSISTANT_TURN`으로 닫으면 현재 `_context_messages`와 [OpenRouter의 도구 응답 형식](https://openrouter.ai/docs/guides/features/tool-calling)이 맞는다. round 번호는 Turn마다 다시 0이므로 이전 Turns 전체의 관측을 하나로 정렬·그룹화하지 말고 **Turn별로** 조립해야 한다. 호출 ID가 서로 다른 완료 Turns에서 중복될 때 공급자가 거부한다는 근거는 확인되지 않았다. 우선 짝을 Turn 안에서 고정하고 중복 ID를 가진 두 Turn의 조립 테스트를 추가하면 되며, 선제적인 ID 재작성은 필요하지 않다.
 - **답변 뒤 압축(44–47행).** 현재 `_commit_response`는 전달 뒤 Turn을 저장하고 COMMITTING 동안 새 메시지를 기다리게 한다(`orchestrator.py` 1143–1245행). 같은 경계에서 뒤이어 Compaction하는 것은 가능하다. 다만 압축 예외를 저장 예외와 구분해, **전달·저장까지 성공했다면** `DELIVERED`와 `compaction_failed=True`로 끝내고 pending 메시지를 다시 실행하지 않는 테스트를 명시하라. `openrouter.py`의 `_turn_data`는 이미 질문·답변만 보내므로 Summary·Memory용 별도 도구 결과 제거 단계는 필요 없다.
 - **다시 읽기(40행).** `(링크, 나머지 인자)`는 파싱된 객체를 기준으로 비교하면 공백·JSON key 순서만 다른 동일 목적을 같은 요청으로 본다. 목적을 바꿔 반복해도 기존 20회·60초가 상한이므로 별도 의미 비교나 반복 상태는 필요 없다.
+
+## Claude 반영 (Codex 검토 대응)
+
+- **차단: Compaction 보호 예산.** 최근 Turn을 남길지 정하는 크기 계산(`_turn_tokens`, `_split_turns`)에는 그 Turn의 도구 호출·결과도 센다. Summary 길이 비교와 Summary·Memory 작성 입력은 질문·답변만 그대로 둔다(`_turn_data`는 이미 질문·답변만 보냄). 큰 도구 Turn 여러 개가 쌓인 뒤 답변 뒤 Compaction과 다음 요청이 성공하는 테스트를 넣는다.
+- **조립은 Turn별로.** round 번호는 Turn마다 0부터라, 이전 Turn들의 기록을 한데 모아 정렬하지 않고 각 Turn 안에서 `USER_TURN` → round별 호출 → 결과 → `ASSISTANT_TURN`으로 닫는다. 호출 ID는 다시 쓰지 않고, 서로 다른 Turn이 같은 ID를 가진 조립 테스트를 넣는다.
+- **답변 뒤 Compaction의 실패 구분.** 전달·저장까지 성공했으면 Compaction이 실패해도 `DELIVERED` + `compaction_failed=True`로 끝내고, 대기 메시지를 다시 실행하지 않는다. 테스트로 명시한다.
+- **다시 읽기 비교.** (링크, 나머지 인자)를 파싱한 객체로 비교한다(공백·키 순서가 달라도 같은 목적이면 같은 요청).
+- **저장 한도 가정 정정.** 400KB가 아니라 PIA 저장소의 기본 Turn 상한 256KiB 기준이다. 한도를 넘으면 질문·답변만으로 한 번 더 저장하고, 그것도 실패하면 기존대로 `PERSISTENCE_FAILED`.
+- **PIA 저장소 계약 (연동 때 필수).** Harness 저장소 계약(`append_completed_turn`)에 도구 기록 인자가 생기므로 PIA DynamoDB 저장소도 같은 릴리스에 맞춰야 한다(Harness만 올리면 모든 저장이 실패). PIA 연동 계획에 적을 것: 새 인자 직렬화·복원, 기존 row는 빈 기록으로 읽기, 도구 기록을 포함한 item 전체 바이트 상한, 한도 초과는 `TurnTooLargeError`, 같은 turn_id 재생 비교에 도구 기록 포함.
