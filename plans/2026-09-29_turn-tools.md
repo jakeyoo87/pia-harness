@@ -96,3 +96,15 @@
 - **다시 읽기 비교.** (링크, 나머지 인자)를 파싱한 객체로 비교한다(공백·키 순서가 달라도 같은 목적이면 같은 요청).
 - **저장 한도 가정 정정.** 400KB가 아니라 PIA 저장소의 기본 Turn 상한 256KiB 기준이다. 한도를 넘으면 질문·답변만으로 한 번 더 저장하고, 그것도 실패하면 기존대로 `PERSISTENCE_FAILED`.
 - **PIA 저장소 계약 (연동 때 필수).** Harness 저장소 계약(`append_completed_turn`)에 도구 기록 인자가 생기므로 PIA DynamoDB 저장소도 같은 릴리스에 맞춰야 한다(Harness만 올리면 모든 저장이 실패). PIA 연동 계획에 적을 것: 새 인자 직렬화·복원, 기존 row는 빈 기록으로 읽기, 도구 기록을 포함한 item 전체 바이트 상한, 한도 초과는 `TurnTooLargeError`, 같은 turn_id 재생 비교에 도구 기록 포함.
+
+## 구현 (Claude)
+
+- `ToolObservation`을 `session.py`로 옮기고(`context`에서 다시 내보냄) `CompletedTurn.tool_observations`를 두었다. `ConversationStore.append_completed_turn`은 `tool_observations`를 받고, `validate_loaded_turns`는 그 타입을 확인한다.
+- Context 조립은 이전 Turn마다 `USER_TURN` → 그 Turn의 호출·결과(round 순서) → `ASSISTANT_TURN`으로 닫는다. 이번 Turn의 기록 조립과 같은 함수(`_tool_parts`)를 쓴다.
+- 저장: 모든 호출·결과(`confirm` Turn은 `confirm` 호출과 실행 결과 포함)를 넘기고, `TurnTooLargeError`면 도구 기록 없이 한 번 더 저장한다. 그것도 실패하면 `PERSISTENCE_FAILED`.
+- 답변 뒤 Compaction: 저장이 끝난 뒤 같은 commit 안에서 `should_compact`(마지막 호출의 사용량 우선)가 참일 때만 `compact`. 예외는 `compaction_failed`로만 남고 결과는 `DELIVERED`.
+- Compaction의 최근 Turn 선택 크기(`_turn_tokens`)에 도구 기록을 더했다. Summary 입력(`_turn_data`)과 원본 대비 길이 비교는 질문·답변만이다.
+- 다시 읽기: 읽은 기록을 (링크, 나머지 인자 JSON[키 정렬])로 둔다.
+- `InMemoryConversationStore`는 도구 기록을 저장·반환하고 바이트 한도에 포함하며, 저장소 계약 테스트에 왕복·재생 충돌·한도 초과를 추가했다.
+- README 1·3·4·6.0·6.2·6.2.2·6.4를 고쳤다. 앞서 찾은 README 불일치 두 곳(4장 "여전히 초과" 줄, 6.0 타입이 틀린 인자)도 함께 고쳤다.
+- unittest 159개 통과(python:3.12-slim).

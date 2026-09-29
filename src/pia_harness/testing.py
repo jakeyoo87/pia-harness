@@ -13,6 +13,7 @@ from .session import (
     ConversationContext,
     MemoryDocument,
     RollingSummary,
+    ToolObservation,
     as_utc,
     is_valid_turn_id,
     new_turn_id,
@@ -60,6 +61,7 @@ class InMemoryConversationStore:
         user_message: str,
         assistant_message: str,
         created_at: datetime,
+        tool_observations: tuple[ToolObservation, ...] = (),
     ) -> CompletedTurn:
         user_key = _required("user_key", user_key)
         session_id = _required("session_id", session_id)
@@ -70,8 +72,17 @@ class InMemoryConversationStore:
             turn_id, created_at
         ):
             raise ValueError("turn_id must match created_at")
+        tool_observations = tuple(tool_observations)
+        # The limit covers everything stored for the Turn, tool records too.
+        tool_bytes = sum(
+            len(item.name.encode())
+            + len(item.arguments_json.encode())
+            + len(item.result_text.encode())
+            + len(item.call_id.encode())
+            for item in tool_observations
+        )
         if (
-            len(user_message.encode()) + len(assistant_message.encode())
+            len(user_message.encode()) + len(assistant_message.encode()) + tool_bytes
             > self._max_turn_bytes
         ):
             raise TurnTooLargeError("turn content exceeds the configured byte limit")
@@ -83,6 +94,7 @@ class InMemoryConversationStore:
             assistant_message,
             created_at,
             int((created_at + timedelta(days=self._retention_days)).timestamp()),
+            tool_observations,
         )
         key = (user_key, session_id, turn_id)
         with self._lock:
@@ -277,6 +289,51 @@ class ConversationStoreContract:
             assistant_message=assistant_message,
             created_at=created_at,
         )
+
+    def test_contract_tool_records_round_trip_and_count(self) -> None:
+        session = self.store.get_or_create_active_session("tools", now=self.now)
+        records = (
+            ToolObservation("web_search", '{"query":"a"}', "result a", "c1", 0),
+            ToolObservation("web_extract", '{"urls":[]}', "result b", "c2", 1),
+        )
+        turn_id = new_turn_id(self.now)
+        stored = self.store.append_completed_turn(
+            user_key="tools",
+            session_id=session.session_id,
+            turn_id=turn_id,
+            user_message="question",
+            assistant_message="answer",
+            created_at=self.now,
+            tool_observations=records,
+        )
+        self.assertEqual(records, stored.tool_observations)
+        loaded = self.store.load_context(
+            user_key="tools", session_id=session.session_id, now=self.now
+        )
+        self.assertEqual(records, loaded.turns[0].tool_observations)
+        # A replay with other tool records is a different Turn.
+        with self.assertRaises(TurnConflictError):
+            self.store.append_completed_turn(
+                user_key="tools",
+                session_id=session.session_id,
+                turn_id=turn_id,
+                user_message="question",
+                assistant_message="answer",
+                created_at=self.now,
+            )
+        # Tool records count toward the Turn's byte limit.
+        big = (ToolObservation("web_search", "{}", "x" * 300_000, "c1", 0),)
+        later = self.now + timedelta(seconds=1)
+        with self.assertRaises(TurnTooLargeError):
+            self.store.append_completed_turn(
+                user_key="tools",
+                session_id=session.session_id,
+                turn_id=new_turn_id(later),
+                user_message="question",
+                assistant_message="answer",
+                created_at=later,
+                tool_observations=big,
+            )
 
     def test_contract_user_isolation_and_ordering(self) -> None:
         first = self.store.get_or_create_active_session("first", now=self.now)

@@ -32,6 +32,7 @@ from .memory import (
 from .persistence import (
     ConversationAbandoned,
     ConversationStore,
+    TurnTooLargeError,
     validate_active_session,
 )
 from .session import ActiveSession, as_utc, new_turn_id
@@ -494,8 +495,9 @@ class ConversationOrchestrator:
             # Search links already listed this Turn, so repeated searches show
             # only new ones. Their titles name the answer's sources.
             listed_urls: dict[str, str] = {}
-            # A page does not change in seconds, so a link is read once a Turn.
-            read_urls: set[str] = set()
+            # A page does not change in seconds, so a link is read once a Turn
+            # for each purpose (the tool's other arguments, such as the goal).
+            read_urls: set[tuple[str, str]] = set()
             read_calls = 0
             answer_only = False
             closing_note: str | None = None
@@ -661,6 +663,7 @@ class ConversationOrchestrator:
                     compaction_failed=compaction_failed,
                     prepared=tuple(prepared),
                     confirmation_expired=confirmation_expired,
+                    tool_observations=observations,
                 ),
             )
         except ConversationAbandoned:
@@ -740,7 +743,7 @@ class ConversationOrchestrator:
         first: bool,
         offered: tuple[_PendingAction, ...],
         allowed: set[str],
-        read_urls: set[str],
+        read_urls: set[tuple[str, str]],
         listed_urls: dict[str, str],
         remaining_reads: int,
         deadline: float,
@@ -798,8 +801,17 @@ class ConversationOrchestrator:
                     continue
                 prefix = ""
                 if tool.url_argument is not None:
+                    purpose = json.dumps(
+                        {
+                            key: value
+                            for key, value in parsed.items()
+                            if key != tool.url_argument
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
                     links, prefix = _readable_links(
-                        parsed.get(tool.url_argument), allowed, read_urls
+                        parsed.get(tool.url_argument), allowed, read_urls, purpose
                     )
                     if not links:
                         outcome.results[index] = (
@@ -813,7 +825,7 @@ class ConversationOrchestrator:
                         outcome.limit_hit = True
                         continue
                     # Reserved now, so two calls in one response read a link once.
-                    read_urls.update(links)
+                    read_urls.update((link, purpose) for link in links)
                     parsed[tool.url_argument] = links
                     call = ToolCall(
                         call.name, json.dumps(parsed, ensure_ascii=False), call.call_id
@@ -1090,6 +1102,7 @@ class ConversationOrchestrator:
             memory_action=MemoryAction.NONE,
             memory_failed=memory_failed,
             compaction_failed=compaction_failed,
+            tool_observations=observations,
         )
 
     async def _answer_after_execution(
@@ -1153,6 +1166,7 @@ class ConversationOrchestrator:
         compaction_failed: bool,
         prepared: tuple[_PendingAction, ...] = (),
         confirmation_expired: bool = False,
+        tool_observations: tuple[ToolObservation, ...] = (),
     ) -> tuple[ConversationResult, bool]:
         changes: list[str] = []
         explicit_memory_failed = False
@@ -1216,16 +1230,27 @@ class ConversationOrchestrator:
             else:
                 self._pending_actions.pop(user_key, None)
 
+            turn = {
+                "user_key": user_key,
+                "session_id": session.session_id,
+                "turn_id": batch[-1].value.turn_id,
+                "user_message": combined,
+                "assistant_message": final_text,
+                "created_at": batch[-1].value.accepted_at,
+            }
             try:
-                await _durable_call(
-                    self._store.append_completed_turn,
-                    user_key=user_key,
-                    session_id=session.session_id,
-                    turn_id=batch[-1].value.turn_id,
-                    user_message=combined,
-                    assistant_message=final_text,
-                    created_at=batch[-1].value.accepted_at,
-                )
+                try:
+                    await _durable_call(
+                        self._store.append_completed_turn,
+                        **turn,
+                        tool_observations=tool_observations,
+                    )
+                except TurnTooLargeError:
+                    if not tool_observations:
+                        raise
+                    # Too big with its tool records: keep at least what the
+                    # user saw, as before tool records were stored.
+                    await _durable_call(self._store.append_completed_turn, **turn)
             except ConversationAbandoned:
                 raise
             except Exception:
@@ -1236,6 +1261,30 @@ class ConversationOrchestrator:
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
                 ), True
+
+            # Compaction runs here, after the answer is out, so the user does
+            # not wait for it; the next model call still checks before sending.
+            size = {
+                "token_budget": self._token_budget,
+                "model_id": self._model_id,
+                "estimated_context_tokens": answer.estimated_total_tokens,
+                "usage": answer.usage,
+            }
+            try:
+                if self._compactor.should_compact(**size):
+                    await _durable_call(
+                        self._compactor.compact,
+                        user_key=user_key,
+                        session_id=session.session_id,
+                        now=now,
+                        **size,
+                    )
+            except ConversationAbandoned:
+                raise
+            # The answer is delivered and stored; a failed Compaction only
+            # leaves the Context larger for the next request.
+            except Exception:
+                compaction_failed = True
 
         return ConversationResult(
             OrchestratorStatus.DELIVERED,
@@ -1392,7 +1441,7 @@ def _arguments(call: ToolCall) -> dict[str, Any] | None:
 
 
 def _readable_links(
-    requested: Any, allowed: set[str], read_urls: set[str]
+    requested: Any, allowed: set[str], read_urls: set[tuple[str, str]], purpose: str
 ) -> tuple[list[str], str]:
     """The requested links that may be read now, and a note on the others.
 
@@ -1405,8 +1454,9 @@ def _readable_links(
         if link and link not in links:
             links.append(link)
     rejected = sum(1 for link in links if link not in allowed)
-    repeated = sum(1 for link in links if link in allowed and link in read_urls)
-    readable = [link for link in links if link in allowed and link not in read_urls]
+    done = {link for link, read_for in read_urls if read_for == purpose}
+    repeated = sum(1 for link in links if link in allowed and link in done)
+    readable = [link for link in links if link in allowed and link not in done]
     note = ""
     if rejected:
         note += (

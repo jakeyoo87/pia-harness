@@ -32,6 +32,7 @@ from pia_harness import (
     ReadToolResult,
     ToolCall,
     ToolLink,
+    TurnTooLargeError,
 )
 from pia_harness.orchestrator import RESEARCH_LIMIT_NOTICE
 
@@ -52,7 +53,14 @@ def _message(context):
 
 
 def _results(context):
-    return [part.content for part in context.parts if part.kind.value == "TOOL_RESULT"]
+    """This Turn's tool results; earlier Turns' come before the current request."""
+    kinds = [part.kind.value for part in context.parts]
+    start = kinds.index("CURRENT_USER")
+    return [
+        part.content
+        for part in context.parts[start:]
+        if part.kind.value == "TOOL_RESULT"
+    ]
 
 
 def _notes(context):
@@ -66,6 +74,8 @@ class FakeStore:
         self.memories = {}
         self.fail_append = False
         self.fail_replace = False
+        # Refuse Turns that carry tool records, as a store at its size limit does.
+        self.refuse_tool_records = False
         self.abandon_on: str | None = None
 
     def _check(self, operation: str) -> None:
@@ -121,6 +131,8 @@ class FakeStore:
         if self.fail_append:
             self.fail_append = False
             raise RuntimeError("append failed")
+        if self.refuse_tool_records and values.get("tool_observations"):
+            raise TurnTooLargeError("turn too large")
         from pia_harness import CompletedTurn
 
         turn = CompletedTurn(
@@ -849,8 +861,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             user_key="user", message="question", accepted_at=self.now
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        # Still due after the answer, so it runs once more then.
         self.assertEqual(
-            1, len([call for call in self.compactor.calls if call[0] == "compact"])
+            2, len([call for call in self.compactor.calls if call[0] == "compact"])
         )
 
     async def test_no_tool_timeout_keeps_the_existing_pending_behavior(self) -> None:
@@ -1265,26 +1278,30 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         await self.orchestrator(
             self.script(
-                # Two calls in one response ask for the same link: read once.
+                # Two calls in one response ask for the same link and goal
+                # (keys in another order): read once.
                 [
                     ("web_extract", {"urls": [a], "goal": GOAL}),
-                    ("web_extract", {"urls": [a], "goal": "다른 목적"}),
+                    ("web_extract", {"goal": GOAL, "urls": [a]}),
                 ],
                 [("web_extract", {"urls": [a, b], "goal": GOAL})],
+                # Another goal may read the same page again.
+                [("web_extract", {"urls": [a], "goal": "기준일"})],
                 "answer",
                 contexts=contexts,
             ),
             read_tools=(self.extractor(read),),
         ).submit(user_key="user", message=f"{a} {b} 비교해줘", accepted_at=self.now)
 
-        self.assertEqual([[a], [b]], read)
-        first, second, third = _results(contexts[-1])
+        self.assertEqual([[a], [b], [a]], read)
+        first, second, third, fourth = _results(contexts[-1])
         self.assertIn("본문 https://example.com/a", first)
         self.assertIn("Not run: no new link to read.", second)
         self.assertIn(
             "- 1 requested link(s) were already read in this Turn; not read again.",
             third,
         )
+        self.assertIn("본문 https://example.com/a", fourth)
 
     async def test_bad_calls_come_back_as_results(self) -> None:
         contexts = []
@@ -1806,6 +1823,135 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             ["buy", "yes"], [turn.user_message for turn in self.store.turns]
         )
+        self.assertNotIn("user", orchestrator._states)
+
+    # --- Tool records across Turns ------------------------------------------
+
+    async def test_tool_records_are_stored_and_replayed_in_later_turns(self) -> None:
+        contexts = []
+        link = "https://etf.example/091160"
+        found = ReadToolResult("News", (ToolLink("KODEX 반도체", link),))
+        orchestrator = self.orchestrator(
+            self.script(
+                [("search", {"query": "KODEX"})],
+                "상위 종목을 찾았어요.",
+                # A link found by the earlier search is still readable.
+                [("web_extract", {"urls": [link], "goal": "비중"})],
+                "비중이에요.",
+                contexts=contexts,
+            ),
+            read_tools=(self.search([found]), self.extractor()),
+        )
+        await orchestrator.submit(
+            user_key="user", message="KODEX", accepted_at=self.now
+        )
+        await orchestrator.submit(
+            user_key="user",
+            message="3위 비중은?",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+
+        stored = self.store.turns[0].tool_observations
+        self.assertEqual(["search"], [item.name for item in stored])
+        self.assertIn("KODEX 반도체", stored[0].result_text)
+        # The earlier Turn replays as it happened, before the current request.
+        self.assertEqual(
+            [
+                "SYSTEM",
+                "USER_TURN",
+                "TOOL_REQUEST",
+                "TOOL_RESULT",
+                "ASSISTANT_TURN",
+                "CURRENT_USER",
+            ],
+            [part.kind.value for part in contexts[2].parts],
+        )
+        self.assertEqual(
+            ["web_extract"], [i.name for i in self.store.turns[1].tool_observations]
+        )
+
+    async def test_call_ids_may_repeat_across_turns(self) -> None:
+        contexts = []
+
+        async def generate(context):
+            contexts.append(context)
+            if _results(context):
+                return GeneratedAnswer("answer", "model", 10)
+            return ModelReply(tool_calls=(ToolCall("search", '{"query":"q"}', "same"),))
+
+        orchestrator = self.orchestrator(generate, read_tools=(self.search(),))
+        for minutes in range(2):
+            result = await orchestrator.submit(
+                user_key="user",
+                message="news",
+                accepted_at=self.now + timedelta(minutes=minutes),
+            )
+            self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        # Each Turn closes its own calls; the repeated ID stays within its Turn.
+        ids = [
+            (part.kind.value, part.call_id)
+            for part in contexts[-1].parts
+            if part.call_id
+        ]
+        self.assertEqual(
+            [
+                ("TOOL_REQUEST", "same"),
+                ("TOOL_RESULT", "same"),
+                ("TOOL_REQUEST", "same"),
+                ("TOOL_RESULT", "same"),
+            ],
+            ids,
+        )
+
+    async def test_a_turn_too_large_with_tools_keeps_request_and_answer(self) -> None:
+        self.store.refuse_tool_records = True
+        result = await self.orchestrator(
+            self.script([("search", {"query": "q"})], "answer"),
+            read_tools=(self.search(),),
+        ).submit(user_key="user", message="news", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual((), self.store.turns[0].tool_observations)
+        self.assertEqual("answer", self.store.turns[0].assistant_message)
+
+    async def test_compaction_runs_after_the_answer_when_due(self) -> None:
+        async def generate(context):
+            # Not due while answering; due once the answer made it large.
+            self.compactor.due = True
+            return GeneratedAnswer("answer", "model", 10)
+
+        result = await self.orchestrator(generate).submit(
+            user_key="user", message="question", accepted_at=self.now
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertFalse(result.compaction_failed)
+        self.assertEqual(
+            1, len([call for call in self.compactor.calls if call[0] == "compact"])
+        )
+        self.assertEqual(1, len(self.store.turns))
+
+    async def test_a_failed_compaction_after_the_answer_keeps_the_turn(self) -> None:
+        class FailingCompactor(FakeCompactor):
+            def compact(self, **values):
+                raise RuntimeError("summary unavailable")
+
+        self.compactor = FailingCompactor()
+
+        async def generate(context):
+            self.compactor.due = True
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(generate)
+        result = await orchestrator.submit(
+            user_key="user", message="question", accepted_at=self.now
+        )
+
+        # Delivered and stored: only the Compaction failed, nothing runs again.
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertTrue(result.compaction_failed)
+        self.assertEqual([("user", "answer")], self.delivered)
+        self.assertEqual(1, len(self.store.turns))
         self.assertNotIn("user", orchestrator._states)
 
     async def test_answer_links_become_numbered_sources(self) -> None:

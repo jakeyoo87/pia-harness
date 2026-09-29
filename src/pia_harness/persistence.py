@@ -11,6 +11,7 @@ from .session import (
     ConversationContext,
     MemoryDocument,
     RollingSummary,
+    ToolObservation,
     as_utc,
     is_valid_turn_id,
     turn_id_matches_created_at,
@@ -58,6 +59,8 @@ class ConversationStore(Protocol):
         user_message: str,
         assistant_message: str,
         created_at: datetime,
+        # The Turn's tool calls and results; part of the Turn's content.
+        tool_observations: tuple[ToolObservation, ...] = (),
     ) -> CompletedTurn: ...
 
     def load_context(
@@ -131,6 +134,10 @@ def validate_loaded_turns(
             raise StoreContractError("store returned Turns out of order or boundary")
         if turn.expires_at <= now_epoch:
             raise StoreContractError("store returned an expired Turn")
+        if not isinstance(turn.tool_observations, tuple) or not all(
+            isinstance(item, ToolObservation) for item in turn.tool_observations
+        ):
+            raise StoreContractError("store returned invalid tool records")
         previous = turn.turn_id
     return validated
 

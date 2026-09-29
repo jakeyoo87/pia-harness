@@ -220,7 +220,18 @@ def _split_turns(
 
 
 def _turn_tokens(turn: CompletedTurn, estimate_tokens: Callable[[str], int]) -> int:
-    return estimate_tokens(turn.user_message) + estimate_tokens(turn.assistant_message)
+    # What the Turn takes in the Context, tool records included; the Summary
+    # itself is still written from the request and answer only.
+    return (
+        estimate_tokens(turn.user_message)
+        + estimate_tokens(turn.assistant_message)
+        + sum(
+            estimate_tokens(item.name)
+            + estimate_tokens(item.arguments_json)
+            + estimate_tokens(item.result_text)
+            for item in turn.tool_observations
+        )
+    )
 
 
 def _source_tokens(

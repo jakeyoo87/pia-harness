@@ -6,7 +6,7 @@ from typing import Any, Protocol
 from enum import StrEnum
 
 from .budget import ModelTokenBudget
-from .session import ConversationContext, MemoryDocument
+from .session import ConversationContext, MemoryDocument, ToolObservation
 
 
 class PromptContextKind(StrEnum):
@@ -47,18 +47,6 @@ class AssembledPromptContext:
     user_key: str = ""
     # The tools this request offers the model; none means it must answer.
     tools: tuple[ToolSpec, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ToolObservation:
-    """One tool call of this Turn and its result."""
-
-    name: str
-    arguments_json: str
-    result_text: str
-    call_id: str
-    # Calls of the same model response share a round.
-    round: int
 
 
 class ToolSpec(Protocol):
@@ -204,18 +192,21 @@ def _parts(
             )
         )
     for turn in conversation.turns:
-        parts.extend(
-            (
-                PromptContextPart(
-                    PromptContextKind.USER_TURN,
-                    turn.user_message,
-                    PromptTrust.UNTRUSTED_DATA,
-                ),
-                PromptContextPart(
-                    PromptContextKind.ASSISTANT_TURN,
-                    turn.assistant_message,
-                    PromptTrust.UNTRUSTED_DATA,
-                ),
+        # Each earlier Turn replays as it happened: request, tool calls and
+        # results, answer. Rounds restart in every Turn, so each is closed here.
+        parts.append(
+            PromptContextPart(
+                PromptContextKind.USER_TURN,
+                turn.user_message,
+                PromptTrust.UNTRUSTED_DATA,
+            )
+        )
+        parts.extend(_tool_parts(turn.tool_observations))
+        parts.append(
+            PromptContextPart(
+                PromptContextKind.ASSISTANT_TURN,
+                turn.assistant_message,
+                PromptTrust.UNTRUSTED_DATA,
             )
         )
     parts.append(
@@ -227,6 +218,17 @@ def _parts(
     )
     if note is not None:
         parts.append(_note(note))
+    parts.extend(_tool_parts(tool_observations))
+    if closing_note is not None:
+        parts.append(_note(closing_note))
+    return tuple(parts)
+
+
+def _tool_parts(
+    tool_observations: tuple[ToolObservation, ...],
+) -> list[PromptContextPart]:
+    """One Turn's tool calls: each response's calls, then one result for each."""
+    parts: list[PromptContextPart] = []
     rounds: dict[int, list[ToolObservation]] = {}
     for observation in tool_observations:
         if not isinstance(observation, ToolObservation):
@@ -239,7 +241,6 @@ def _parts(
         ):
             raise PromptContextValidationError("tool observation is incomplete")
         rounds.setdefault(observation.round, []).append(observation)
-    # A model response's calls come first, then one result for each of them.
     for _round, observations in sorted(rounds.items()):
         parts.extend(
             PromptContextPart(
@@ -261,9 +262,7 @@ def _parts(
             )
             for observation in observations
         )
-    if closing_note is not None:
-        parts.append(_note(closing_note))
-    return tuple(parts)
+    return parts
 
 
 def _note(text: str) -> PromptContextPart:

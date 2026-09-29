@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from math import floor
 
 from pia_harness import (
+    ToolObservation,
     CompactionPolicy,
     ContextUsage,
     ConversationContext,
@@ -167,6 +168,41 @@ class TokenCompactionTest(unittest.TestCase):
                 now=self.now,
             ),
         )
+
+    def test_tool_records_count_when_keeping_recent_turns(self) -> None:
+        user_key = "compact-tools"
+        session = self.store.get_or_create_active_session(user_key, now=self.now)
+        turns = []
+        for index in range(3):
+            created_at = self.now + timedelta(seconds=index)
+            turns.append(
+                self.store.append_completed_turn(
+                    user_key=user_key,
+                    session_id=session.session_id,
+                    turn_id=new_turn_id(created_at),
+                    user_message="uu",
+                    assistant_message="aa",
+                    created_at=created_at,
+                    tool_observations=(
+                        ToolObservation("web_search", "{}", "r" * 50, "c1", 0),
+                    ),
+                )
+            )
+        requests = []
+
+        def summarize(request):
+            requests.append(request)
+            return SummaryOutput("s", "nemotron", 1)
+
+        # Requests and answers alone would all fit the tail and leave nothing
+        # to compact; with their tool records only the newest Turn stays.
+        summary = self.compact(user_key, session.session_id, summarize)
+        self.assertIsNotNone(summary)
+        self.assertEqual(tuple(turns[:2]), requests[0].turns)
+        context = self.store.load_context(
+            user_key=user_key, session_id=session.session_id, now=self.now
+        )
+        self.assertEqual((turns[-1],), context.turns)
 
     def test_newest_turn_is_kept_even_when_over_tail_budget(self) -> None:
         user_key = "compact-large-tail"

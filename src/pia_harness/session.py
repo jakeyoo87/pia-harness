@@ -44,6 +44,18 @@ class ActiveSession:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolObservation:
+    """One tool call of a Turn and its result."""
+
+    name: str
+    arguments_json: str
+    result_text: str
+    call_id: str
+    # Calls of the same model response share a round (from 0 in each Turn).
+    round: int
+
+
+@dataclass(frozen=True, slots=True)
 class CompletedTurn:
     user_key: str
     session_id: str
@@ -52,6 +64,8 @@ class CompletedTurn:
     assistant_message: str
     created_at: datetime
     expires_at: int
+    # The Turn's tool calls and results, replayed in later Turns' Context.
+    tool_observations: tuple[ToolObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
