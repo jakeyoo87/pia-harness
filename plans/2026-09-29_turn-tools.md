@@ -72,3 +72,18 @@
 3. 답변 뒤 Compaction의 위치(commit 안, 저장 뒤)와 사용량 기준이 기존 동시성·실패 처리와 맞는지.
 4. (링크, 그 밖의 인자) 기준 다시 읽기가 반복 위험을 만드는지(20회·60초 한도 안에서).
 5. 빼도 되는 것, 빠진 것.
+
+## Codex 검토
+
+`main c1d7f2b`의 Context 조립, Turn 저장, Compaction, Memory 경로와 이 계획을 대조했다. 계획 검토만 했으며 코드·README 수정, 병합, AWS 변경, 배포, 실제 모델·공급자 호출은 하지 않았다. 도구 결과를 완료 Turn에만 저장하고 웹 원문은 제외하는 방향은 후속 질문의 재검색을 줄이면서 현재 루프를 유지한다.
+
+### 차단
+
+1. **Compaction의 보호 예산에 새 도구 기록이 빠져 있다(19·27·44행).** 현재 `TokenCompactor._split_turns`는 `_turn_tokens`로 최근 Turns를 남길지 정하며, `_turn_tokens`는 사용자 메시지와 최종 답변만 센다(`compaction.py` 203–224행). 계획대로 예전 Turns의 도구 결과를 Context에 넣어도 이 계산을 그대로 두면, 예를 들어 질문·답변 각 1KB에 도구 결과 80KB가 붙은 Turns 여러 개가 보호 예산 12.5%에 모두 들어간 것으로 판단된다. Context는 256K/입력 한도를 넘는데 `covered`가 비어 Compaction이 아무것도 줄이지 못하고 다음 Turn이 `CONTEXT_OVERFLOW`가 된다. **남길 Turns를 고를 때만** 도구 호출·결과 크기도 세고, Summary 길이 비교와 Summary/Memory LLM 입력은 계획대로 질문·답변만 세면 된다. 큰 도구 Turns가 여러 개 누적된 뒤 답변 후 압축과 다음 요청이 성공하는 테스트를 넣어야 한다.
+
+### 비차단·연동 전 필수
+
+- **PIA 저장소 계약(27–30행).** 현재 Harness `ConversationStore.append_completed_turn`과 PIA DynamoDB 저장소는 도구 기록 인자를 받지 않는다(`persistence.py` 52–61행; 확인한 PIA `app/dynamodb_conversation_store.py` 104–140행). PIA 구현의 기본 Turn 상한도 **256KiB**이며 도구 기록이 아니라 질문·답변 UTF-8 바이트만 계산한다(같은 파일 50, 123–128행). 따라서 “400KB 안에 충분”을 전제로 두지 말고 PIA 연동 작업에 **새 인자·직렬화/복원, 기존 row의 빈 기록 처리, 전체 item 바이트 상한, 명확한 `TurnTooLargeError` 매핑, 동일 turn_id 재생 비교**를 필수 계약으로 적으라. Harness만 먼저 버전을 올리면 모든 Turn 저장이 시그니처 오류로 실패한다. 저장 한도 초과 시 질문·답변만 재시도하는 선택은 적절하며, 두 번째 저장도 실패하면 기존 `PERSISTENCE_FAILED`를 유지한다.
+- **네이티브 메시지(34–36행).** 이전 Turn마다 `USER_TURN` → 같은 round의 assistant `tool_calls` 전체 → 각 ID의 `tool` 결과 → `ASSISTANT_TURN`으로 닫으면 현재 `_context_messages`와 [OpenRouter의 도구 응답 형식](https://openrouter.ai/docs/guides/features/tool-calling)이 맞는다. round 번호는 Turn마다 다시 0이므로 이전 Turns 전체의 관측을 하나로 정렬·그룹화하지 말고 **Turn별로** 조립해야 한다. 호출 ID가 서로 다른 완료 Turns에서 중복될 때 공급자가 거부한다는 근거는 확인되지 않았다. 우선 짝을 Turn 안에서 고정하고 중복 ID를 가진 두 Turn의 조립 테스트를 추가하면 되며, 선제적인 ID 재작성은 필요하지 않다.
+- **답변 뒤 압축(44–47행).** 현재 `_commit_response`는 전달 뒤 Turn을 저장하고 COMMITTING 동안 새 메시지를 기다리게 한다(`orchestrator.py` 1143–1245행). 같은 경계에서 뒤이어 Compaction하는 것은 가능하다. 다만 압축 예외를 저장 예외와 구분해, **전달·저장까지 성공했다면** `DELIVERED`와 `compaction_failed=True`로 끝내고 pending 메시지를 다시 실행하지 않는 테스트를 명시하라. `openrouter.py`의 `_turn_data`는 이미 질문·답변만 보내므로 Summary·Memory용 별도 도구 결과 제거 단계는 필요 없다.
+- **다시 읽기(40행).** `(링크, 나머지 인자)`는 파싱된 객체를 기준으로 비교하면 공백·JSON key 순서만 다른 동일 목적을 같은 요청으로 본다. 목적을 바꿔 반복해도 기존 20회·60초가 상한이므로 별도 의미 비교나 반복 상태는 필요 없다.
