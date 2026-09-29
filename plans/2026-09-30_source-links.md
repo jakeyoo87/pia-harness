@@ -98,3 +98,13 @@ Codex 검토에 차단 이슈가 없어 계획대로 구현했다. 테스트 162
 - README 6.1(번호 링크, 목록 없음의 이유, Markdown 표시는 host 몫과 PIA Telegram 계약), 흐름도·표 문구.
 - 측정용 read 시나리오 추가: 24 "삼성전자 주가 지금 다시 알려줘"(다시 확인해야 함), 24-1 "아까 처음 알려준 삼성전자 주가로 100주 사면 얼마였어?"(과거 값이라 다시 조회하지 않아야 함).
 - 수용 기준(Codex 검토 2): 출처 목록 중복 0건. 모델이 직접 쓴 목록 하나가 남는 것은 허용한다.
+
+## 측정 뒤 보완 (Claude, 사용자와 정리)
+
+측정 기록: `tests/manual/records/2026-09-30_source-links.md` (`e4870d3`, read 35개).
+
+- 출처 목표 달성: 중복 0건, 모두 번호 링크.
+- 24-1이 압축 뒤 12번에서 알려준 가격을 "알려준 적 없다"고 답했다. 모델은 Summary가 세부를 잃는다는 것을 알 수 없었다. `AGENT_INSTRUCTION`에 한 문장 추가: "The Conversation Summary stands in for older turns and leaves out details; when the current request needs a detail it lacks, do not say it was never given: find it again with the tools, or say it is no longer in the conversation."
+- `tests/manual/smoke_flow.py`가 압축 뒤 새 Summary와 압축 실패를 출력한다(이번에 원인을 가리지 못한 이유).
+- Exa 키 없는 호출이 19번부터 429(24건)로 막혔다. 24·24-1·20·21은 Exa 한도가 풀리거나 키가 생긴 뒤 다시 측정한다.
+- 다음: 재측정 → Codex 구현 검토 → 병합.

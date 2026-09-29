@@ -333,6 +333,19 @@ async def run(
                 json.dumps(memory.memory_text if memory else None, ensure_ascii=False),
             )
             _log(state["started"], "CALLS", f"model={len(record.steps)} {record.calls}")
+            # Compaction runs after the answer; show the Summary it left.
+            session = store.get_or_create_active_session(USER, now=datetime.now(UTC))
+            summary = store.get_summary(user_key=USER, session_id=session.session_id)
+            if summary is not None and summary.summary_text != state.get("summary"):
+                state["summary"] = summary.summary_text
+                print(
+                    "  ----- new Summary -----\n"
+                    + summary.summary_text
+                    + "\n  ------------------",
+                    flush=True,
+                )
+            if any(result.compaction_failed for result in results):
+                _log(state["started"], "COMPACTION", "failed")
             if scenario_set == "execution":
                 _log(state["started"], "ORDERS SENT", str(len(orders)))
             rows.append(
