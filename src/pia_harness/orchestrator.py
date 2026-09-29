@@ -75,7 +75,6 @@ _CODE = re.compile(r"(```.*?(?:```|\Z)|`[^`\n]*`)", re.DOTALL)
 # Marks a removal so only the space next to it goes, not the answer's own.
 _REMOVED = "\x00"
 _REMOVED_SPACE = re.compile(r"[ \t]+\x00|\x00[ \t]*")
-SOURCES_HEADING = "출처"
 _T = TypeVar("_T")
 _KST = timezone(timedelta(hours=9))
 
@@ -500,8 +499,8 @@ class ConversationOrchestrator:
             kept_observations: tuple[ToolObservation, ...] = ()
             memory_action = MemoryAction.NONE
             # Search links already listed this Turn, so repeated searches show
-            # only new ones. Their titles name the answer's sources.
-            listed_urls: dict[str, str] = {}
+            # only new ones.
+            listed_urls: set[str] = set()
             # A page does not change in seconds, so a link is read once a Turn
             # for each purpose (the tool's other arguments, such as the goal).
             read_urls: set[tuple[str, str]] = set()
@@ -562,7 +561,7 @@ class ConversationOrchestrator:
                 reply = await self._generate_reply(assembled)
                 _validate_reply(reply, answer_only)
                 if reply.answer is not None:
-                    answer = _with_sources(reply.answer, assembled, listed_urls)
+                    answer = _with_sources(reply.answer, assembled)
                     break
                 if not await self._is_current(state, generation_id):
                     return
@@ -759,7 +758,7 @@ class ConversationOrchestrator:
         offered: tuple[_PendingAction, ...],
         allowed: set[str],
         read_urls: set[tuple[str, str]],
-        listed_urls: dict[str, str],
+        listed_urls: set[str],
         remaining_reads: int,
         deadline: float,
     ) -> _Round:
@@ -1153,7 +1152,7 @@ class ConversationOrchestrator:
             reply = await self._generate_reply(assembled)
             _validate_reply(reply, answer_only=True)
             assert reply.answer is not None
-            return _with_sources(reply.answer, assembled, {})
+            return _with_sources(reply.answer, assembled)
         except ConversationAbandoned:
             raise
         # The action already ran, so any failure still reports its outcome with
@@ -1564,13 +1563,15 @@ def _conversation_urls(context: AssembledPromptContext) -> set[str]:
 
 
 def _with_sources(
-    answer: GeneratedAnswer, context: AssembledPromptContext, titles: dict[str, str]
+    answer: GeneratedAnswer, context: AssembledPromptContext
 ) -> GeneratedAnswer:
-    """Turn the answer's links into [n] and append the list of their sources.
+    """Turn the answer's links into numbered links, such as [1](https://...).
 
     Only links that appear in the conversation or this Turn's tool results are
-    kept, so every listed source is one a tool or the user actually gave. That
+    kept, so every cited source is one a tool or the user actually gave. That
     says where a link came from, not that its page was read or backs the claim.
+    The answer is kept in this shape too, so an earlier answer shows the model
+    nothing it should not write: no list is added at the end.
     """
     allowed = _conversation_urls(context)
     numbers: dict[str, int] = {}
@@ -1584,11 +1585,15 @@ def _with_sources(
         if url not in allowed:
             return (text or _REMOVED) + trailing
         number = numbers.setdefault(url, len(numbers) + 1)
-        return f"{text} [{number}]" if text else f"[{number}]{trailing}"
+        link = f"[{number}]({url})"
+        # A label of only a number is a citation copied from an earlier answer.
+        if text and not text.strip().isdigit():
+            return f"{text} {link}"
+        return link + trailing
 
     def cite_prose(prose: str) -> str:
-        # Numbers the model wrote itself (say, copied from an earlier answer's
-        # list) point at nothing in this answer's list.
+        # Numbers the model wrote itself without a link point at nothing in
+        # this answer.
         prose = prose.replace(_REMOVED, "")
         prose = _ANSWER_LINK.sub(cite, _MODEL_NUMBER.sub(_REMOVED, prose))
         return _REMOVED_SPACE.sub("", prose)
@@ -1600,20 +1605,10 @@ def _with_sources(
     # Never fall back to the original: that would restore what was removed.
     if not body.strip():
         raise ValueError("the answer is empty once uncited links are removed")
-    if not numbers:
-        return replace(answer, text=body)
-    sources = [
-        f"[{number}] {titles[url]} {url}" if titles.get(url) else f"[{number}] {url}"
-        for url, number in numbers.items()
-    ]
-    return replace(
-        answer, text=f"{body.rstrip()}\n\n{SOURCES_HEADING}\n" + "\n".join(sources)
-    )
+    return replace(answer, text=body)
 
 
-def _tool_result_text(
-    result: ReadToolResult, listed_urls: dict[str, str]
-) -> tuple[str, str]:
+def _tool_result_text(result: ReadToolResult, listed_urls: set[str]) -> tuple[str, str]:
     """The result for this Turn, and the copy kept with the Turn.
 
     The kept copy lists found links without their short descriptions: those
@@ -1628,7 +1623,7 @@ def _tool_result_text(
     for link in result.links:
         if link.url in listed_urls:
             continue
-        listed_urls[link.url] = link.title
+        listed_urls.add(link.url)
         added += 1
         line = f"[{link.published}] {link.title}" if link.published else link.title
         kept.append(f"{line} <{link.url}>")

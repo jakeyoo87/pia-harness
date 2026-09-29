@@ -841,7 +841,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         # Only prose links and stand-alone numbers change; code, indexes and
         # the answer's own spacing stay.
         self.assertEqual(
-            [f"값은 `rows[2]` 기준  [1] 입니다.\n\n{code}\n\n출처\n[1] {given}"],
+            [f"값은 `rows[2]` 기준  [1]({given}) 입니다.\n\n{code}"],
             delivered,
         )
 
@@ -2043,27 +2043,30 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
                 [("search", {"query": "KODEX"})],
                 f"SK하이닉스 36.8% <{found}>, 삼성전자 23.9% [3] {given}.\n"
                 f"기준일은 8월 [ETF쇼핑]({found}). 참고 https://made.up/x 와 "
-                "[다른 곳](https://made.up/y)",
+                f"[다른 곳](https://made.up/y). 앞서 본 비중 [4]({given})\n\n"
+                f"출처\n<{found}>",
             ),
             read_tools=(self.search(results),),
         ).submit(user_key="user", message=f"비중 알려줘 {given}", accepted_at=self.now)
 
-        # Links become numbers in order of first use, the model's own numbers
-        # and links that no tool or message gave are dropped, and the list
-        # carries the links the tools actually returned.
+        # Links become numbered links in order of first use; a copied numbered
+        # link is numbered again; the model's own bare numbers and links no tool
+        # or message gave are dropped; no list is added at the end, so a list
+        # the model wrote itself is the only one.
         self.assertEqual(
             [
                 (
                     "user",
-                    "SK하이닉스 36.8% [1], 삼성전자 23.9% [2].\n"
-                    "기준일은 8월 ETF쇼핑 [1]. 참고 와 다른 곳\n\n"
-                    "출처\n"
-                    f"[1] KODEX 반도체 {found}\n"
-                    f"[2] {given}",
+                    f"SK하이닉스 36.8% [1]({found}), 삼성전자 23.9% [2]({given}).\n"
+                    f"기준일은 8월 ETF쇼핑 [1]({found}). 참고 와 다른 곳. "
+                    f"앞서 본 비중 [2]({given})\n\n"
+                    f"출처\n[1]({found})",
                 )
             ],
             self.delivered,
         )
+        # Stored as delivered, and its links stay readable in the next Turn.
+        self.assertEqual(self.delivered[0][1], self.store.turns[0].assistant_message)
 
 
 if __name__ == "__main__":

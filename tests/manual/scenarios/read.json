@@ -31,5 +31,7 @@
   {"id": "20", "message": "삼성전기 2026년 2분기 실적 정리해줘. 영업이익이랑 전년 대비 증감 위주로", "expect": "web_search"},
   {"id": "21", "message": "KODEX 반도체 ETF 구성종목 상위 5개랑 비중 알려줘", "expect": "web_search"},
   {"id": "22", "message": "나 은퇴자금으로 장기투자하는 중이야", "expect": "answer", "expect_memory": "UPDATE"},
-  {"id": "23", "message": "HBM 관련 뉴스 찾아주고, 나 반도체 관심 많다고 기억해줘", "expect": "web_search", "expect_memory": "UPDATE"}
+  {"id": "23", "message": "HBM 관련 뉴스 찾아주고, 나 반도체 관심 많다고 기억해줘", "expect": "web_search", "expect_memory": "UPDATE"},
+  {"id": "24", "message": "삼성전자 주가 지금 다시 알려줘", "expect": "web_search"},
+  {"id": "24-1", "message": "아까 처음 알려준 삼성전자 주가로 100주 사면 얼마였어?", "expect": "answer"}
 ]
