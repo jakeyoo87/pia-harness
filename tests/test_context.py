@@ -72,25 +72,58 @@ class PromptContextAssemblerTest(unittest.TestCase):
             "token_budget": ModelTokenBudget(10_000, 1_000),
         }
         values.update(overrides)
-        return PromptContextAssembler(counter).assemble(**values)
+        return PromptContextAssembler(lambda parts, tools: counter(parts)).assemble(
+            **values
+        )
 
-    def test_current_tool_request_and_result_follow_user_input(self) -> None:
-        result = self.assemble(
-            lambda parts: sum(len(part.content) for part in parts),
+    def test_tool_calls_follow_user_input_grouped_by_response(self) -> None:
+        counted = []
+        tools = ("tool-spec",)
+
+        def count(parts, offered):
+            counted.append(offered)
+            return 1
+
+        result = PromptContextAssembler(count).assemble(
+            user_key=self.user_key,
+            session_id=self.session_id,
+            system_prompt="PIA system policy",
+            memory=None,
+            conversation=ConversationContext(summary=None, turns=()),
+            current_user_message="현재 질문",
+            token_budget=ModelTokenBudget(10_000, 1_000),
             tool_observations=(
-                ToolObservation("search", '{"query":"news"}', "cited answer"),
+                ToolObservation("search", '{"query":"a"}', "result a", "c1", 0),
+                ToolObservation("search", '{"query":"b"}', "result b", "c2", 0),
+                ToolObservation("web_extract", '{"urls":[]}', "result c", "c3", 1),
             ),
+            tools=tools,
+            note="waiting actions",
+            closing_note="answer now",
         )
+        # The counter sees the tools offered with the request.
+        self.assertEqual([tools], counted)
+        self.assertEqual(tools, result.tools)
         self.assertEqual(
-            (
-                PromptContextKind.CURRENT_USER,
-                PromptContextKind.TOOL_REQUEST,
-                PromptContextKind.TOOL_RESULT,
-            ),
-            tuple(part.kind for part in result.parts[-3:]),
+            [
+                ("CURRENT_USER", "", "현재 질문"),
+                ("HARNESS_NOTE", "", "waiting actions"),
+                ("TOOL_REQUEST", "c1", '{"query":"a"}'),
+                ("TOOL_REQUEST", "c2", '{"query":"b"}'),
+                ("TOOL_RESULT", "c1", "result a"),
+                ("TOOL_RESULT", "c2", "result b"),
+                ("TOOL_REQUEST", "c3", '{"urls":[]}'),
+                ("TOOL_RESULT", "c3", "result c"),
+                ("HARNESS_NOTE", "", "answer now"),
+            ],
+            [
+                (part.kind.value, part.call_id, part.content)
+                for part in result.parts[1:]
+            ],
         )
+        notes = [part for part in result.parts if part.kind.value == "HARNESS_NOTE"]
         self.assertTrue(
-            all(part.trust is PromptTrust.UNTRUSTED_DATA for part in result.parts[-3:])
+            all(part.trust is PromptTrust.TRUSTED_INSTRUCTION for part in notes)
         )
         self.assertEqual(self.user_key, result.user_key)
 
@@ -302,7 +335,7 @@ class PromptContextAssemblerTest(unittest.TestCase):
 
         token_budget = ModelTokenBudget(5_000)
         self.assertEqual(DEFAULT_MAX_RESPONSE_TOKENS, token_budget.response_tokens)
-        default_reserve = PromptContextAssembler(lambda parts: 1).assemble(
+        default_reserve = PromptContextAssembler(lambda parts, tools: 1).assemble(
             user_key=self.user_key,
             session_id=self.session_id,
             system_prompt="PIA system policy",

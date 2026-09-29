@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Any, Protocol
 from enum import StrEnum
 
 from .budget import ModelTokenBudget
@@ -17,6 +18,9 @@ class PromptContextKind(StrEnum):
     CURRENT_USER = "CURRENT_USER"
     TOOL_REQUEST = "TOOL_REQUEST"
     TOOL_RESULT = "TOOL_RESULT"
+    # Harness text inside the conversation: actions waiting for confirmation,
+    # or the note that research hit its limit.
+    HARNESS_NOTE = "HARNESS_NOTE"
 
 
 class PromptTrust(StrEnum):
@@ -29,6 +33,10 @@ class PromptContextPart:
     kind: PromptContextKind
     content: str
     trust: PromptTrust
+    # Tool parts only: the call they belong to. A TOOL_REQUEST's content is its
+    # arguments JSON; consecutive requests came in one model response.
+    call_id: str = ""
+    tool_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,13 +45,33 @@ class AssembledPromptContext:
     estimated_input_tokens: int
     input_budget: int
     user_key: str = ""
+    # The tools this request offers the model; none means it must answer.
+    tools: tuple[ToolSpec, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class ToolObservation:
+    """One tool call of this Turn and its result."""
+
     name: str
     arguments_json: str
     result_text: str
+    call_id: str
+    # Calls of the same model response share a round.
+    round: int
+
+
+class ToolSpec(Protocol):
+    """What the model sees of a tool."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str: ...
+
+    @property
+    def arguments_schema(self) -> Mapping[str, Any] | None: ...
 
 
 class PromptContextValidationError(RuntimeError):
@@ -69,7 +97,10 @@ class ContextBudgetExceeded(RuntimeError):
 class PromptContextAssembler:
     def __init__(
         self,
-        count_input_tokens: Callable[[tuple[PromptContextPart, ...]], int],
+        # Counts the whole request: the parts and the tools offered with them.
+        count_input_tokens: Callable[
+            [tuple[PromptContextPart, ...], tuple[ToolSpec, ...]], int
+        ],
     ) -> None:
         if not callable(count_input_tokens):
             raise ValueError("count_input_tokens must be callable")
@@ -86,6 +117,9 @@ class PromptContextAssembler:
         current_user_message: str,
         token_budget: ModelTokenBudget,
         tool_observations: tuple[ToolObservation, ...] = (),
+        tools: tuple[ToolSpec, ...] = (),
+        note: str | None = None,
+        closing_note: str | None = None,
     ) -> AssembledPromptContext:
         user_key = _required_text("user_key", user_key)
         session_id = _required_text("session_id", session_id)
@@ -113,8 +147,10 @@ class PromptContextAssembler:
             conversation=conversation,
             current_user_message=current_user_message,
             tool_observations=tool_observations,
+            note=note,
+            closing_note=closing_note,
         )
-        estimated_input_tokens = self._count_input_tokens(parts)
+        estimated_input_tokens = self._count_input_tokens(parts, tools)
         if (
             isinstance(estimated_input_tokens, bool)
             or not isinstance(estimated_input_tokens, int)
@@ -130,7 +166,7 @@ class PromptContextAssembler:
                 token_budget=token_budget,
             )
         return AssembledPromptContext(
-            parts, estimated_input_tokens, input_budget, user_key
+            parts, estimated_input_tokens, input_budget, user_key, tools
         )
 
 
@@ -141,6 +177,8 @@ def _parts(
     conversation: ConversationContext,
     current_user_message: str,
     tool_observations: tuple[ToolObservation, ...],
+    note: str | None,
+    closing_note: str | None,
 ) -> tuple[PromptContextPart, ...]:
     parts = [
         PromptContextPart(
@@ -187,6 +225,9 @@ def _parts(
             PromptTrust.UNTRUSTED_DATA,
         )
     )
+    if note is not None:
+        parts.append(_note(note))
+    rounds: dict[int, list[ToolObservation]] = {}
     for observation in tool_observations:
         if not isinstance(observation, ToolObservation):
             raise PromptContextValidationError("tool observation is invalid")
@@ -194,23 +235,43 @@ def _parts(
             not observation.name
             or not observation.arguments_json
             or not observation.result_text
+            or not observation.call_id
         ):
             raise PromptContextValidationError("tool observation is incomplete")
+        rounds.setdefault(observation.round, []).append(observation)
+    # A model response's calls come first, then one result for each of them.
+    for _round, observations in sorted(rounds.items()):
         parts.extend(
-            (
-                PromptContextPart(
-                    PromptContextKind.TOOL_REQUEST,
-                    f"{observation.name} {observation.arguments_json}",
-                    PromptTrust.UNTRUSTED_DATA,
-                ),
-                PromptContextPart(
-                    PromptContextKind.TOOL_RESULT,
-                    observation.result_text,
-                    PromptTrust.UNTRUSTED_DATA,
-                ),
+            PromptContextPart(
+                PromptContextKind.TOOL_REQUEST,
+                observation.arguments_json,
+                PromptTrust.UNTRUSTED_DATA,
+                call_id=observation.call_id,
+                tool_name=observation.name,
             )
+            for observation in observations
         )
+        parts.extend(
+            PromptContextPart(
+                PromptContextKind.TOOL_RESULT,
+                observation.result_text,
+                PromptTrust.UNTRUSTED_DATA,
+                call_id=observation.call_id,
+                tool_name=observation.name,
+            )
+            for observation in observations
+        )
+    if closing_note is not None:
+        parts.append(_note(closing_note))
     return tuple(parts)
+
+
+def _note(text: str) -> PromptContextPart:
+    return PromptContextPart(
+        PromptContextKind.HARNESS_NOTE,
+        _required_text("note", text),
+        PromptTrust.TRUSTED_INSTRUCTION,
+    )
 
 
 def _validate_identities_and_boundaries(

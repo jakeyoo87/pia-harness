@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import unittest
 from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pia_harness.orchestrator as orchestrator_module
-from pia_harness.orchestrator import RESEARCH_LIMIT_NOTICE
 from pia_harness import (
     CONFIRMATION_EXPIRED_NOTICE,
     MESSAGE_SEPARATOR,
@@ -19,33 +19,45 @@ from pia_harness import (
     ExecutionToolDefinition,
     GeneratedAnswer,
     MemoryAction,
-    NextActionDecision,
     MemoryDocument,
     MemoryReviewResult,
     MemoryReviewStatus,
+    ModelReply,
     ModelTokenBudget,
-    NextActionInputTooLarge,
     OrchestratorStatus,
-    PageExcerpt,
-    PageReadError,
     PreparationResult,
     PreparedAction,
     PromptContextAssembler,
-    ToolCall,
     ReadToolDefinition,
     ReadToolResult,
+    ToolCall,
     ToolLink,
     new_turn_id,
 )
-
+from pia_harness.orchestrator import RESEARCH_LIMIT_NOTICE
 
 GOAL = "기사 핵심 내용"
+EXTRACT_SCHEMA = {
+    "type": "object",
+    "properties": {"urls": {"type": "array"}, "goal": {"type": "string"}},
+    "required": ["urls", "goal"],
+}
 
 
 def _message(context):
     """The current user message without the received-time line."""
-    content = context.parts[-1].content
+    content = next(
+        part.content for part in context.parts if part.kind.value == "CURRENT_USER"
+    )
     return content.split("\n", 1)[1] if content.startswith("[Received ") else content
+
+
+def _results(context):
+    return [part.content for part in context.parts if part.kind.value == "TOOL_RESULT"]
+
+
+def _notes(context):
+    return [part.content for part in context.parts if part.kind.value == "HARNESS_NOTE"]
 
 
 class FakeStore:
@@ -210,31 +222,37 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         generate,
         *,
         counter=None,
+        count=None,
         deliver=None,
         failure_notice="memory update failed",
         progress=None,
         read_tools=(),
         execution_tools=(),
-        extract_page=None,
-        choose_next=None,
-        build_tool_call=None,
         read_routing_timeout_seconds=120.0,
         memory_action=MemoryAction.NONE,
     ):
+        """generate returns a GeneratedAnswer (the model answers at once) or a
+        ModelReply. memory_action makes the model call the memory tool first."""
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
         async def default_deliver(user_key, text):
             self.delivered.append((user_key, text))
 
-        async def default_choose_next(context, tools):
-            return NextActionDecision("answer", memory_action)
+        async def reply(context):
+            if memory_action is not MemoryAction.NONE and not _results(context):
+                arguments = json.dumps({"action": memory_action.value.lower()})
+                return ModelReply(tool_calls=(ToolCall("memory", arguments, "m1"),))
+            value = await generate(context)
+            return value if isinstance(value, ModelReply) else ModelReply(answer=value)
 
         return ConversationOrchestrator(
             store=self.store,
-            assembler=PromptContextAssembler(counter),
+            assembler=PromptContextAssembler(
+                count or (lambda parts, tools: counter(parts))
+            ),
             memory_reviewer=self.memory,
             compactor=self.compactor,
-            generate_answer=generate,
+            generate_reply=reply,
             deliver=deliver or default_deliver,
             system_prompt="system",
             token_budget=self.token_budget,
@@ -243,11 +261,109 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             progress=progress,
             read_tools=read_tools,
             execution_tools=execution_tools,
-            extract_page=extract_page,
-            choose_next=choose_next or default_choose_next,
-            build_tool_call=build_tool_call,
             read_routing_timeout_seconds=read_routing_timeout_seconds,
         )
+
+    @staticmethod
+    def script(*steps, contexts=None):
+        """A model that follows steps: a list of (tool, arguments) calls for one
+        response, answer text, or a function of the context returning either."""
+        remaining = iter(steps)
+        ids = itertools.count(1)
+
+        async def generate(context):
+            if contexts is not None:
+                contexts.append(context)
+            step = next(remaining)
+            if callable(step):
+                step = step(context)
+            if isinstance(step, str):
+                return GeneratedAnswer(step, "model", 10)
+            if isinstance(step, ModelReply):
+                return step
+            return ModelReply(
+                tool_calls=tuple(
+                    ToolCall(
+                        name, json.dumps(arguments, ensure_ascii=False), f"c{next(ids)}"
+                    )
+                    for name, arguments in step
+                )
+            )
+
+        return generate
+
+    @staticmethod
+    def search(results=None, queries=None, execute=None):
+        results = list(results or ())
+
+        async def default_execute(user_key, call, inputs):
+            if queries is not None:
+                queries.append(json.loads(call.arguments_json)["query"])
+            return results.pop(0) if results else ReadToolResult("searched")
+
+        return ReadToolDefinition(
+            "search",
+            "Search news",
+            execute or default_execute,
+            arguments_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        )
+
+    @staticmethod
+    def extractor(read=None, execute=None):
+        async def default_execute(user_key, call, inputs):
+            arguments = json.loads(call.arguments_json)
+            if read is not None:
+                read.append(arguments["urls"])
+            return ReadToolResult(
+                "\n".join(f"- {url}: read. 본문 {url}" for url in arguments["urls"])
+            )
+
+        return ReadToolDefinition(
+            "web_extract",
+            "Read pages",
+            execute or default_execute,
+            arguments_schema=EXTRACT_SCHEMA,
+            url_argument="urls",
+        )
+
+    def order_tool(self, *, executed=None, execute=None, action=True):
+        executed = executed if executed is not None else []
+
+        async def prepare(user_key, call):
+            if not action:
+                return PreparationResult("Order not prepared. Missing: quantity.")
+            name = json.loads(call.arguments_json).get("name", "Samsung")
+            return PreparationResult(
+                "Order prepared and waiting for confirmation.",
+                PreparedAction(
+                    f"{name} 10 shares limit buy",
+                    f"Buy 10 {name} shares at 285,500 KRW?",
+                    call.arguments_json,
+                ),
+            )
+
+        async def default_execute(user_key, prepared):
+            executed.append(prepared.arguments_json)
+            return f"Order accepted: {json.loads(prepared.arguments_json)['name']}."
+
+        return ExecutionToolDefinition(
+            "order",
+            "Prepare an order",
+            {"type": "object"},
+            prepare,
+            execute or default_execute,
+        )
+
+    @staticmethod
+    def confirm_waiting(context):
+        """confirm every action the harness lists as waiting."""
+        note = _notes(context)[0]
+        ids = [line[2:].split(":", 1)[0] for line in note.splitlines()[1:]]
+        return [("confirm", {"action_ids": ids})]
 
     async def test_explicit_memory_failure_notice_is_required_and_validated(
         self,
@@ -261,206 +377,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             self.orchestrator(generate, failure_notice="   ")
         with self.assertRaises(ValueError):
             self.orchestrator(generate, progress="not callable")
-
-    @staticmethod
-    def plain_search(execute=None):
-        async def default_execute(user_key, call, inputs):
-            return ReadToolResult("searched")
-
-        return ReadToolDefinition("search", "Search news", execute or default_execute)
-
-    @staticmethod
-    def search_then_answer():
-        async def choose_next(context, options):
-            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
-                return NextActionDecision("answer")
-            return NextActionDecision("search")
-
-        return choose_next
-
-    async def test_progress_reports_each_choice_then_none_after_delivery(
-        self,
-    ) -> None:
-        ordered: list[tuple] = []
-        url = "https://n.news.naver.com/a"
-        results = [ReadToolResult("News", (ToolLink("기사", url),))]
-        choices = iter(("search", "web_extract", "answer"))
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose_next(context, options):
-            return NextActionDecision(next(choices))
-
-        async def extract_page(url, goal, request):
-            return PageExcerpt("passages copied from the page", ("본문",))
-
-        async def progress(user_key, progress_id, step):
-            ordered.append(("progress", user_key, progress_id, step))
-
-        async def deliver(user_key, text):
-            ordered.append(("deliver", user_key, text))
-
-        result = await self.orchestrator(
-            generate,
-            deliver=deliver,
-            progress=progress,
-            read_tools=(self.news_search(results),),
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls([url]),
-        ).submit(user_key="user", message="question", accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        progress_id = ordered[0][2]
-        self.assertEqual(
-            [
-                (
-                    "progress",
-                    "user",
-                    progress_id,
-                    ConversationStep("search", '{"query":"삼성전자 주가"}'),
-                ),
-                (
-                    "progress",
-                    "user",
-                    progress_id,
-                    ConversationStep(
-                        "web_extract", json.dumps({"urls": [url], "goal": GOAL})
-                    ),
-                ),
-                ("progress", "user", progress_id, ConversationStep("answer")),
-                ("deliver", "user", "answer"),
-                ("progress", "user", progress_id, None),
-            ],
-            ordered,
-        )
-
-    async def test_failing_progress_callback_does_not_stop_the_answer(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def failing_progress(user_key, progress_id, step):
-            raise RuntimeError("progress unavailable")
-
-        result = await self.orchestrator(
-            generate,
-            progress=failing_progress,
-            read_tools=(self.plain_search(),),
-            choose_next=self.search_then_answer(),
-        ).submit(user_key="user", message="question", accepted_at=self.now)
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-
-    async def test_stuck_progress_callback_does_not_hold_the_turn(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def stuck_progress(user_key, progress_id, step):
-            await asyncio.Event().wait()
-
-        orchestrator = self.orchestrator(
-            generate,
-            progress=stuck_progress,
-            read_tools=(self.plain_search(),),
-            choose_next=self.search_then_answer(),
-        )
-        with patch.object(orchestrator_module, "PROGRESS_TIMEOUT_SECONDS", 0.01):
-            result = await asyncio.wait_for(
-                orchestrator.submit(
-                    user_key="user", message="question", accepted_at=self.now
-                ),
-                timeout=2,
-            )
-            await asyncio.sleep(0.05)
-        still_running = [
-            task
-            for task in asyncio.all_tasks()
-            if "_run_generation" in repr(task.get_coro())
-        ]
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual([("user", "answer")], self.delivered)
-        self.assertEqual([], still_running)
-
-    async def test_jev_failure_ends_progress_only_after_a_step(self) -> None:
-        steps: list[ConversationStep | None] = []
-        calls = 0
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        def fail_on(call_number):
-            async def choose_next(context, options):
-                nonlocal calls
-                calls += 1
-                if calls == call_number:
-                    raise RuntimeError("Jev unavailable")
-                return NextActionDecision("search")
-
-            return choose_next
-
-        async def progress(user_key, progress_id, step):
-            steps.append(step)
-
-        # The first Jev call fails: nothing was reported, so no end either.
-        result = await self.orchestrator(
-            generate,
-            progress=progress,
-            read_tools=(self.plain_search(),),
-            choose_next=fail_on(1),
-        ).submit(user_key="user", message="question", accepted_at=self.now)
-        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
-        self.assertEqual([], steps)
-
-        # Jev fails after one step: that step, then the end.
-        calls = 0
-        result = await self.orchestrator(
-            generate,
-            progress=progress,
-            read_tools=(self.plain_search(),),
-            choose_next=fail_on(2),
-        ).submit(user_key="other", message="question", accepted_at=self.now)
-        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
-        self.assertEqual([ConversationStep("search"), None], steps)
-
-    async def test_superseded_progress_is_ended_with_its_own_turn_id(self) -> None:
-        first_started = asyncio.Event()
-        events: list[tuple[str, ConversationStep | None]] = []
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def execute(user_key, call, inputs):
-            if inputs[-1].message == "A":
-                first_started.set()
-                await asyncio.Event().wait()
-            return ReadToolResult("searched")
-
-        async def progress(user_key, progress_id, step):
-            events.append((progress_id, step))
-
-        orchestrator = self.orchestrator(
-            generate,
-            progress=progress,
-            read_tools=(self.plain_search(execute),),
-            choose_next=self.search_then_answer(),
-        )
-        first = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
-        )
-        await first_started.wait()
-        second = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="B", accepted_at=self.now)
-        )
-        first_result, second_result = await asyncio.gather(first, second)
-
-        self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
-        self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
-        progress_ids = {progress_id for progress_id, _ in events}
-        self.assertEqual(2, len(progress_ids))
-        for progress_id in progress_ids:
-            self.assertIn((progress_id, ConversationStep("search")), events)
-            self.assertIn((progress_id, None), events)
 
     async def test_new_message_interrupts_and_only_combined_answer_commits(
         self,
@@ -686,21 +602,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.memory_failed)
         self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
         self.assertEqual(["explicit"], self.memory.calls)
-
-    async def test_invalid_jev_memory_action_fails_before_commit(self) -> None:
-        async def generate(context):
-            raise AssertionError("invalid Jev result must stop before generation")
-
-        async def choose_next(context, tools):
-            return NextActionDecision("answer", "UPDATE")
-
-        result = await self.orchestrator(generate, choose_next=choose_next).submit(
-            user_key="user", message="remember", accepted_at=self.now
-        )
-
-        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
-        self.assertEqual([], self.memory.calls)
-        self.assertEqual([], self.store.turns)
 
     async def test_overflow_compacts_once_and_stops_without_progress(self) -> None:
         generated = []
@@ -971,401 +872,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([("user", "answer")], self.delivered)
         self.assertEqual(1, len(self.store.turns))
 
-    def news_search(self, results, queries=None):
-        async def execute(user_key, call, inputs):
-            if queries is not None:
-                queries.append(call.arguments_json)
-            return results.pop(0)
-
-        return ReadToolDefinition(
-            "search",
-            "Find news candidates",
-            execute,
-            arguments_schema={"type": "object"},
-        )
-
-    @staticmethod
-    async def build_query(context, tool):
-        return ToolCall(tool.name, '{"query":"삼성전자 주가"}')
-
-    @staticmethod
-    def build_calls(urls):
-        async def build(context, tool):
-            if tool.name == "web_extract":
-                return ToolCall(tool.name, json.dumps({"urls": urls, "goal": GOAL}))
-            return ToolCall(tool.name, '{"query":"삼성전자 주가"}')
-
-        return build
-
-    async def test_search_links_are_listed_and_only_chosen_ones_fetched(self) -> None:
-        offered = []
-        fetched = []
-        answer_contexts = []
-        request = "삼성전자 왜 떨어져? 배당주 선호도 기억해줘"
-        results = [
-            ReadToolResult(
-                "News search: 삼성전자 주가",
-                (
-                    ToolLink(
-                        "외국인 순매도", "https://n.news.naver.com/a", "2026-09-24"
-                    ),
-                    ToolLink(
-                        "실적 전망 하향", "https://n.news.naver.com/b", None, "요약"
-                    ),
-                ),
-            )
-        ]
-
-        async def generate(context):
-            answer_contexts.append(context)
-            return GeneratedAnswer("answer from read bodies", "model", 10)
-
-        async def choose_next(context, options):
-            offered.append(tuple(option.name for option in options))
-            if len(offered) == 1:
-                return NextActionDecision("search")
-            if len(offered) == 2:
-                return NextActionDecision("web_extract")
-            return NextActionDecision("answer", MemoryAction.UPDATE)
-
-        async def extract_page(url, goal, request):
-            fetched.append((url, goal))
-            return PageExcerpt(
-                "passages copied from the page", ("실적 전망 하향 본문",)
-            )
-
-        result = await self.orchestrator(
-            generate,
-            read_tools=(self.news_search(results),),
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls(["https://n.news.naver.com/b"]),
-        ).submit(user_key="member", message=request, accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        # No link yet, then offered for as long as the conversation has links.
-        self.assertEqual(
-            [("search",), ("search", "web_extract"), ("search", "web_extract")],
-            offered,
-        )
-        self.assertEqual([("https://n.news.naver.com/b", GOAL)], fetched)
-        results_text = [
-            part.content
-            for part in answer_contexts[0].parts
-            if part.kind.value == "TOOL_RESULT"
-        ]
-        self.assertIn(
-            "[2026-09-24] 외국인 순매도 <https://n.news.naver.com/a>", results_text[0]
-        )
-        self.assertIn(
-            "실적 전망 하향 — 요약 <https://n.news.naver.com/b>", results_text[0]
-        )
-        self.assertIn(
-            "- https://n.news.naver.com/b: passages copied from the page.",
-            results_text[1],
-        )
-        self.assertIn("실적 전망 하향 본문", results_text[1])
-        stored = self.store.turns[0].assistant_message
-        # Only the request and final answer are stored; tool results stay in this Turn.
-        self.assertNotIn("실적 전망 하향 본문", stored)
-        self.assertEqual(request, self.memory.explicit_inputs[0][0].user_message)
-
-    async def test_repeated_search_lists_only_new_candidates(self) -> None:
-        link = ToolLink("같은 기사", "https://n.news.naver.com/a")
-        results = [
-            ReadToolResult("first", (link,)),
-            ReadToolResult(
-                "second", (link, ToolLink("새 기사", "https://n.news.naver.com/b"))
-            ),
-            ReadToolResult("third", (link,)),
-        ]
-        seen = []
-
-        async def generate(context):
-            seen.extend(
-                part.content
-                for part in context.parts
-                if part.kind.value == "TOOL_RESULT"
-            )
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose_next(context, options):
-            searches = sum(
-                1 for part in context.parts if part.kind.value == "TOOL_RESULT"
-            )
-            return NextActionDecision("search" if searches < 3 else "answer")
-
-        async def extract_page(url, goal, request):
-            raise AssertionError("not selected")
-
-        result = await self.orchestrator(
-            generate,
-            read_tools=(self.news_search(results),),
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_query,
-        ).submit(user_key="user", message="news", accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertIn("같은 기사 <https://n.news.naver.com/a>", seen[0])
-        self.assertNotIn("같은 기사", seen[1])
-        self.assertIn("새 기사 <https://n.news.naver.com/b>", seen[1])
-        self.assertIn("No new candidates", seen[2])
-
-    async def test_links_in_an_earlier_answer_can_be_fetched_next_turn(self) -> None:
-        # The real failure: articles summarized in one Turn, "read them" in the next.
-        fetched = []
-        answer_contexts = []
-        offered = []
-
-        async def generate(context):
-            answer_contexts.append(context)
-            if len(answer_contexts) == 1:
-                return GeneratedAnswer(
-                    "요약입니다. [기사 1](https://n.news.naver.com/a?sid=101), "
-                    "[기사 2](https://n.news.naver.com/b)",
-                    "model",
-                    10,
-                )
-            return GeneratedAnswer("본문 요약", "model", 10)
-
-        # An answer keeps only links a tool or message gave, so they come
-        # from a search in the first Turn.
-        found = ReadToolResult(
-            "News",
-            (
-                ToolLink("기사 1", "https://n.news.naver.com/a?sid=101"),
-                ToolLink("기사 2", "https://n.news.naver.com/b"),
-            ),
-        )
-        choices = iter(("search", "answer", "web_extract", "answer"))
-
-        async def choose_next(context, options):
-            offered.append(tuple(option.name for option in options))
-            return NextActionDecision(next(choices))
-
-        async def extract_page(url, goal, request):
-            fetched.append(url)
-            return PageExcerpt("passages copied from the page", (f"본문 {url}",))
-
-        orchestrator = self.orchestrator(
-            generate,
-            read_tools=(self.news_search([found]),),
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls(
-                ["https://n.news.naver.com/a?sid=101", "https://n.news.naver.com/b"]
-            ),
-        )
-        await orchestrator.submit(
-            user_key="user", message="전력기기 이슈는?", accepted_at=self.now
-        )
-        result = await orchestrator.submit(
-            user_key="user",
-            message="기사들 본문 읽고 요약해줘",
-            accepted_at=self.now + timedelta(minutes=1),
-        )
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(("search",), offered[0])
-        self.assertEqual(("search", "web_extract"), offered[2])
-        self.assertEqual(
-            ["https://n.news.naver.com/a?sid=101", "https://n.news.naver.com/b"],
-            sorted(fetched),
-        )
-
-    async def test_links_two_turns_back_can_still_be_fetched(self) -> None:
-        # Same shape as the Bot failure: links, then a link-free answer, then "read".
-        fetched = []
-        offered = []
-        answers = iter(
-            (
-                "요약 [기사](https://n.news.naver.com/a)",
-                "요약만 다시 정리했습니다.",
-                "본문 요약",
-            )
-        )
-
-        async def generate(context):
-            return GeneratedAnswer(next(answers), "model", 10)
-
-        found = ReadToolResult(
-            "News", (ToolLink("기사", "https://n.news.naver.com/a"),)
-        )
-        choices = iter(("search", "answer", "answer", "web_extract", "answer"))
-
-        async def choose_next(context, options):
-            offered.append(tuple(option.name for option in options))
-            return NextActionDecision(next(choices))
-
-        async def extract_page(url, goal, request):
-            fetched.append(url)
-            return PageExcerpt("passages copied from the page", ("본문",))
-
-        orchestrator = self.orchestrator(
-            generate,
-            read_tools=(self.news_search([found]),),
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls(["https://n.news.naver.com/a"]),
-        )
-        for minutes, message in enumerate(("이슈는?", "요약해줘", "본문 읽어줘")):
-            result = await orchestrator.submit(
-                user_key="user",
-                message=message,
-                accepted_at=self.now + timedelta(minutes=minutes),
-            )
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(("search", "web_extract"), offered[3])
-        self.assertEqual(["https://n.news.naver.com/a"], fetched)
-
-    async def test_fetch_reads_at_most_five_links(self) -> None:
-        links = [f"https://example.com/{n}" for n in range(6)]
-        fetched = []
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose_next(context, options):
-            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
-                return NextActionDecision("answer")
-            return NextActionDecision("web_extract")
-
-        async def extract_page(url, goal, request):
-            fetched.append(url)
-            return PageExcerpt("passages copied from the page", ("본문",))
-
-        await self.orchestrator(
-            generate,
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls(links),
-        ).submit(user_key="user", message=" ".join(links), accepted_at=self.now)
-
-        self.assertEqual(links[:5], sorted(fetched))
-
-    async def test_fetch_reads_only_conversation_links_and_reports_failures(
-        self,
-    ) -> None:
-        answer_contexts = []
-        offered = []
-
-        async def generate(context):
-            answer_contexts.append(context)
-            return GeneratedAnswer("could not read it", "model", 10)
-
-        async def choose_next(context, options):
-            offered.append(tuple(option.name for option in options))
-            if len(offered) == 1:
-                return NextActionDecision("web_extract")
-            return NextActionDecision("answer")
-
-        async def extract_page(url, goal, request):
-            raise PageReadError("blocked page")
-
-        result = await self.orchestrator(
-            generate,
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls(
-                ["https://example.com/news/1", "https://invented.example/x"]
-            ),
-        ).submit(
-            user_key="user",
-            message="이거 요약해줘 https://example.com/news/1.",
-            accepted_at=self.now,
-        )
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        # The one conversation link was tried, so the option is gone.
-        self.assertEqual([("web_extract",), ()], offered)
-        text = "\n".join(
-            part.content
-            for part in answer_contexts[0].parts
-            if part.kind.value == "TOOL_RESULT"
-        )
-        self.assertIn(
-            "- https://example.com/news/1: could not be read; do not describe it as read.",
-            text,
-        )
-        self.assertIn(
-            "- 1 requested link(s) did not appear in this conversation; not read.",
-            text,
-        )
-        # A rejected link is not echoed, or it would become readable next time.
-        self.assertNotIn("invented.example", text)
-
-    async def test_a_broken_extractor_ends_the_turn(self) -> None:
-        choices = iter(("web_extract", "answer"))
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose_next(context, options):
-            return NextActionDecision(next(choices))
-
-        async def extract_page(url, goal, request):
-            raise AttributeError("bug")
-
-        result = await self.orchestrator(
-            generate,
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls(["https://example.com/news/1"]),
-        ).submit(
-            user_key="user",
-            message="이거 요약해줘 https://example.com/news/1",
-            accepted_at=self.now,
-        )
-
-        # A code error is not an unreadable page; Jev would keep choosing it.
-        self.assertEqual(OrchestratorStatus.TOOL_FAILED, result.status)
-
-    async def test_answer_links_become_numbered_sources(self) -> None:
-        delivered = []
-        found = "https://etf.example/091160"
-        given = "https://fund.example/kodex"
-        results = [ReadToolResult("News", (ToolLink("KODEX 반도체", found),))]
-        choices = iter(("search", "answer"))
-
-        async def generate(context):
-            return GeneratedAnswer(
-                f"SK하이닉스 36.8% <{found}>, 삼성전자 23.9% [3] {given}.\n"
-                f"기준일은 8월 [ETF쇼핑]({found}). 참고 https://made.up/x 와 "
-                "[다른 곳](https://made.up/y)",
-                "model",
-                10,
-            )
-
-        async def choose_next(context, options):
-            return NextActionDecision(next(choices))
-
-        async def deliver(user_key, text):
-            delivered.append(text)
-
-        await self.orchestrator(
-            generate,
-            deliver=deliver,
-            read_tools=(self.news_search(results),),
-            choose_next=choose_next,
-            build_tool_call=self.build_calls([]),
-        ).submit(user_key="user", message=f"비중 알려줘 {given}", accepted_at=self.now)
-
-        # Links become numbers in order of first use, the model's own numbers
-        # and links that no tool or message gave are dropped, and the list
-        # carries the links the tools actually returned.
-        self.assertEqual(
-            [
-                "SK하이닉스 36.8% [1], 삼성전자 23.9% [2].\n"
-                "기준일은 8월 ETF쇼핑 [1]. 참고 와 다른 곳\n\n"
-                "출처\n"
-                f"[1] KODEX 반도체 {found}\n"
-                f"[2] {given}"
-            ],
-            delivered,
-        )
-
     async def test_code_and_spacing_are_left_as_written(self) -> None:
         delivered = []
         given = "https://fund.example/kodex"
@@ -1400,110 +906,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         # Restoring the original would bring back what was removed.
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
 
-    async def test_memory_links_are_not_fetchable(self) -> None:
-        offered = []
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose_next(context, options):
-            offered.append(tuple(option.name for option in options))
-            return NextActionDecision("answer")
-
-        async def extract_page(url, goal, request):
-            raise AssertionError("not offered")
-
-        self.store.memories["user"] = MemoryDocument(
-            "user",
-            "블로그 https://blog.example/post",
-            new_turn_id(self.now - timedelta(seconds=1)),
-            self.now,
-        )
-        await self.orchestrator(
-            generate,
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls([]),
-        ).submit(user_key="user", message="그 블로그 읽어줘", accepted_at=self.now)
-
-        self.assertEqual([()], offered)
-
-    async def test_web_extract_needs_argument_generation_and_is_reserved(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def extract_page(url, goal, request):
-            return PageExcerpt("passages copied from the page", ("body",))
-
-        async def execute(user_key, call, inputs):
-            return ReadToolResult("x")
-
-        with self.assertRaises(ValueError):
-            self.orchestrator(generate, extract_page=extract_page)
-        with self.assertRaises(ValueError):
-            self.orchestrator(
-                generate,
-                read_tools=(ReadToolDefinition("web_extract", "x", execute),),
-            )
-
-    async def test_selecting_web_extract_when_not_offered_fails_before_commit(
-        self,
-    ) -> None:
-        async def generate(context):
-            raise AssertionError("invalid Jev choice must stop before generation")
-
-        async def choose_next(context, options):
-            return NextActionDecision("web_extract")
-
-        async def extract_page(url, goal, request):
-            raise AssertionError("unavailable option must not be read")
-
-        result = await self.orchestrator(
-            generate,
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=self.build_calls([]),
-        ).submit(user_key="user", message="question", accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
-        self.assertEqual([], self.store.turns)
-
-    async def test_only_tools_with_arguments_use_argument_generation(self) -> None:
-        answer_contexts = []
-
-        async def generate(context):
-            answer_contexts.append(context)
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def execute(user_key, call, inputs):
-            return ReadToolResult(f"arguments={call.arguments_json}")
-
-        no_arguments = ReadToolDefinition("quote", "Quote", execute)
-
-        async def build_call(context, tool):
-            raise AssertionError("no argument generation for this tool")
-
-        with self.assertRaises(ValueError):
-            self.orchestrator(generate, read_tools=(self.news_search([]),))
-
-        async def choose_next(context, options):
-            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
-                return NextActionDecision("answer")
-            return NextActionDecision("quote")
-
-        result = await self.orchestrator(
-            generate,
-            read_tools=(no_arguments,),
-            choose_next=choose_next,
-            build_tool_call=build_call,
-        ).submit(user_key="user", message="price", accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertIn(
-            "arguments={}",
-            "\n".join(part.content for part in answer_contexts[-1].parts),
-        )
-
     async def test_compaction_happens_before_answer_generation(self) -> None:
         self.compactor.due = True
 
@@ -1521,87 +923,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             1, len([call for call in self.compactor.calls if call[0] == "compact"])
         )
 
-    async def test_superseded_read_tool_cannot_commit(self) -> None:
-        tool_started = asyncio.Event()
-
-        async def generate(context):
-            return GeneratedAnswer("current answer", "model", 10)
-
-        async def choose_next(context, tools):
-            current = next(
-                part.content
-                for part in context.parts
-                if part.kind.value == "CURRENT_USER"
-            )
-            return NextActionDecision("answer" if "new" in current else "search")
-
-        async def execute_search(user_key, call, inputs):
-            tool_started.set()
-            await asyncio.Event().wait()
-            return ReadToolResult("stale result")
-
-        tool = ReadToolDefinition("search", "Search", execute_search)
-        orchestrator = self.orchestrator(
-            generate,
-            read_tools=(tool,),
-            choose_next=choose_next,
-        )
-        first = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="old", accepted_at=self.now)
-        )
-        await tool_started.wait()
-        second = asyncio.create_task(
-            orchestrator.submit(user_key="user", message="new", accepted_at=self.now)
-        )
-        first_result, second_result = await asyncio.gather(first, second)
-        self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
-        self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
-        self.assertEqual([("user", "current answer")], self.delivered)
-        self.assertEqual(1, len(self.store.turns))
-
-    async def test_read_routing_deadline_answers_from_what_was_gathered(self) -> None:
-        choices = []
-        answer_contexts = []
-
-        async def generate(context):
-            answer_contexts.append(context)
-            return GeneratedAnswer("partial answer", "model", 10)
-
-        async def choose_next(context, tools):
-            choices.append("search")
-            if len(choices) == 3:
-                # Routing hangs here, so only the deadline can end the Turn; no
-                # assumption about how fast one loop runs on this machine.
-                await asyncio.Event().wait()
-            return NextActionDecision("search")
-
-        async def execute_search(user_key, call, inputs):
-            await asyncio.sleep(0)
-            return ReadToolResult("short observation")
-
-        tool = ReadToolDefinition("search", "Search", execute_search)
-        orchestrator = self.orchestrator(
-            generate,
-            read_tools=(tool,),
-            choose_next=choose_next,
-            read_routing_timeout_seconds=0.5,
-        )
-        result = await orchestrator.submit(
-            user_key="user", message="question", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(3, len(choices))
-        results = [
-            part.content
-            for part in answer_contexts[0].parts
-            if part.kind.value == "TOOL_RESULT"
-        ]
-        self.assertEqual(
-            ["short observation", "short observation", RESEARCH_LIMIT_NOTICE],
-            results,
-        )
-        self.assertEqual([("user", "partial answer")], self.delivered)
-
     async def test_no_tool_timeout_keeps_the_existing_pending_behavior(self) -> None:
         async def generate(context):
             raise TimeoutError("model unavailable")
@@ -1612,207 +933,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
         self.assertEqual(1, len(orchestrator._states["user"].pending))
-
-    async def test_read_tool_limit_answers_with_the_notice(self) -> None:
-        searches = []
-        answer_contexts = []
-
-        async def generate(context):
-            answer_contexts.append(context)
-            return GeneratedAnswer("partial answer", "model", 10)
-
-        async def choose_next(context, options):
-            return NextActionDecision("search")
-
-        async def execute(user_key, call, inputs):
-            searches.append(call.arguments_json)
-            return ReadToolResult("observation")
-
-        with patch.object(orchestrator_module, "MAX_READ_TOOL_CALLS", 2):
-            result = await self.orchestrator(
-                generate,
-                read_tools=(ReadToolDefinition("search", "Search", execute),),
-                choose_next=choose_next,
-            ).submit(user_key="user", message="조사해줘", accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(2, len(searches))
-        self.assertIn(
-            RESEARCH_LIMIT_NOTICE,
-            [part.content for part in answer_contexts[0].parts],
-        )
-
-    async def test_too_large_routing_input_answers_without_a_memory_change(
-        self,
-    ) -> None:
-        calls = 0
-
-        async def generate(context):
-            return GeneratedAnswer("partial answer", "model", 10)
-
-        async def choose_next(context, options):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise NextActionInputTooLarge("too large")
-            return NextActionDecision("search")
-
-        async def execute(user_key, call, inputs):
-            return ReadToolResult("long observation")
-
-        result = await self.orchestrator(
-            generate,
-            read_tools=(ReadToolDefinition("search", "Search", execute),),
-            choose_next=choose_next,
-        ).submit(user_key="user", message="조사하고 기억해줘", accepted_at=self.now)
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual([], self.memory.explicit_inputs)
-
-    async def test_empty_arguments_end_the_research_with_the_notice(self) -> None:
-        answer_contexts = []
-
-        async def generate(context):
-            answer_contexts.append(context)
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose_next(context, options):
-            return NextActionDecision("web_extract")
-
-        async def extract_page(url, goal, request):
-            raise AssertionError("nothing is read without a goal")
-
-        async def build_call(context, tool):
-            return ToolCall(tool.name, json.dumps({"urls": ["https://example.com/a"]}))
-
-        result = await self.orchestrator(
-            generate,
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=build_call,
-        ).submit(
-            user_key="user",
-            message="https://example.com/a 읽어줘",
-            accepted_at=self.now,
-        )
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertIn(
-            RESEARCH_LIMIT_NOTICE,
-            [part.content for part in answer_contexts[0].parts],
-        )
-
-    async def test_a_link_is_read_once_a_turn(self) -> None:
-        read = []
-        answer_contexts = []
-        offered = []
-
-        async def generate(context):
-            answer_contexts.append(context)
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose_next(context, options):
-            offered.append(tuple(option.name for option in options))
-            return NextActionDecision("web_extract" if len(offered) < 3 else "answer")
-
-        async def extract_page(url, goal, request):
-            read.append((url, goal, request))
-            return PageExcerpt("read", ("본문",), "요약")
-
-        calls = iter(
-            (
-                ["https://example.com/a"],
-                ["https://example.com/a", "https://example.com/b"],
-            )
-        )
-
-        async def build_call(context, tool):
-            return ToolCall(tool.name, json.dumps({"urls": next(calls), "goal": GOAL}))
-
-        await self.orchestrator(
-            generate,
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=build_call,
-        ).submit(
-            user_key="user",
-            message="https://example.com/a https://example.com/b 비교해줘",
-            accepted_at=self.now,
-        )
-
-        # b is read on the second call; a is not read again.
-        self.assertEqual(
-            [
-                ("https://example.com/a", GOAL, read[0][2]),
-                ("https://example.com/b", GOAL, read[0][2]),
-            ],
-            read,
-        )
-        # The extractor gets the user's request, without the received time.
-        self.assertEqual(
-            "https://example.com/a https://example.com/b 비교해줘", read[0][2]
-        )
-        # Once both links were read, web_extract is no longer offered.
-        self.assertEqual([("web_extract",), ("web_extract",), ()], offered)
-        text = "\n".join(
-            part.content
-            for part in answer_contexts[0].parts
-            if part.kind.value == "TOOL_RESULT"
-        )
-        self.assertIn(
-            "- 1 requested link(s) were already read in this Turn; not read again.",
-            text,
-        )
-        self.assertIn("=== https://example.com/b\nSummary: 요약\nQuotes:\n> 본문", text)
-
-    async def test_an_extract_with_no_new_link_ends_the_research(self) -> None:
-        read = []
-        answer_contexts = []
-        answers = iter(("[기사](https://example.com/old)", "could not open it"))
-        choices = iter(("answer", "web_extract", "web_extract", "web_extract"))
-
-        async def generate(context):
-            answer_contexts.append(context)
-            return GeneratedAnswer(next(answers), "model", 10)
-
-        async def choose_next(context, options):
-            return NextActionDecision(next(choices))
-
-        async def extract_page(url, goal, request):
-            read.append(url)
-            raise PageReadError("blocked")
-
-        async def build_call(context, tool):
-            return ToolCall(
-                tool.name,
-                json.dumps({"urls": ["https://example.com/a"], "goal": GOAL}),
-            )
-
-        orchestrator = self.orchestrator(
-            generate,
-            extract_page=extract_page,
-            choose_next=choose_next,
-            build_tool_call=build_call,
-        )
-        await orchestrator.submit(
-            user_key="user",
-            message="이전 https://example.com/old",
-            accepted_at=self.now,
-        )
-        # The older Turn keeps another link in the conversation, so the option
-        # stays; asking again for the failed link must still end the research.
-        result = await orchestrator.submit(
-            user_key="user",
-            message="https://example.com/a 요약해줘",
-            accepted_at=self.now + timedelta(minutes=1),
-        )
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(["https://example.com/a"], read)
-        self.assertIn(
-            RESEARCH_LIMIT_NOTICE,
-            [part.content for part in answer_contexts[1].parts],
-        )
 
     async def test_the_prompt_carries_the_received_time_but_not_the_turn(self) -> None:
         contexts = []
@@ -1838,101 +958,584 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("오늘 뉴스", self.store.turns[0].user_message)
 
-    async def test_empty_search_arguments_also_end_the_research(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
+    # --- Progress -----------------------------------------------------------
 
-        async def choose_next(context, options):
-            return NextActionDecision("search")
+    async def test_progress_reports_each_tool_call_then_none_after_delivery(
+        self,
+    ) -> None:
+        ordered: list[tuple] = []
+        url = "https://n.news.naver.com/a"
 
-        async def build_call(context, tool):
-            return ToolCall(tool.name, "{}")
+        async def progress(user_key, progress_id, step):
+            ordered.append(("progress", user_key, progress_id, step))
 
-        async def execute(user_key, call, inputs):
-            raise AssertionError("an empty call is not run")
+        async def deliver(user_key, text):
+            ordered.append(("deliver", user_key, text))
 
-        search = ReadToolDefinition(
-            "search",
-            "Search",
-            execute,
-            arguments_schema={"type": "object", "required": ["query"]},
-        )
         result = await self.orchestrator(
-            generate,
-            read_tools=(search,),
-            choose_next=choose_next,
-            build_tool_call=build_call,
-        ).submit(user_key="user", message="뉴스", accepted_at=self.now)
+            self.script(
+                [("search", {"query": "삼성전자 주가"})],
+                [("web_extract", {"urls": [url], "goal": GOAL})],
+                "answer",
+            ),
+            deliver=deliver,
+            progress=progress,
+            read_tools=(
+                self.search([ReadToolResult("News", (ToolLink("기사", url),))]),
+                self.extractor(),
+            ),
+        ).submit(user_key="user", message="question", accepted_at=self.now)
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        progress_id = ordered[0][2]
+        self.assertEqual(
+            [
+                (
+                    "progress",
+                    "user",
+                    progress_id,
+                    ConversationStep("search", '{"query": "삼성전자 주가"}'),
+                ),
+                (
+                    "progress",
+                    "user",
+                    progress_id,
+                    ConversationStep(
+                        "web_extract",
+                        json.dumps({"urls": [url], "goal": GOAL}, ensure_ascii=False),
+                    ),
+                ),
+                ("deliver", "user", "answer"),
+                ("progress", "user", progress_id, None),
+            ],
+            ordered,
+        )
 
-    def order_tool(self, *, executed=None, execute=None, action=True):
-        executed = executed if executed is not None else []
+    async def test_failing_progress_callback_does_not_stop_the_answer(self) -> None:
+        async def failing_progress(user_key, progress_id, step):
+            raise RuntimeError("progress unavailable")
 
-        async def prepare(user_key, call):
-            if not action:
-                return PreparationResult("Order not prepared. Missing: quantity.")
-            return PreparationResult(
-                "Order prepared and waiting for confirmation.",
-                PreparedAction(
-                    "Samsung 10 shares limit buy",
-                    "Buy 10 Samsung shares at 285,500 KRW?",
-                    call.arguments_json,
+        result = await self.orchestrator(
+            self.script([("search", {"query": "q"})], "answer"),
+            progress=failing_progress,
+            read_tools=(self.search(),),
+        ).submit(user_key="user", message="question", accepted_at=self.now)
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+
+    async def test_stuck_progress_callback_does_not_hold_the_turn(self) -> None:
+        async def stuck_progress(user_key, progress_id, step):
+            await asyncio.Event().wait()
+
+        orchestrator = self.orchestrator(
+            self.script([("search", {"query": "q"})], "answer"),
+            progress=stuck_progress,
+            read_tools=(self.search(),),
+        )
+        with patch.object(orchestrator_module, "PROGRESS_TIMEOUT_SECONDS", 0.01):
+            result = await asyncio.wait_for(
+                orchestrator.submit(
+                    user_key="user", message="question", accepted_at=self.now
+                ),
+                timeout=2,
+            )
+            await asyncio.sleep(0.05)
+        still_running = [
+            task
+            for task in asyncio.all_tasks()
+            if "_run_generation" in repr(task.get_coro())
+        ]
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([("user", "answer")], self.delivered)
+        self.assertEqual([], still_running)
+
+    async def test_model_failure_ends_progress_only_after_a_step(self) -> None:
+        steps: list[ConversationStep | None] = []
+
+        def fail_on(call_number):
+            calls = 0
+
+            async def generate(context):
+                nonlocal calls
+                calls += 1
+                if calls == call_number:
+                    raise RuntimeError("model unavailable")
+                return ModelReply(
+                    tool_calls=(ToolCall("search", '{"query":"q"}', "c1"),)
+                )
+
+            return generate
+
+        async def progress(user_key, progress_id, step):
+            steps.append(step)
+
+        # The first model call fails: nothing was reported, so no end either.
+        result = await self.orchestrator(
+            fail_on(1), progress=progress, read_tools=(self.search(),)
+        ).submit(user_key="user", message="question", accepted_at=self.now)
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual([], steps)
+
+        # It fails after one tool call: that step, then the end.
+        result = await self.orchestrator(
+            fail_on(2), progress=progress, read_tools=(self.search(),)
+        ).submit(user_key="other", message="question", accepted_at=self.now)
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
+        self.assertEqual([ConversationStep("search", '{"query":"q"}'), None], steps)
+
+    async def test_superseded_progress_is_ended_with_its_own_turn_id(self) -> None:
+        first_started = asyncio.Event()
+        events: list[tuple[str, ConversationStep | None]] = []
+
+        async def generate(context):
+            if _results(context):
+                return GeneratedAnswer("answer", "model", 10)
+            return ModelReply(tool_calls=(ToolCall("search", '{"query":"q"}', "c1"),))
+
+        async def execute(user_key, call, inputs):
+            if inputs[-1].message == "A":
+                first_started.set()
+                await asyncio.Event().wait()
+            return ReadToolResult("searched")
+
+        async def progress(user_key, progress_id, step):
+            events.append((progress_id, step))
+
+        orchestrator = self.orchestrator(
+            generate, progress=progress, read_tools=(self.search(execute=execute),)
+        )
+        first = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
+        )
+        await first_started.wait()
+        second = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="B", accepted_at=self.now)
+        )
+        first_result, second_result = await asyncio.gather(first, second)
+
+        self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
+        progress_ids = {progress_id for progress_id, _ in events}
+        self.assertEqual(2, len(progress_ids))
+        for progress_id in progress_ids:
+            self.assertIn((progress_id, None), events)
+
+    # --- Memory tool ----------------------------------------------------------
+
+    async def test_memory_tool_is_applied_after_the_answer(self) -> None:
+        contexts = []
+        result = await self.orchestrator(
+            self.script([("memory", {"action": "update"})], "answer", contexts=contexts)
+        ).submit(user_key="user", message="배당주 선호, 기억해줘", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(["explicit"], self.memory.calls)
+        self.assertFalse(self.memory.explicit_inputs[0][1])
+        self.assertIn("Memory is changed from this request", _results(contexts[1])[0])
+        # Both calls saw the memory tool.
+        self.assertIn("memory", [tool.name for tool in contexts[0].tools])
+
+    async def test_invalid_memory_action_changes_nothing(self) -> None:
+        contexts = []
+        result = await self.orchestrator(
+            self.script([("memory", {"action": "save"})], "answer", contexts=contexts)
+        ).submit(user_key="user", message="remember", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(["revisit"], self.memory.calls)
+        self.assertIn('"update" or "forget"', _results(contexts[1])[0])
+
+    # --- Reading ----------------------------------------------------------------
+
+    async def test_search_links_are_listed_and_only_conversation_links_read(
+        self,
+    ) -> None:
+        contexts = []
+        read = []
+        request = "삼성전자 왜 떨어져?"
+        results = [
+            ReadToolResult(
+                "News search: 삼성전자 주가",
+                (
+                    ToolLink(
+                        "외국인 순매도", "https://n.news.naver.com/a", "2026-09-24"
+                    ),
+                    ToolLink(
+                        "실적 전망 하향", "https://n.news.naver.com/b", None, "요약"
+                    ),
                 ),
             )
+        ]
 
-        async def default_execute(user_key, prepared):
-            executed.append(prepared.arguments_json)
-            return "Order accepted: Samsung 10 shares."
+        result = await self.orchestrator(
+            self.script(
+                [("search", {"query": "삼성전자 주가"})],
+                [
+                    (
+                        "web_extract",
+                        {
+                            "urls": [
+                                "https://n.news.naver.com/b",
+                                "https://invented.example/x",
+                            ],
+                            "goal": GOAL,
+                        },
+                    )
+                ],
+                "answer from read bodies",
+                contexts=contexts,
+            ),
+            read_tools=(self.search(results), self.extractor(read)),
+        ).submit(user_key="member", message=request, accepted_at=self.now)
 
-        return ExecutionToolDefinition(
-            "order",
-            "Prepare an order",
-            {"type": "object"},
-            prepare,
-            execute or default_execute,
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([["https://n.news.naver.com/b"]], read)
+        search_text, extract_text = _results(contexts[-1])
+        self.assertIn(
+            "[2026-09-24] 외국인 순매도 <https://n.news.naver.com/a>", search_text
+        )
+        self.assertIn("실적 전망 하향 — 요약 <https://n.news.naver.com/b>", search_text)
+        self.assertIn("본문 https://n.news.naver.com/b", extract_text)
+        self.assertIn(
+            "- 1 requested link(s) did not appear in this conversation; not read.",
+            extract_text,
+        )
+        # A rejected link is not echoed, or it would become readable next time.
+        self.assertNotIn("invented.example", extract_text)
+        # Only the request and final answer are stored; tool results stay in this Turn.
+        self.assertNotIn("본문", self.store.turns[0].assistant_message)
+
+    async def test_calls_and_results_are_paired_in_order(self) -> None:
+        contexts = []
+
+        async def execute(user_key, call, inputs):
+            query = json.loads(call.arguments_json)["query"]
+            # The first call finishes last; results still follow the call order.
+            await asyncio.sleep(0.02 if query == "first" else 0)
+            return ReadToolResult(f"result {query}")
+
+        await self.orchestrator(
+            self.script(
+                [("search", {"query": "first"}), ("search", {"query": "second"})],
+                "answer",
+                contexts=contexts,
+            ),
+            read_tools=(self.search(execute=execute),),
+        ).submit(user_key="user", message="question", accepted_at=self.now)
+
+        tool_parts = [
+            (part.kind.value, part.call_id, part.content)
+            for part in contexts[1].parts
+            if part.kind.value in ("TOOL_REQUEST", "TOOL_RESULT")
+        ]
+        self.assertEqual(
+            [
+                ("TOOL_REQUEST", "c1", '{"query": "first"}'),
+                ("TOOL_REQUEST", "c2", '{"query": "second"}'),
+                ("TOOL_RESULT", "c1", "result first"),
+                ("TOOL_RESULT", "c2", "result second"),
+            ],
+            tool_parts,
+        )
+
+    async def test_repeated_search_lists_only_new_candidates(self) -> None:
+        link = ToolLink("같은 기사", "https://n.news.naver.com/a")
+        results = [
+            ReadToolResult("first", (link,)),
+            ReadToolResult(
+                "second", (link, ToolLink("새 기사", "https://n.news.naver.com/b"))
+            ),
+            ReadToolResult("third", (link,)),
+        ]
+        contexts = []
+
+        await self.orchestrator(
+            self.script(
+                [("search", {"query": "1"})],
+                [("search", {"query": "2"})],
+                [("search", {"query": "3"})],
+                "answer",
+                contexts=contexts,
+            ),
+            read_tools=(self.search(results),),
+        ).submit(user_key="user", message="news", accepted_at=self.now)
+
+        seen = _results(contexts[-1])
+        self.assertIn("같은 기사 <https://n.news.naver.com/a>", seen[0])
+        self.assertNotIn("같은 기사", seen[1])
+        self.assertIn("새 기사 <https://n.news.naver.com/b>", seen[1])
+        self.assertIn("No new candidates", seen[2])
+
+    async def test_links_in_an_earlier_answer_can_be_read_next_turn(self) -> None:
+        # Articles summarized in one Turn, "read them" in the next.
+        read = []
+        found = ReadToolResult(
+            "News",
+            (
+                ToolLink("기사 1", "https://n.news.naver.com/a?sid=101"),
+                ToolLink("기사 2", "https://n.news.naver.com/b"),
+            ),
+        )
+        links = ["https://n.news.naver.com/a?sid=101", "https://n.news.naver.com/b"]
+        orchestrator = self.orchestrator(
+            self.script(
+                [("search", {"query": "전력기기"})],
+                f"요약입니다. <{links[0]}> <{links[1]}>",
+                [("web_extract", {"urls": links, "goal": GOAL})],
+                "본문 요약",
+            ),
+            read_tools=(self.search([found]), self.extractor(read)),
+        )
+        await orchestrator.submit(
+            user_key="user", message="전력기기 이슈는?", accepted_at=self.now
+        )
+        result = await orchestrator.submit(
+            user_key="user",
+            message="기사들 본문 읽고 요약해줘",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([links], read)
+
+    async def test_memory_links_are_not_readable(self) -> None:
+        read = []
+        contexts = []
+        self.store.memories["user"] = MemoryDocument(
+            "user", "관심 링크 https://memory.example/a", None, self.now
+        )
+
+        await self.orchestrator(
+            self.script(
+                [
+                    (
+                        "web_extract",
+                        {"urls": ["https://memory.example/a"], "goal": GOAL},
+                    )
+                ],
+                "answer",
+                contexts=contexts,
+            ),
+            read_tools=(self.extractor(read),),
+        ).submit(user_key="user", message="그 링크 읽어줘", accepted_at=self.now)
+
+        self.assertEqual([], read)
+        self.assertIn("Not run: no new link to read.", _results(contexts[1])[0])
+
+    async def test_a_link_is_read_once_a_turn(self) -> None:
+        read = []
+        contexts = []
+        a, b = "https://example.com/a", "https://example.com/b"
+
+        await self.orchestrator(
+            self.script(
+                # Two calls in one response ask for the same link: read once.
+                [
+                    ("web_extract", {"urls": [a], "goal": GOAL}),
+                    ("web_extract", {"urls": [a], "goal": "다른 목적"}),
+                ],
+                [("web_extract", {"urls": [a, b], "goal": GOAL})],
+                "answer",
+                contexts=contexts,
+            ),
+            read_tools=(self.extractor(read),),
+        ).submit(user_key="user", message=f"{a} {b} 비교해줘", accepted_at=self.now)
+
+        self.assertEqual([[a], [b]], read)
+        first, second, third = _results(contexts[-1])
+        self.assertIn("본문 https://example.com/a", first)
+        self.assertIn("Not run: no new link to read.", second)
+        self.assertIn(
+            "- 1 requested link(s) were already read in this Turn; not read again.",
+            third,
+        )
+
+    async def test_bad_calls_come_back_as_results(self) -> None:
+        contexts = []
+        orchestrator = self.orchestrator(
+            self.script(
+                [("search", {})],
+                lambda context: ModelReply(
+                    tool_calls=(ToolCall("search", "not json", "x1"),)
+                ),
+                [("nothing", {})],
+                "answer",
+                contexts=contexts,
+            ),
+            read_tools=(self.search(execute=self.never_run),),
+        )
+        result = await orchestrator.submit(
+            user_key="user", message="뉴스", accepted_at=self.now
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(
+            [
+                "Not run: missing query. Call again with them.",
+                "Not run: the arguments were not a JSON object. Call again.",
+                "Not run: there is no tool named nothing.",
+            ],
+            _results(contexts[-1]),
         )
 
     @staticmethod
-    def order_call():
-        async def build_call(context, tool):
-            return ToolCall(tool.name, '{"name":"Samsung","quantity":10}')
+    async def never_run(user_key, call, inputs):
+        raise AssertionError("a bad call is not run")
 
-        return build_call
+    async def test_a_broken_read_tool_ends_the_turn(self) -> None:
+        async def execute(user_key, call, inputs):
+            raise AttributeError("bug")
 
-    @staticmethod
-    def routing(first_turn_action, second_turn_action="confirm", seen=None):
-        async def choose_next(context, options):
-            names = [option.name for option in options]
-            if seen is not None:
-                seen.append(names)
-            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
-                return NextActionDecision("answer")
-            if "confirm" in names:
-                return NextActionDecision(second_turn_action)
-            return NextActionDecision(first_turn_action)
+        result = await self.orchestrator(
+            self.script([("search", {"query": "q"})], "answer"),
+            read_tools=(self.search(execute=execute),),
+        ).submit(user_key="user", message="뉴스", accepted_at=self.now)
 
-        return choose_next
+        # A code error is not an expected failure; the model would keep calling it.
+        self.assertEqual(OrchestratorStatus.TOOL_FAILED, result.status)
+        self.assertEqual([], self.delivered)
 
-    async def test_execution_tool_waits_for_next_turn_confirmation(self) -> None:
-        executed: list[str] = []
-        seen: list[list[str]] = []
+    async def test_superseded_read_tool_cannot_commit(self) -> None:
+        tool_started = asyncio.Event()
 
+        async def generate(context):
+            if "new" in _message(context) or _results(context):
+                return GeneratedAnswer("current answer", "model", 10)
+            return ModelReply(tool_calls=(ToolCall("search", '{"query":"q"}', "c1"),))
+
+        async def execute(user_key, call, inputs):
+            tool_started.set()
+            await asyncio.Event().wait()
+            return ReadToolResult("stale result")
+
+        orchestrator = self.orchestrator(
+            generate, read_tools=(self.search(execute=execute),)
+        )
+        first = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="old", accepted_at=self.now)
+        )
+        await tool_started.wait()
+        second = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="new", accepted_at=self.now)
+        )
+        first_result, second_result = await asyncio.gather(first, second)
+        self.assertEqual(OrchestratorStatus.SUPERSEDED, first_result.status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, second_result.status)
+        self.assertEqual([("user", "current answer")], self.delivered)
+        self.assertEqual(1, len(self.store.turns))
+
+    # --- Limits ------------------------------------------------------------------
+
+    async def test_research_deadline_answers_without_tools(self) -> None:
+        contexts = []
+
+        async def execute(user_key, call, inputs):
+            await asyncio.sleep(1)
+            return ReadToolResult("too late")
+
+        result = await self.orchestrator(
+            self.script(
+                [("search", {"query": "q"})], "partial answer", contexts=contexts
+            ),
+            read_tools=(self.search(execute=execute),),
+            read_routing_timeout_seconds=0.05,
+        ).submit(user_key="user", message="question", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        final = contexts[-1]
+        self.assertEqual((), final.tools)
+        self.assertEqual(["Not finished: the research time ran out."], _results(final))
+        self.assertEqual([RESEARCH_LIMIT_NOTICE], _notes(final))
+        self.assertEqual([("user", "partial answer")], self.delivered)
+
+    async def test_read_limit_is_checked_across_one_response(self) -> None:
+        queries = []
+        contexts = []
+
+        with patch.object(orchestrator_module, "MAX_READ_TOOL_CALLS", 2):
+            result = await self.orchestrator(
+                self.script(
+                    [("search", {"query": str(n)}) for n in range(3)],
+                    "partial answer",
+                    contexts=contexts,
+                ),
+                read_tools=(self.search(queries=queries),),
+            ).submit(user_key="user", message="조사해줘", accepted_at=self.now)
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual(["0", "1"], queries)
+        final = contexts[-1]
+        self.assertEqual("Not run: the research limit was reached.", _results(final)[2])
+        self.assertEqual((), final.tools)
+        self.assertEqual([RESEARCH_LIMIT_NOTICE], _notes(final))
+
+    async def test_a_request_too_large_with_tools_is_answered_without_them(
+        self,
+    ) -> None:
+        contexts = []
+        self.compactor.progress = False
+
+        def counter(parts, tools):
+            return 901 if tools else 10
+
+        orchestrator = self.orchestrator(
+            self.script("answer", contexts=contexts), count=counter
+        )
+        result = await orchestrator.submit(
+            user_key="user", message="question", accepted_at=self.now
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual((), contexts[0].tools)
+        self.assertEqual([RESEARCH_LIMIT_NOTICE], _notes(contexts[0]))
+
+    # --- Tool definitions -------------------------------------------------------
+
+    async def test_tool_names_and_url_argument_are_checked(self) -> None:
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
+        tool = self.order_tool()
+        for name in ("confirm", "memory", "bad name"):
+            reserved = ExecutionToolDefinition(
+                name, "x", {"type": "object"}, tool.prepare, tool.execute
+            )
+            with self.assertRaises(ValueError):
+                self.orchestrator(generate, execution_tools=(reserved,))
+        wrong_argument = ReadToolDefinition(
+            "reader",
+            "x",
+            self.never_run,
+            arguments_schema=EXTRACT_SCHEMA,
+            url_argument="links",
+        )
+        with self.assertRaises(ValueError):
+            self.orchestrator(generate, read_tools=(wrong_argument,))
+
+    # --- Execution and confirmation --------------------------------------------
+
+    async def test_an_order_waits_for_confirmation_in_the_next_turn(self) -> None:
+        executed: list[str] = []
+        contexts = []
         orchestrator = self.orchestrator(
-            generate,
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "주문을 준비했어요.",
+                self.confirm_waiting,
+                "주문했어요.",
+                "다른 답",
+                contexts=contexts,
+            ),
             execution_tools=(self.order_tool(executed=executed),),
-            choose_next=self.routing("order", seen=seen),
-            build_tool_call=self.order_call(),
         )
         first = await orchestrator.submit(
             user_key="user", message="buy Samsung", accepted_at=self.now
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, first.status)
         self.assertEqual([], executed)
-        self.assertNotIn("confirm", seen[0])
+        self.assertNotIn("confirm", [tool.name for tool in contexts[0].tools])
+        # After a draft the model answers without tools.
+        self.assertEqual((), contexts[1].tools)
         # The question is last and stored with the Turn.
         self.assertTrue(
             first.final_text.endswith("\n\nBuy 10 Samsung shares at 285,500 KRW?")
@@ -1940,31 +1543,152 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.final_text, self.store.turns[-1].assistant_message)
 
         second = await orchestrator.submit(
-            user_key="user", message="yes", accepted_at=self.now + timedelta(minutes=1)
+            user_key="user", message="응", accepted_at=self.now + timedelta(minutes=1)
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, second.status)
-        self.assertIn("confirm", seen[-1])
-        self.assertEqual(['{"name":"Samsung","quantity":10}'], executed)
-        self.assertNotIn("Buy 10 Samsung", second.final_text)
+        self.assertIn("confirm", [tool.name for tool in contexts[2].tools])
+        self.assertIn("Samsung 10 shares limit buy", _notes(contexts[2])[0])
+        self.assertEqual(['{"name": "Samsung"}'], executed)
+        self.assertEqual("주문했어요.", second.final_text)
+        self.assertEqual("Order accepted: Samsung.", _results(contexts[3])[0])
 
-        third = await orchestrator.submit(
-            user_key="user", message="yes", accepted_at=self.now + timedelta(minutes=2)
+        await orchestrator.submit(
+            user_key="user", message="응", accepted_at=self.now + timedelta(minutes=2)
         )
-        self.assertEqual(OrchestratorStatus.DELIVERED, third.status)
-        self.assertNotIn("confirm", seen[-1])
+        self.assertNotIn("confirm", [tool.name for tool in contexts[4].tools])
         self.assertEqual(1, len(executed))
 
-    async def test_waiting_action_is_dropped_after_an_unrelated_turn(self) -> None:
-        seen: list[list[str]] = []
+    async def test_several_orders_are_confirmed_one_by_one(self) -> None:
+        executed: list[str] = []
 
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
+        def confirm_first(context):
+            note = _notes(context)[0]
+            first_id = note.splitlines()[1][2:].split(":", 1)[0]
+            return [("confirm", {"action_ids": [first_id]})]
 
         orchestrator = self.orchestrator(
-            generate,
+            self.script(
+                [("order", {"name": "Samsung"}), ("order", {"name": "Hynix"})],
+                "두 건을 준비했어요.",
+                confirm_first,
+                "삼성전자만 주문했어요.",
+            ),
+            execution_tools=(self.order_tool(executed=executed),),
+        )
+        first = await orchestrator.submit(
+            user_key="user", message="삼성 하닉 10주씩", accepted_at=self.now
+        )
+        self.assertTrue(
+            first.final_text.endswith(
+                "Buy 10 Samsung shares at 285,500 KRW?\n\n"
+                "Buy 10 Hynix shares at 285,500 KRW?"
+            )
+        )
+        await orchestrator.submit(
+            user_key="user",
+            message="삼성만 해줘",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+        self.assertEqual(['{"name": "Samsung"}'], executed)
+
+    async def test_at_most_five_orders_are_prepared_at_once(self) -> None:
+        contexts = []
+        orchestrator = self.orchestrator(
+            self.script(
+                [("order", {"name": f"stock{n}"}) for n in range(6)],
+                "answer",
+                contexts=contexts,
+            ),
             execution_tools=(self.order_tool(),),
-            choose_next=self.routing("order", second_turn_action="answer", seen=seen),
-            build_tool_call=self.order_call(),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+
+        self.assertEqual(5, len(orchestrator._pending_actions["user"]))
+        self.assertEqual("Not prepared: at most 5 at a time.", _results(contexts[1])[5])
+
+    async def test_confirm_after_other_tool_results_executes_nothing(self) -> None:
+        executed: list[str] = []
+        contexts = []
+
+        orchestrator = self.orchestrator(
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                # A page read first could have told the model to confirm.
+                [("search", {"query": "q"})],
+                self.confirm_waiting,
+                "확정하지 못했어요.",
+                contexts=contexts,
+            ),
+            read_tools=(self.search(),),
+            execution_tools=(self.order_tool(executed=executed),),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        result = await orchestrator.submit(
+            user_key="user",
+            message="뉴스 보고 판단해",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([], executed)
+        self.assertIn(
+            "confirm works only as the first tool call", _results(contexts[-1])[1]
+        )
+
+    async def test_confirm_runs_alone_in_its_response(self) -> None:
+        executed: list[str] = []
+        contexts = []
+
+        def confirm_and_search(context):
+            return [("search", {"query": "q"}), *self.confirm_waiting(context)]
+
+        orchestrator = self.orchestrator(
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                confirm_and_search,
+                "주문했어요.",
+                contexts=contexts,
+            ),
+            read_tools=(self.search(execute=self.never_run),),
+            execution_tools=(self.order_tool(executed=executed),),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        await orchestrator.submit(
+            user_key="user", message="응", accepted_at=self.now + timedelta(minutes=1)
+        )
+
+        self.assertEqual(['{"name": "Samsung"}'], executed)
+        search_result, confirm_result = _results(contexts[-1])
+        self.assertIn("Not run: confirming comes first.", search_result)
+        self.assertEqual("Order accepted: Samsung.", confirm_result)
+
+    async def test_confirm_with_unknown_ids_executes_nothing(self) -> None:
+        executed: list[str] = []
+        contexts = []
+        orchestrator = self.orchestrator(
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                [("confirm", {"action_ids": ["a999"]})],
+                "확정하지 못했어요.",
+                contexts=contexts,
+            ),
+            execution_tools=(self.order_tool(executed=executed),),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        await orchestrator.submit(
+            user_key="user", message="응", accepted_at=self.now + timedelta(minutes=1)
+        )
+
+        self.assertEqual([], executed)
+        self.assertIn("unknown action IDs", _results(contexts[-1])[0])
+
+    async def test_waiting_action_is_dropped_after_an_unrelated_turn(self) -> None:
+        orchestrator = self.orchestrator(
+            self.script([("order", {"name": "Samsung"})], "준비했어요.", "다른 답"),
+            execution_tools=(self.order_tool(),),
         )
         await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
         await orchestrator.submit(
@@ -1972,46 +1696,32 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             message="what?",
             accepted_at=self.now + timedelta(minutes=1),
         )
-        self.assertIn("confirm", seen[-1])
         self.assertEqual({}, orchestrator._pending_actions)
 
     async def test_expired_confirmation_is_dropped_with_a_notice(self) -> None:
         executed: list[str] = []
-        seen: list[list[str]] = []
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose(context, options):
-            names = [option.name for option in options]
-            seen.append(names)
-            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
-                return NextActionDecision("answer")
-            return NextActionDecision("order" if len(seen) == 1 else "answer")
-
+        contexts = []
         orchestrator = self.orchestrator(
-            generate,
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                "늦었어요.",
+                contexts=contexts,
+            ),
             execution_tools=(self.order_tool(executed=executed),),
-            choose_next=choose,
-            build_tool_call=self.order_call(),
         )
         await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
         late = await orchestrator.submit(
             user_key="user", message="yes", accepted_at=self.now + timedelta(minutes=6)
         )
-        self.assertNotIn("confirm", seen[-1])
+        self.assertNotIn("confirm", [tool.name for tool in contexts[-1].tools])
         self.assertIn(CONFIRMATION_EXPIRED_NOTICE, late.final_text)
         self.assertEqual([], executed)
 
     async def test_missing_arguments_prepare_nothing(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("How many shares?", "model", 10)
-
         orchestrator = self.orchestrator(
-            generate,
+            self.script([("order", {"name": "Samsung"})], "How many shares?"),
             execution_tools=(self.order_tool(action=False),),
-            choose_next=self.routing("order"),
-            build_tool_call=self.order_call(),
         )
         result = await orchestrator.submit(
             user_key="user", message="buy Samsung", accepted_at=self.now
@@ -2022,11 +1732,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
     async def test_new_message_after_confirm_waits_for_the_execution(self) -> None:
         executing = asyncio.Event()
         release = asyncio.Event()
-        generated: list[str] = []
-
-        async def generate(context):
-            generated.append(_message(context))
-            return GeneratedAnswer("answer", "model", 10)
 
         async def execute(user_key, prepared):
             executing.set()
@@ -2034,10 +1739,14 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             return "Order accepted."
 
         orchestrator = self.orchestrator(
-            generate,
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                self.confirm_waiting,
+                "주문했어요.",
+                "뉴스 답",
+            ),
             execution_tools=(self.order_tool(execute=execute),),
-            choose_next=self.routing("order"),
-            build_tool_call=self.order_call(),
         )
         await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
         later = self.now + timedelta(minutes=1)
@@ -2063,33 +1772,27 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
     async def test_new_message_while_reporting_confirm_runs_nothing(self) -> None:
         executed: list[str] = []
         reporting = asyncio.Event()
-        confirms = 0
-
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        async def choose_next(context, options):
-            nonlocal confirms
-            names = [option.name for option in options]
-            if any(part.kind.value == "TOOL_RESULT" for part in context.parts):
-                return NextActionDecision("answer")
-            if "confirm" in names and confirms == 0:
-                confirms += 1
-                return NextActionDecision("confirm")
-            return NextActionDecision("answer" if "confirm" in names else "order")
 
         async def progress(user_key, progress_id, step):
-            # The confirm step is only Jev's choice; the claim comes after it.
-            if step == ConversationStep("confirm"):
+            # The confirm step is only the model's call; the claim comes after it.
+            if step is not None and step.next_action == "confirm":
                 reporting.set()
                 await asyncio.Event().wait()
 
+        def confirm_once(context):
+            if "wait" in _message(context):
+                return "기다릴게요."
+            return self.confirm_waiting(context)
+
         orchestrator = self.orchestrator(
-            generate,
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                confirm_once,
+                confirm_once,
+            ),
             progress=progress,
             execution_tools=(self.order_tool(executed=executed),),
-            choose_next=choose_next,
-            build_tool_call=self.order_call(),
         )
         await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
         later = self.now + timedelta(minutes=1)
@@ -2107,27 +1810,24 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], executed)
 
     async def test_answer_failure_after_execution_sends_the_fixed_result(self) -> None:
-        calls = 0
-
-        async def generate(context):
-            nonlocal calls
-            calls += 1
-            if calls > 1:
-                raise RuntimeError("model unavailable")
-            return GeneratedAnswer("answer", "model", 10)
+        def fail(context):
+            raise RuntimeError("model unavailable")
 
         orchestrator = self.orchestrator(
-            generate,
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                self.confirm_waiting,
+                fail,
+            ),
             execution_tools=(self.order_tool(),),
-            choose_next=self.routing("order"),
-            build_tool_call=self.order_call(),
         )
         await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
         result = await orchestrator.submit(
             user_key="user", message="yes", accepted_at=self.now + timedelta(minutes=1)
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual("Order accepted: Samsung 10 shares.", result.final_text)
+        self.assertEqual("Order accepted: Samsung.", result.final_text)
 
     async def test_external_cancel_after_confirm_still_reports_the_order(
         self,
@@ -2135,19 +1835,19 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         executing = asyncio.Event()
         release = asyncio.Event()
 
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
         async def execute(user_key, prepared):
             executing.set()
             await release.wait()
             return "Order accepted."
 
         orchestrator = self.orchestrator(
-            generate,
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                self.confirm_waiting,
+                "주문했어요.",
+            ),
             execution_tools=(self.order_tool(execute=execute),),
-            choose_next=self.routing("order"),
-            build_tool_call=self.order_call(),
         )
         await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
         confirm = asyncio.create_task(
@@ -2172,47 +1872,37 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("user", orchestrator._states)
 
-    async def test_a_draft_is_answered_without_asking_jev_again(self) -> None:
-        choices = 0
+    async def test_answer_links_become_numbered_sources(self) -> None:
+        found = "https://etf.example/091160"
+        given = "https://fund.example/kodex"
+        results = [ReadToolResult("News", (ToolLink("KODEX 반도체", found),))]
 
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
+        await self.orchestrator(
+            self.script(
+                [("search", {"query": "KODEX"})],
+                f"SK하이닉스 36.8% <{found}>, 삼성전자 23.9% [3] {given}.\n"
+                f"기준일은 8월 [ETF쇼핑]({found}). 참고 https://made.up/x 와 "
+                "[다른 곳](https://made.up/y)",
+            ),
+            read_tools=(self.search(results),),
+        ).submit(user_key="user", message=f"비중 알려줘 {given}", accepted_at=self.now)
 
-        async def always_order(context, options):
-            nonlocal choices
-            choices += 1
-            return NextActionDecision("order")
-
-        for action in (True, False):
-            choices = 0
-            self.store = FakeStore()
-            result = await self.orchestrator(
-                generate,
-                execution_tools=(self.order_tool(action=action),),
-                choose_next=always_order,
-                build_tool_call=self.order_call(),
-            ).submit(user_key="user", message="buy Samsung", accepted_at=self.now)
-            self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-            self.assertEqual(1, choices)
-            self.assertEqual(action, result.final_text.endswith("KRW?"))
-
-    async def test_confirm_and_answer_are_reserved_tool_names(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        tool = self.order_tool()
-        for name in ("confirm", "answer"):
-            reserved = ExecutionToolDefinition(
-                name, "x", {"type": "object"}, tool.prepare, tool.execute
-            )
-            with self.assertRaises(ValueError):
-                self.orchestrator(
-                    generate,
-                    execution_tools=(reserved,),
-                    build_tool_call=self.order_call(),
+        # Links become numbers in order of first use, the model's own numbers
+        # and links that no tool or message gave are dropped, and the list
+        # carries the links the tools actually returned.
+        self.assertEqual(
+            [
+                (
+                    "user",
+                    "SK하이닉스 36.8% [1], 삼성전자 23.9% [2].\n"
+                    "기준일은 8월 ETF쇼핑 [1]. 참고 와 다른 곳\n\n"
+                    "출처\n"
+                    f"[1] KODEX 반도체 {found}\n"
+                    f"[2] {given}",
                 )
-        with self.assertRaises(ValueError):
-            self.orchestrator(generate, execution_tools=(tool,))
+            ],
+            self.delivered,
+        )
 
 
 if __name__ == "__main__":

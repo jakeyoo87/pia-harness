@@ -6,6 +6,7 @@ import unittest
 
 from pia_harness import (
     GeneratedAnswer,
+    ModelReply,
     MemoryReviewAction,
     MemoryReviewOutput,
     OpenRouterModelError,
@@ -46,12 +47,12 @@ class FakeAdapter:
     def count_input_tokens(self, parts):
         return 10
 
-    async def generate_answer(self, context):
+    async def generate_reply(self, context):
         self.answer_calls += 1
         value = next(self.answers)
         if isinstance(value, BaseException):
             raise value
-        return value
+        return ModelReply(answer=value)
 
     def review_memory(self, request):
         self.memory_calls += 1
@@ -224,7 +225,7 @@ class OpenRouterModelSmokeTest(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
 
         class CancellingAdapter(FakeAdapter):
-            async def generate_answer(self, context):
+            async def generate_reply(self, context):
                 started.set()
                 await asyncio.Event().wait()
                 raise AssertionError("unreachable")

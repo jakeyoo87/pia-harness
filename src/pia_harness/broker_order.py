@@ -54,8 +54,8 @@ ORDER_ARGUMENTS_SCHEMA: dict[str, Any] = {
 }
 ORDER_DESCRIPTION = (
     "Prepare a Korean stock buy or sell order for the user's confirmation; nothing "
-    "is executed yet. Choose when the user asks to buy or sell a stock, or answers a "
-    "question about an order being drafted. Fill each field from the whole "
+    "is executed yet. Use when the user asks to buy or sell a stock, or answers a "
+    "question about an order being drafted; call it once per order. Fill each field from the whole "
     "conversation (a short reply like '3주' continues the previous order request). "
     "Never invent the side, quantity or price; leave them null if not said."
 )
@@ -77,7 +77,7 @@ class BrokerOrderTool:
             base_url=base_url, auth=auth, timeout=timeout_seconds
         )
 
-    def definition(self) -> ExecutionToolDefinition:
+    def tool(self) -> ExecutionToolDefinition:
         return ExecutionToolDefinition(
             name=ORDER_TOOL_NAME,
             description=ORDER_DESCRIPTION,

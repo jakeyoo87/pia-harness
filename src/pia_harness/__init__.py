@@ -18,6 +18,7 @@ from .context import (
     PromptContextValidationError,
     PromptTrust,
     ToolObservation,
+    ToolSpec,
 )
 from .exa_search import ExaWebSearch
 from .jev import JevDecisionAdapter, JevDecisionError
@@ -49,12 +50,8 @@ from .orchestrator import (
     ExecutionToolDefinition,
     GeneratedAnswer,
     MemoryAction,
-    NextActionDecision,
-    NextActionInputTooLarge,
-    NextActionOption,
+    ModelReply,
     OrchestratorStatus,
-    PageExcerpt,
-    PageReadError,
     PreparationResult,
     PreparedAction,
     ReadToolDefinition,
@@ -79,7 +76,7 @@ from .session import (
     RollingSummary,
     new_turn_id,
 )
-from .web_extract import JinaPageExtractor
+from .web_extract import JinaPageExtractor, PageExcerpt, PageReadError
 
 __all__ = [
     "CONFIRMATION_EXPIRED_NOTICE",
@@ -109,12 +106,9 @@ __all__ = [
     "ExecutionToolDefinition",
     "GeneratedAnswer",
     "JevDecisionAdapter",
-    "JinaPageExtractor",
     "JevDecisionError",
+    "JinaPageExtractor",
     "MemoryAction",
-    "NextActionDecision",
-    "NextActionInputTooLarge",
-    "NextActionOption",
     "MemoryDocument",
     "MemoryReviewAction",
     "MemoryReviewOutput",
@@ -123,6 +117,7 @@ __all__ = [
     "MemoryReviewResult",
     "MemoryReviewStatus",
     "MemoryReviewValidationError",
+    "ModelReply",
     "ModelTokenBudget",
     "OpenRouterModelAdapter",
     "OpenRouterModelError",
@@ -148,6 +143,7 @@ __all__ = [
     "ToolCall",
     "ToolLink",
     "ToolObservation",
+    "ToolSpec",
     "TurnConflictError",
     "TurnTooLargeError",
     "conservative_token_estimate",

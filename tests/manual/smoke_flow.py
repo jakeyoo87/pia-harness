@@ -1,4 +1,4 @@
-"""Run the README section 1 flow with real Jev, OpenRouter, Exa, and Jina.
+"""Run the README section 1 flow with the real model, Exa, and Jina.
 
 Manual only: it calls paid APIs and model decisions vary, so it is not part of pytest
 or CI. Scenarios run in order in one conversation, so later ones can refer to earlier
@@ -33,7 +33,7 @@ from pia_harness import (
     JinaPageExtractor,
     ModelTokenBudget,
     OpenRouterModelAdapter,
-    PageExcerpt,
+    ReadToolDefinition,
 )
 from pia_harness.compaction import TokenCompactor
 from pia_harness.context import PromptContextAssembler
@@ -59,19 +59,21 @@ MEMORY_INSTRUCTION = (
     "investment style, risk tolerance, holdings or interests the user states. "
     "Do not keep news content or one-off questions."
 )
+_MEMORY_ACTIONS = {"update": "UPDATE", "forget": "FORGET"}
 
 
 @dataclass
 class Record:
     """What one scenario did; filled by the instrumentation below."""
 
-    jev: list[dict[str, Any]] = field(default_factory=list)
+    # Each model step: the tools it called, or "answer".
+    steps: list[str] = field(default_factory=list)
+    memory: str = "NONE"
     current_user: str = ""
-    # Model and provider calls besides Jev, for the cost of one question.
+    tokens: list[int] = field(default_factory=list)
+    # Provider calls besides the loop model, for the cost of one question.
     calls: dict[str, int] = field(
-        default_factory=lambda: dict.fromkeys(
-            ("tool_args", "search", "page", "passages"), 0
-        )
+        default_factory=lambda: dict.fromkeys(("search", "page", "notes"), 0)
     )
 
 
@@ -81,56 +83,49 @@ def _log(started: float, event: str, detail: str = "") -> None:
     )
 
 
-def _instrument(
-    jev: JevDecisionAdapter, model: OpenRouterModelAdapter, search: ExaWebSearch
-):
-    """Wrap calls to log decisions. Jev probabilities and token counts are only in
-    the raw response, so this reaches into the adapter's private post method."""
+def _instrument(model: OpenRouterModelAdapter, search: ExaWebSearch):
+    """Wrap calls to log each model step, tool and HTTP attempt. No content is
+    logged beyond the synthetic scenario's own arguments and answers."""
     state: dict[str, Any] = {"record": Record(), "started": time.monotonic()}
-    post_async = jev._post_async
+    reply = model.generate_reply
 
-    async def jev_post(payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            result = await post_async(payload)
-        except Exception as error:
-            _log(state["started"], "JEV failed", type(error).__name__)
-            raise
-        answers = result.get("answers", {})
-        choice = answers.get("next_action", {}).get("choice")
-        memory = answers.get("memory_action", {}).get("choice")
-        tokens = result.get("usage", {}).get("input_tokens")
+    async def logged_reply(context):
         record: Record = state["record"]
-        record.jev.append({"choice": choice, "memory": memory, "tokens": tokens})
         record.current_user = next(
-            (p["content"] for p in payload["state"] if p["kind"] == "CURRENT_USER"), ""
+            (p.content for p in context.parts if p.kind.value == "CURRENT_USER"), ""
         )
-        probs = json.dumps(answers.get("next_action", {}).get("probabilities"))
-        _log(
-            state["started"], "JEV", f"{choice} memory={memory} tokens={tokens} {probs}"
-        )
+        record.tokens.append(context.estimated_input_tokens)
+        try:
+            result = await reply(context)
+        except Exception as error:
+            event = getattr(error, "event", "")
+            _log(state["started"], "MODEL failed", f"{type(error).__name__} {event}")
+            raise
+        if result.answer is not None:
+            record.steps.append("answer")
+            _log(state["started"], "ANSWER", f"tools_offered={len(context.tools)}")
+        else:
+            names = []
+            for call in result.tool_calls:
+                names.append(call.name)
+                _log(state["started"], "CALL", f"{call.name} {call.arguments_json}")
+                if call.name == "memory":
+                    action = json.loads(call.arguments_json or "{}").get("action")
+                    record.memory = _MEMORY_ACTIONS.get(action, record.memory)
+            record.steps.append("+".join(names))
         return result
 
-    jev._post_async = jev_post  # type: ignore[method-assign]
+    model.generate_reply = logged_reply  # type: ignore[method-assign]
 
-    tool_call = model.generate_tool_call
+    read_json = model.read_json
 
-    async def logged_tool_call(context, tool):
-        state["record"].calls["tool_args"] += 1
-        call = await tool_call(context, tool)
-        _log(state["started"], "TOOL_ARGS", call.arguments_json)
-        return call
+    async def counted_json(messages, schema_name, schema):
+        state["record"].calls["notes"] += 1
+        return await read_json(messages, schema_name, schema)
 
-    model.generate_tool_call = logged_tool_call  # type: ignore[method-assign]
+    model.read_json = counted_json  # type: ignore[method-assign]
 
-    notes = model.read_page_notes
-
-    async def counted_notes(goal: str, request: str, page: str):
-        state["record"].calls["passages"] += 1
-        return await notes(goal, request, page)
-
-    model.read_page_notes = counted_notes  # type: ignore[method-assign]
-
-    # Each HTTP attempt to Jev or the model: host, status, time. No content.
+    # Each HTTP attempt to the model: path, status, time. No content.
     async def on_request(request: httpx.Request) -> None:
         request.extensions["started"] = time.monotonic()
 
@@ -143,21 +138,10 @@ def _instrument(
             f"{path} {response.status_code} {time.monotonic() - began:.1f}s",
         )
 
-    answer = model.generate_answer
-
-    async def logged_answer(context):
-        try:
-            return await answer(context)
-        except Exception as error:
-            event = getattr(error, "event", "")
-            _log(state["started"], "ANSWER failed", f"{type(error).__name__} {event}")
-            raise
-
-    model.generate_answer = logged_answer  # type: ignore[method-assign]
-
-    hooks = {"request": [on_request], "response": [on_response]}
-    jev._async.event_hooks = hooks
-    model._async_client.event_hooks = hooks
+    model._async_client.event_hooks = {
+        "request": [on_request],
+        "response": [on_response],
+    }
 
     execute = search.execute
 
@@ -176,11 +160,13 @@ def _instrument(
     return state, logged_search
 
 
-def _logged_extract(state: dict[str, Any], extractor: JinaPageExtractor):
-    async def logged_extract(url: str, goal: str, request: str) -> PageExcerpt:
+def _instrument_extract(state: dict[str, Any], extractor: JinaPageExtractor) -> None:
+    extract = extractor.extract
+
+    async def logged_extract(url: str, goal: str, request: str):
         state["record"].calls["page"] += 1
         try:
-            excerpt = await extractor.extract(url, goal, request)
+            excerpt = await extract(url, goal, request)
         except Exception as error:
             _log(state["started"], "EXTRACT failed", f"{url} ({error})")
             raise
@@ -188,7 +174,7 @@ def _logged_extract(state: dict[str, Any], extractor: JinaPageExtractor):
         _log(state["started"], "EXTRACT", f"{url} {excerpt.status} chars={chars}")
         return excerpt
 
-    return logged_extract
+    extractor.extract = logged_extract  # type: ignore[method-assign]
 
 
 def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
@@ -250,12 +236,15 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
 
 def _check(scenario: dict[str, Any], record: Record) -> str:
     expect = scenario.get("expect")
-    if not expect or not record.jev:
+    if not expect or not record.steps:
         return "OBSERVE"
-    first = str(record.jev[0]["choice"]).split(":")[0]
-    ok = first == expect
+    # The first step's tools, without the memory tool that may come with them.
+    first = [
+        name for name in record.steps[0].split("+") if name != "memory"
+    ] or record.steps[0].split("+")
+    ok = expect in first or (expect == "answer" and first == ["memory"])
     if "expect_memory" in scenario:
-        ok = ok and record.jev[-1]["memory"] == scenario["expect_memory"]
+        ok = ok and record.memory == scenario["expect_memory"]
     if "then" in scenario:
         ok = ok and scenario["then"] in record.current_user
     return "PASS" if ok else "CHECK"
@@ -276,13 +265,14 @@ async def run(
         timeout_seconds=60,
         max_attempts=2,
     )
+    # Jev only decides whether the automatic Memory Review rewrites Memory.
     jev = JevDecisionAdapter(api_key=key, timeout_seconds=20)
     search = ExaWebSearch()
-    state, logged_search = _instrument(jev, model, search)
-    # Built after _instrument so it calls the counted passages method.
-    extractor = JinaPageExtractor(model.read_page_notes)
+    state, logged_search = _instrument(model, search)
+    extractor = JinaPageExtractor(model.read_json)
+    _instrument_extract(state, extractor)
     tool = search.tool()
-    tool = type(tool)(
+    search_tool = ReadToolDefinition(
         name=tool.name,
         description=tool.description,
         execute=logged_search,
@@ -297,7 +287,7 @@ async def run(
         execution_tools = (
             BrokerOrderTool(
                 base_url="https://broker.invalid", client=broker_client
-            ).definition(),
+            ).tool(),
         )
 
     async def deliver(user_key: str, text: str) -> None:
@@ -313,17 +303,14 @@ async def run(
             instruction=MEMORY_INSTRUCTION,
         ),
         compactor=TokenCompactor(store, model.summarize),
-        generate_answer=model.generate_answer,
+        generate_reply=model.generate_reply,
         deliver=deliver,
         system_prompt=SYSTEM_PROMPT,
         token_budget=budget,
         model_id=model_id,
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
-        read_tools=(tool,),
+        read_tools=(search_tool, extractor.tool()),
         execution_tools=execution_tools,
-        extract_page=_logged_extract(state, extractor),
-        choose_next=jev.choose_next,
-        build_tool_call=model.generate_tool_call,
     )
     rows = []
     try:
@@ -351,19 +338,20 @@ async def run(
                 "MEMORY",
                 json.dumps(memory.memory_text if memory else None, ensure_ascii=False),
             )
-            tokens = [j["tokens"] for j in record.jev if j["tokens"] is not None]
-            _log(state["started"], "CALLS", f"jev={len(record.jev)} {record.calls}")
+            _log(state["started"], "CALLS", f"model={len(record.steps)} {record.calls}")
             if scenario_set == "execution":
                 _log(state["started"], "ORDERS SENT", str(len(orders)))
             rows.append(
                 (
                     scenario["id"],
                     scenario.get("expect", "-"),
-                    " > ".join(str(j["choice"]) for j in record.jev),
+                    " > ".join(record.steps),
                     _check(scenario, record),
                     f"{time.monotonic() - state['started']:.1f}s",
-                    max(tokens, default=0),
-                    "/".join(str(n) for n in (len(record.jev), *record.calls.values())),
+                    max(record.tokens, default=0),
+                    "/".join(
+                        str(n) for n in (len(record.steps), *record.calls.values())
+                    ),
                 )
             )
     finally:
@@ -375,8 +363,8 @@ async def run(
             await broker_client.aclose()
 
     print(
-        "\n===== summary (id | expect | Jev choices | check | time | max Jev tokens"
-        " | calls jev/args/search/page/passages)"
+        "\n===== summary (id | expect | model steps | check | time"
+        " | max input tokens | calls model/search/page/notes)"
     )
     for row in rows:
         print(" | ".join(str(value) for value in row))

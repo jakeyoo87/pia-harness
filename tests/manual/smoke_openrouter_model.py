@@ -20,7 +20,7 @@ from pia_harness import (
     AssembledPromptContext,
     CompletedTurn,
     CurrentMemoryInput,
-    GeneratedAnswer,
+    ModelReply,
     MemoryReviewAction,
     MemoryReviewOutput,
     MemoryReviewRequest,
@@ -45,9 +45,7 @@ MOVING_MODEL_IDS = {"openrouter/auto", "openrouter/auto-beta", "openrouter/free"
 class SmokeAdapter(Protocol):
     def count_input_tokens(self, parts: tuple[PromptContextPart, ...]) -> int: ...
 
-    async def generate_answer(
-        self, context: AssembledPromptContext
-    ) -> GeneratedAnswer: ...
+    async def generate_reply(self, context: AssembledPromptContext) -> ModelReply: ...
 
     def review_memory(self, request: MemoryReviewRequest) -> MemoryReviewOutput: ...
 
@@ -161,9 +159,12 @@ async def _run_answer(
     started = monotonic()
     try:
         estimate = adapter.count_input_tokens(parts)
-        answer = await adapter.generate_answer(
+        reply = await adapter.generate_reply(
             AssembledPromptContext(parts, estimate, budget.input_tokens)
         )
+        answer = reply.answer
+        if answer is None:
+            raise ValueError("no tools were offered, so the reply must answer")
         passed = bool(answer.text.strip())
         return SmokeResult(
             scenario=name,

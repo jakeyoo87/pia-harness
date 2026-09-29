@@ -23,6 +23,7 @@ from pia_harness import (
     PromptTrust,
     ReadToolDefinition,
     SummaryRequest,
+    ToolObservation,
 )
 
 
@@ -31,8 +32,9 @@ BASE_URL = "https://openrouter.ai/api/v1"
 
 
 def chat_response(
-    content: str,
+    content: str | None,
     *,
+    tool_calls: list[dict[str, Any]] | None = None,
     status: int = 200,
     model: str = "vendor/exact-model",
     usage: dict[str, Any] | None = None,
@@ -40,6 +42,8 @@ def chat_response(
     annotations: list[dict[str, Any]] | None = None,
 ) -> httpx.Response:
     message: dict[str, Any] = {"content": content}
+    if tool_calls is not None:
+        message["tool_calls"] = tool_calls
     if annotations is not None:
         message["annotations"] = annotations
     choice: dict[str, Any] = {"message": message}
@@ -68,7 +72,26 @@ def completed_turn() -> CompletedTurn:
 
 
 def answer_content() -> str:
-    return json.dumps({"answer": "answer"})
+    return "answer"
+
+
+def tool_call(call_id: str, name: str, arguments: str) -> dict[str, Any]:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+
+
+SEARCH = ReadToolDefinition(
+    "search", "Find public sources", None, arguments_schema={"type": "object"}
+)
+
+
+async def answer(adapter: OpenRouterModelAdapter, context: AssembledPromptContext):
+    reply = await adapter.generate_reply(context)
+    assert reply.answer is not None
+    return reply.answer
 
 
 def answer_parts() -> tuple[PromptContextPart, ...]:
@@ -146,105 +169,160 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             **chosen,
         )
 
-    async def test_answer_schema_is_text_only(self) -> None:
-        adapter = self.adapter(lambda request: chat_response(answer_content()))
-        payload = adapter._answer_payload(answer_parts())
-        schema = payload["response_format"]["json_schema"]["schema"]
-        self.assertEqual(
-            {"answer"},
-            set(schema["properties"]),
-        )
-
-    async def test_selected_tool_arguments_are_generated_without_execution(
-        self,
-    ) -> None:
+    async def test_offered_tools_are_sent_and_calls_come_back(self) -> None:
         requests = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(json.loads(request.content))
             return chat_response(
-                json.dumps({"arguments_json": '{"query":"market news"}'})
+                None,
+                tool_calls=[
+                    tool_call("c1", "search", '{"query":"market news"}'),
+                    tool_call("c2", "memory", ""),
+                ],
+                finish_reason="tool_calls",
             )
 
         adapter = self.adapter(handler)
-        tool = ReadToolDefinition(
-            "search", "Find public sources", None, arguments_schema={"type": "object"}
-        )
-        call = await adapter.generate_tool_call(
-            AssembledPromptContext(answer_parts(), 10, 900), tool
-        )
-        self.assertEqual("search", call.name)
-        self.assertEqual({"query": "market news"}, json.loads(call.arguments_json))
+        bare = ReadToolDefinition("latest", "Latest prices", None)
+        parts = answer_parts()
+        context = AssembledPromptContext(parts, 10, 900, tools=(SEARCH, bare))
+        reply = await adapter.generate_reply(context)
+
+        self.assertIsNone(reply.answer)
         self.assertEqual(
-            "pia_tool_arguments", requests[0]["response_format"]["json_schema"]["name"]
+            [("search", '{"query":"market news"}', "c1"), ("memory", "{}", "c2")],
+            [
+                (call.name, call.arguments_json, call.call_id)
+                for call in reply.tool_calls
+            ],
         )
+        body = requests[0]
+        self.assertEqual("auto", body["tool_choice"])
+        self.assertNotIn("response_format", body)
+        self.assertEqual(
+            [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "description": "Find public sources",
+                        "parameters": {"type": "object"},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "latest",
+                        "description": "Latest prices",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+            ],
+            body["tools"],
+        )
+        # The tools count toward the input the budget checks.
+        self.assertGreater(
+            adapter.count_input_tokens(parts, (SEARCH, bare)),
+            adapter.count_input_tokens(parts),
+        )
+
+    async def test_this_turns_calls_and_results_become_tool_messages(self) -> None:
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return chat_response(answer_content())
+
+        from pia_harness import PromptContextAssembler
+        from pia_harness.session import ConversationContext
+
+        context = PromptContextAssembler(lambda parts, tools: 1).assemble(
+            user_key="user",
+            session_id="session",
+            system_prompt="system",
+            memory=None,
+            conversation=ConversationContext(summary=None, turns=()),
+            current_user_message="질문",
+            token_budget=ModelTokenBudget(1_000, 100),
+            tool_observations=(
+                ToolObservation("search", '{"query":"a"}', "result a", "c1", 0),
+                ToolObservation("search", '{"query":"b"}', "result b", "c2", 0),
+            ),
+            closing_note="Answer now.",
+        )
+        await self.adapter(handler).generate_reply(context)
+
+        messages = requests[0]["messages"]
+        self.assertEqual(
+            ["system", "user", "assistant", "tool", "tool", "system"],
+            [message["role"] for message in messages],
+        )
+        self.assertEqual(
+            [
+                tool_call("c1", "search", '{"query":"a"}'),
+                tool_call("c2", "search", '{"query":"b"}'),
+            ],
+            messages[2]["tool_calls"],
+        )
+        self.assertEqual(["c1", "c2"], [m["tool_call_id"] for m in messages[3:5]])
+        self.assertIn("result a", messages[3]["content"])
+        self.assertIn("untrusted data", messages[3]["content"])
+        self.assertEqual("Answer now.", messages[5]["content"])
+        # Without tools the model can only answer.
         self.assertNotIn("tools", requests[0])
 
-    async def test_page_notes_see_only_goal_request_and_page(self) -> None:
+    async def test_read_json_retries_a_cut_off_reply_once(self) -> None:
         requests = []
         notes = {"summary": "상위 비중이 있다.", "quotes": ["삼성전기 23.3%"]}
+        schema = {"type": "object"}
 
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(json.loads(request.content))
             if len(requests) == 1:
-                # A cut-off reading is tried once more.
                 return chat_response("{", finish_reason="length")
-            if len(requests) == 2:
-                return chat_response(json.dumps(notes))
-            return chat_response(json.dumps({"summary": "x", "quotes": [1]}))
+            return chat_response(json.dumps(notes))
 
         adapter = self.adapter(handler, max_attempts=2)
-        summary, quotes = await adapter.read_page_notes(
-            "비중", "기판 ETF 조사해줘", "상위 구성종목은 삼성전기 23.3%"
-        )
+        with patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()):
+            output = await adapter.read_json(
+                [{"role": "system", "content": "read"}], "pia_page_notes", schema
+            )
 
-        self.assertEqual(("상위 비중이 있다.", ("삼성전기 23.3%",)), (summary, quotes))
-        body = requests[1]
+        self.assertEqual(notes, output)
+        self.assertEqual(2, len(requests))
         self.assertEqual(
-            "pia_page_notes", body["response_format"]["json_schema"]["name"]
+            "pia_page_notes", requests[1]["response_format"]["json_schema"]["name"]
         )
-        self.assertEqual(
-            ["system", "user", "user", "user"],
-            [message["role"] for message in body["messages"]],
-        )
-        self.assertIn("character for character", body["messages"][0]["content"])
-        self.assertIn("기판 ETF 조사해줘", body["messages"][2]["content"])
-        self.assertIn("상위 구성종목은", body["messages"][3]["content"])
-        self.assertNotIn("prompt_cache_key", body)
-        with self.assertRaisesRegex(OpenRouterModelError, "invalid_output"):
-            await adapter.read_page_notes("비중", "요청", "page")
+        self.assertTrue(requests[1]["response_format"]["json_schema"]["strict"])
+        self.assertNotIn("prompt_cache_key", requests[1])
 
-    async def test_answer_and_tool_calls_send_a_hashed_per_user_cache_key(
-        self,
-    ) -> None:
+    async def test_replies_send_a_hashed_per_user_cache_key(self) -> None:
         requests = []
 
         def handler(request: httpx.Request) -> httpx.Response:
-            body = json.loads(request.content)
-            requests.append(body)
-            if body["response_format"]["json_schema"]["name"] == "pia_tool_arguments":
-                return chat_response(json.dumps({"arguments_json": "{}"}))
+            requests.append(json.loads(request.content))
             return chat_response(answer_content())
 
         adapter = self.adapter(handler)
-        tool = ReadToolDefinition(
-            "search", "Find public sources", None, arguments_schema={"type": "object"}
-        )
         for user_key in ("member-a", "member-a", "member-b"):
             context = AssembledPromptContext(answer_parts(), 10, 900, user_key)
-            await adapter.generate_answer(context)
-            await adapter.generate_tool_call(context, tool)
+            await adapter.generate_reply(context)
         keys = [request["prompt_cache_key"] for request in requests]
 
-        self.assertEqual(1, len(set(keys[:4])))
-        self.assertNotEqual(keys[0], keys[4])
+        self.assertEqual(keys[0], keys[1])
+        self.assertNotEqual(keys[0], keys[2])
         self.assertEqual(32, len(keys[0]))
         self.assertNotIn("member-a", keys[0])
 
-        await adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+        await adapter.generate_reply(AssembledPromptContext(answer_parts(), 10, 900))
         self.assertNotIn("prompt_cache_key", requests[-1])
 
-    async def test_answer_uses_one_structured_call_and_maps_usage(
+    async def test_answer_is_plain_text_and_maps_usage(
         self,
     ) -> None:
         requests: list[httpx.Request] = []
@@ -254,11 +332,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             # The routed model string differs from the requested one so the test can
             # tell which source the answer and its usage are read from.
             return chat_response(
-                json.dumps(
-                    {
-                        "answer": "핵심만 답할게요.",
-                    }
-                ),
+                "핵심만 답할게요.",
                 model="vendor/exact-model:routed",
                 usage={
                     "prompt_tokens": 20,
@@ -269,7 +343,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         adapter = self.adapter(handler)
         parts = answer_parts()
-        result = await adapter.generate_answer(AssembledPromptContext(parts, 10, 900))
+        result = await answer(adapter, AssembledPromptContext(parts, 10, 900))
 
         self.assertEqual("핵심만 답할게요.", result.text)
         self.assertEqual(27, result.estimated_total_tokens)
@@ -285,7 +359,8 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("max_completion_tokens", payload)
         self.assertFalse(payload["stream"])
         self.assertEqual({"require_parameters": True}, payload["provider"])
-        self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+        self.assertNotIn("response_format", payload)
+        self.assertNotIn("tools", payload)
         self.assertEqual(
             ["system", "user", "user", "user", "assistant", "user"],
             [message["role"] for message in payload["messages"]],
@@ -294,10 +369,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(f"Bearer {FAKE_KEY}", requests[0].headers["Authorization"])
         self.assertEqual(5.0, requests[0].extensions["timeout"]["read"])
 
-        counted = {
-            "messages": payload["messages"],
-            "response_format": payload["response_format"],
-        }
+        counted = {"messages": payload["messages"]}
         expected = len(
             json.dumps(
                 counted,
@@ -312,33 +384,15 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            return chat_response(
-                json.dumps(
-                    {
-                        "answer": "답변",
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            return chat_response("답변")
 
         adapter = self.adapter(handler)
         parts = answer_parts()
-        result = await adapter.generate_answer(AssembledPromptContext(parts, 10, 900))
+        result = await answer(adapter, AssembledPromptContext(parts, 10, 900))
         self.assertIsNone(result.usage)
         self.assertGreater(
             result.estimated_total_tokens, adapter.count_input_tokens(parts)
         )
-
-    async def test_answer_rejects_old_memory_action_fields(self) -> None:
-        adapter = self.adapter(
-            lambda request: chat_response(
-                json.dumps({"answer": "답변", "memory_action": "UPDATE"})
-            )
-        )
-        with self.assertRaisesRegex(OpenRouterModelError, "openrouter.invalid_output"):
-            await adapter.generate_answer(
-                AssembledPromptContext(answer_parts(), 10, 900)
-            )
 
     def test_memory_review_has_no_completion_cap_and_converts_changes_to_tuple(
         self,
@@ -475,34 +529,37 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(output.token_count)
 
     async def test_invalid_outputs_and_usage_fail_closed(self) -> None:
-        outputs = (
-            "not-json",
-            json.dumps({"answer": ""}),
-            json.dumps({"answer": None}),
-            json.dumps(
-                {
-                    "answer": "answer",
-                    "extra": True,
-                }
+        offered = AssembledPromptContext(answer_parts(), 10, 900, tools=(SEARCH,))
+        cases = (
+            (chat_response(""), offered),
+            (chat_response(None), offered),
+            (chat_response(None, tool_calls=[{"id": "c1"}]), offered),
+            (
+                chat_response(
+                    None,
+                    tool_calls=[
+                        tool_call("c1", "search", "{}"),
+                        tool_call("c1", "search", "{}"),
+                    ],
+                ),
+                offered,
+            ),
+            (chat_response(None, tool_calls=[tool_call("", "search", "{}")]), offered),
+            # A tool call when no tool was offered.
+            (
+                chat_response(None, tool_calls=[tool_call("c1", "search", "{}")]),
+                AssembledPromptContext(answer_parts(), 10, 900),
             ),
         )
-        for content in outputs:
-            with self.subTest(content=content):
-                adapter = self.adapter(
-                    lambda request, content=content: chat_response(content)
-                )
+        for index, (response, context) in enumerate(cases):
+            with self.subTest(case=index):
+                adapter = self.adapter(lambda request, response=response: response)
                 with self.assertRaises(OpenRouterModelError):
-                    await adapter.generate_answer(
-                        AssembledPromptContext(answer_parts(), 10, 900)
-                    )
+                    await adapter.generate_reply(context)
 
         adapter = self.adapter(
             lambda request: chat_response(
-                json.dumps(
-                    {
-                        "answer": "answer",
-                    }
-                ),
+                answer_content(),
                 usage={
                     "prompt_tokens": 1,
                     "completion_tokens": 1,
@@ -511,7 +568,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             )
         )
         with self.assertRaisesRegex(OpenRouterModelError, "openrouter.invalid_usage"):
-            await adapter.generate_answer(
+            await adapter.generate_reply(
                 AssembledPromptContext(answer_parts(), 10, 900)
             )
 
@@ -525,7 +582,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         adapter = self.adapter(handler)
         with self.assertRaises(OpenRouterModelError) as caught:
-            await adapter.generate_answer(
+            await adapter.generate_reply(
                 AssembledPromptContext(answer_parts(), 10, 900)
             )
         error = caught.exception
@@ -578,7 +635,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(event=event):
                 adapter = self.adapter(handler)
                 with self.assertRaises(OpenRouterModelError) as caught:
-                    await adapter.generate_answer(
+                    await adapter.generate_reply(
                         AssembledPromptContext(answer_parts(), 10, 900)
                     )
                 self.assertEqual(event, caught.exception.event)
@@ -594,20 +651,18 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         def handler(request: httpx.Request) -> httpx.Response:
             calls.append(request.content)
-            return chat_response("not-json" if len(calls) == 1 else answer_content())
+            return chat_response("" if len(calls) == 1 else answer_content())
 
         context = AssembledPromptContext(answer_parts(), 10, 900)
         self.assertEqual(1, self.adapter(handler).max_attempts)
         with self.assertRaises(OpenRouterModelError):
-            await self.adapter(handler).generate_answer(context)
+            await self.adapter(handler).generate_reply(context)
         self.assertEqual(1, len(calls))
 
         calls.clear()
         sleeper = AsyncMock()
         with patch("pia_harness.openrouter.asyncio.sleep", sleeper):
-            result = await self.adapter(handler, max_attempts=2).generate_answer(
-                context
-            )
+            result = await answer(self.adapter(handler, max_attempts=2), context)
         self.assertEqual("answer", result.text)
         self.assertEqual(2, len(calls))
         self.assertEqual(calls[0], calls[1])
@@ -629,9 +684,9 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     return chat_response(answer_content())
 
                 with patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()):
-                    result = await self.adapter(
-                        handler, max_attempts=2
-                    ).generate_answer(context)
+                    result = await answer(
+                        self.adapter(handler, max_attempts=2), context
+                    )
                 self.assertEqual("answer", result.text)
                 self.assertEqual(2, calls)
 
@@ -648,7 +703,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             patch("pia_harness.openrouter.asyncio.sleep", sleeper),
             self.assertRaisesRegex(OpenRouterModelError, "openrouter.http_error"),
         ):
-            await self.adapter(handler, max_attempts=2).generate_answer(
+            await self.adapter(handler, max_attempts=2).generate_reply(
                 AssembledPromptContext(answer_parts(), 10, 900)
             )
         self.assertEqual(2, calls)
@@ -668,7 +723,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     return chat_response("ignored", status=status)
 
                 with self.assertRaises(OpenRouterModelError):
-                    await self.adapter(handler, max_attempts=2).generate_answer(context)
+                    await self.adapter(handler, max_attempts=2).generate_reply(context)
                 self.assertEqual(1, calls)
 
         calls = 0
@@ -681,7 +736,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(
             OpenRouterModelError, "openrouter.output_truncated"
         ):
-            await self.adapter(truncated, max_attempts=2).generate_answer(context)
+            await self.adapter(truncated, max_attempts=2).generate_reply(context)
         self.assertEqual(1, calls)
 
         calls = 0
@@ -699,7 +754,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             )
 
         with self.assertRaisesRegex(OpenRouterModelError, "openrouter.invalid_usage"):
-            await self.adapter(invalid_usage, max_attempts=2).generate_answer(context)
+            await self.adapter(invalid_usage, max_attempts=2).generate_reply(context)
         self.assertEqual(1, calls)
 
     def test_sync_memory_review_retries_invalid_output_once(self) -> None:
@@ -744,7 +799,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
         adapter = self.adapter(handler, max_attempts=2)
         with patch("pia_harness.openrouter.asyncio.sleep", new=blocked_sleep):
             task = asyncio.create_task(
-                adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+                adapter.generate_reply(AssembledPromptContext(answer_parts(), 10, 900))
             )
             await sleeping.wait()
             task.cancel()
@@ -782,7 +837,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
                     patch("pia_harness.openrouter.asyncio.sleep", new=AsyncMock()),
                     self.assertRaisesRegex(OpenRouterModelError, event),
                 ):
-                    await self.adapter(handler, max_attempts=2).generate_answer(context)
+                    await self.adapter(handler, max_attempts=2).generate_reply(context)
                 self.assertEqual(expected, calls)
 
     def test_sync_summary_retries_invalid_output_once(self) -> None:
@@ -813,7 +868,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         adapter = self.adapter(handler)
         task = asyncio.create_task(
-            adapter.generate_answer(AssembledPromptContext(answer_parts(), 10, 900))
+            adapter.generate_reply(AssembledPromptContext(answer_parts(), 10, 900))
         )
         await started.wait()
         task.cancel()
