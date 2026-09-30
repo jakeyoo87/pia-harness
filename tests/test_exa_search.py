@@ -14,7 +14,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "exa_web_search.sse"
 
 def search(handler) -> ExaWebSearch:
     return ExaWebSearch(
-        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        api_key="synthetic-key",
+        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
 
 
@@ -49,7 +50,7 @@ class ExaWebSearchTest(unittest.IsolatedAsyncioTestCase):
         sent = json.loads(requests[0].content)
         self.assertEqual("web_search_exa", sent["params"]["name"])
         self.assertEqual(5, sent["params"]["arguments"]["numResults"])
-        self.assertNotIn("x-api-key", requests[0].headers)
+        self.assertEqual("synthetic-key", requests[0].headers["x-api-key"])
         self.assertIn("Found 5 candidates", result.observation_text)
         self.assertEqual(
             [
@@ -139,8 +140,13 @@ class ExaWebSearchTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("synthetic-key", requests[0].headers["x-api-key"])
         self.assertEqual(EXA_MCP_URL, str(requests[0].url))
 
+    def test_a_key_is_required(self) -> None:
+        for key in (None, "", "  "):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "api_key"):
+                ExaWebSearch(api_key=key)
+
     def test_tool_definition(self) -> None:
-        tool = ExaWebSearch().tool()
+        tool = ExaWebSearch(api_key="synthetic-key").tool()
         self.assertEqual("web_search", tool.name)
         self.assertEqual(["query"], tool.arguments_schema["required"])
         self.assertIn(

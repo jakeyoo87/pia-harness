@@ -2,11 +2,11 @@
 
 Manual only: it calls paid APIs and model decisions vary, so it is not part of pytest
 or CI. Scenarios run in order in one conversation, so later ones can refer to earlier
-answers. Keys come from the environment and are never printed; Exa and Jina are
-called without keys. The execution set uses a fake pia-broker with fixed replies; no
+answers. Keys come from the environment and are never printed; Jina is called
+without a key. The execution set uses a fake pia-broker with fixed replies; no
 real order is ever sent.
 
-    OPENROUTER_API_KEY=... python -m tests.manual.smoke_flow \\
+    OPENROUTER_API_KEY=... EXA_API_KEY=... python -m tests.manual.smoke_flow \\
         [--set read|execution] [--only 1,2]
 """
 
@@ -264,7 +264,7 @@ async def run(
         timeout_seconds=60,
         max_attempts=2,
     )
-    search = ExaWebSearch()
+    search = ExaWebSearch(api_key=environ["EXA_API_KEY"])
     state, logged_search = _instrument(model, search)
     extractor = JinaPageExtractor(model.read_json)
     _instrument_extract(state, extractor)
@@ -387,7 +387,11 @@ def main() -> None:
     if args.only:
         wanted = set(args.only.split(","))
         scenarios = [s for s in scenarios if s["id"] in wanted]
-    missing = [name for name in ("OPENROUTER_API_KEY",) if not os.environ.get(name)]
+    missing = [
+        name
+        for name in ("OPENROUTER_API_KEY", "EXA_API_KEY")
+        if not os.environ.get(name)
+    ]
     if missing:
         print(f"missing environment variables: {', '.join(missing)}", file=sys.stderr)
         raise SystemExit(2)

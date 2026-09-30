@@ -1,4 +1,4 @@
-"""Web search through Exa's hosted MCP server (`web_search_exa`)."""
+"""Web search through Exa's hosted MCP server (`web_search_exa`), with a key."""
 
 from __future__ import annotations
 
@@ -48,17 +48,19 @@ class ExaWebSearch:
     def __init__(
         self,
         *,
-        api_key: str | None = None,
+        api_key: str,
         timeout_seconds: float = 20.0,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
+        # Keyless calls share a low limit and fail with 429 under real use.
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ValueError("api_key is required")
+        # The key goes in a header, never in the URL.
         self._headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
+            "x-api-key": api_key.strip(),
         }
-        # The same endpoint takes a key as a header; it is never put in the URL.
-        if api_key is not None and api_key.strip():
-            self._headers["x-api-key"] = api_key.strip()
         self._owns_client = async_client is None
         self._client = async_client or httpx.AsyncClient(
             timeout=httpx.Timeout(float(timeout_seconds)),
