@@ -52,7 +52,7 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 - 이미 있는 것을 그대로 쓴다: Broker `src/pia_broker/data/instruments.json`(KIS 종목 마스터 KOSPI·KOSDAQ, 2026-09-26 기준)과 `GET /internal/instruments`.
 - 검색 순서: 6자리 코드, 정규화한 종목명 정확 일치, 이름 일부 포함. 후보는 최대 5개다.
 - 별명("삼전")은 모델이 인자를 쓸 때 정식 이름으로 바꾼다(`order`와 같은 스키마 설명).
-- 확인할 것: **ETF·ETN이 목록에 있는지**. 사용자는 ETF 시세도 묻는다(예: SOL 반도체후공정). 없으면 ETF 마스터를 추가할지 이 작업에서 정한다.
+- ETF·ETN: 목록에 들어 있다(확인 2026-09-30: 3,545종목 중 ETF 계열 이름 784개, `SOL 반도체후공정` 있음). 추가 작업은 없다. ETF 현재가도 같은 KIS 현재가 조회로 받는다.
 - 이번 범위 밖: 목록 자동 갱신. 신규 상장이나 종목명 변경은 목록을 다시 넣어야 반영된다. 갱신 방식(주기적 다운로드 등)은 나중에 정한다.
 
 ### 구현 위치
@@ -65,12 +65,47 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 - README 도구 목록에 추가.
 
 **pia-broker** (Codex)
-- `quote` 응답에 필드 추가: 전일 대비, 등락률, 거래량, 거래대금, 시가총액, PER, PBR, 52주 최고·최저. KIS 현재가 조회(FHKST01010100) 한 번에 오는 값이라 추가 호출은 없다. 기존 필드(`code`, `price`, `observed_at`)는 유지하므로 `order` 도구에 영향이 없다.
-- 신규 `GET /internal/members/{id}/account`: 기존 `get_holdings`의 잔고 조회(TTTC8434R)를 확장해 output1의 종목명·주문 가능 수량·현재가·평가금액·평가손익·수익률과 output2의 예수금·총평가금액·총평가손익을 파싱한다. 여러 페이지 처리는 기존 코드를 쓴다.
-- 응답에 계좌번호나 자격 증명은 넣지 않는다.
-- 연결 확인은 `TradingService._verified_connection`을 재사용한다.
-- 인프라: `broker-credential.template.json`에 경로 하나를 추가한다.
-- 필드 이름은 KIS 문서와 `tests/fixtures/kis.json`에 맞춰 확인한다. 실제 KIS 호출 확인은 사용자 승인 뒤에 한다.
+
+현재 구조 (main `6b63c94`, 확인 2026-09-30):
+- 조회·주문 경로는 `credential_api.py`의 `_trading_route`가 처리하고, `TradingService`(`orders.py`)가 회원의 검증된 KIS 연결(`_verified_connection`: KIS·PENDING·VERIFIED)을 찾아 `KisOrderConnector`를 부른다.
+- `KisOrderConnector`는 `KisReadConnector`를 상속하므로 `get_holdings`(TTTC8434R), `get_price`(FHKST01010100)가 이미 있다. 지금 `TradingConnector` Protocol은 `get_price`와 `place_cash_order`만 노출한다.
+- `Quote` 모델은 가격만, `Holding` 모델은 코드·수량·평균단가만 담는다. 두 모델과 `BrokerReadConnector` 포트는 NH 커넥터와 계약 테스트(`test_connector_contract.py`)도 쓴다.
+- `tests/fixtures/kis.json`에는 지금 파싱하는 필드만 있다. 잔고는 `pdno`·`hldg_qty`·`pchs_avg_pric`만 있고 output2는 비어 있으며, 현재가는 `stck_prpr`만 있다.
+
+변경:
+1. **시세 상세**
+   - `KisReadConnector`에 현재가 조회 응답에서 추가 필드를 읽는 메서드를 둔다. 추가 필드는 전일 대비, 등락률, 거래량, 거래대금, 시가총액, PER, PBR, 52주 최고·최저다.
+   - 새 모델(예: `QuoteDetail`)로 돌려준다. 기존 `get_price`와 `Quote`는 바꾸지 않으므로 NH·포트·`order` 도구에 영향이 없다.
+   - `TradingConnector`와 `TradingService.quote`가 이 값을 쓰게 한다. `quote` 경로 응답은 기존 `code`·`price`·`observed_at`을 유지하고 필드만 더한다.
+   - 값이 비거나 형식이 다르면 그 필드는 null로 둔다. 가격(`stck_prpr`)이 없을 때만 오류다.
+2. **계좌 조회**
+   - `KisReadConnector`에 잔고 조회 한 번(여러 페이지)으로 계좌 요약을 만드는 메서드를 둔다.
+   - output1에서 종목별 코드·종목명·보유 수량·주문 가능 수량·평균단가·현재가·평가금액·평가손익·수익률을 읽는다. output2에서 예수금·총평가금액·총평가손익을 읽는다.
+   - 새 모델(예: `AccountSummary`)로 돌려준다. `Holding`·`get_holdings`·포트는 바꾸지 않는다.
+   - `TradingConnector`에 이 메서드를 추가한다. `TradingService.account(member_id)`는 `quote`와 같이 검증된 연결이 없으면 `BROKER_NOT_CONNECTED`를 낸다.
+   - 보유 종목이 없어도 정상이다. 빈 목록과 예수금을 돌려준다.
+3. **경로** `GET /internal/members/{id}/account`
+   - `_trading_route`에 추가한다. 인증은 기존 조회 경로와 같다: `allowed_status_role_arn` 역할만 허용한다.
+   - 오류 매핑도 `quote`와 같다: Retryable → 503, 미연결 → 409, 그 외 확정 오류 → 502.
+   - 응답에 계좌번호·상품코드·자격 증명은 넣지 않는다.
+4. **인프라**
+   - `infra/broker-credential.template.json`에 `GetAccount` HttpApi 이벤트를 추가한다(AWS_IAM, GetQuote와 같은 형식).
+   - `test_deployment_infrastructure.py`의 경로 목록 검사를 맞춘다.
+5. **테스트·픽스처**
+   - `kis.json`의 `price`와 `balance_page_*`에 새 필드를 넣는다. output2도 채운다.
+   - 추가할 테스트:
+     - 파싱: 정상, 필드 누락 시 null, 가격 누락 시 오류, 여러 페이지
+     - `TradingService.account`: 미연결, 커넥터 오류
+     - `_trading_route`: 인증, 오류 매핑, 계좌번호 미노출
+   - 필드 이름은 KIS 공식 문서와 예제 저장소(koreainvestment/open-trading-api)로 확인한다. 실계좌 값 확인은 배포 뒤 사용자 승인을 받아 한 번 한다.
+6. **범위 밖**
+   - NH 연결은 지금처럼 조회·주문 대상이 아니다(`_verified_connection`은 KIS만 찾는다). 이 경우 `broker` 도구의 `status`는 연결을 보여 주고, `quote`와 `account`는 "지원하지 않는 증권사" 안내가 아니라 미연결(409)로 나온다. 문구 차이는 도구 결과 문장에서 `status`와 함께 설명한다.
+   - 매수 가능 수량(TTTC8908R)과 매도 가능 수량 전용 조회(TTTC8408R) 경로는 만들지 않는다.
+   - 로그: 기존처럼 응답 본문(잔고·금액)은 남기지 않는다.
+7. **호출 한도·시간**
+   - `account`는 KIS 잔고 조회를 페이지 수만큼 부른다. 개인 계좌는 보통 1~2페이지다.
+   - Lambda 시간 제한은 30초이고 harness 쪽 client 제한은 35초다. 조회 전체는 harness 조사 시간 90초 안에 끝난다.
+   - KIS 초당 호출 한도는 기존 `EGW00201`(RATE_LIMITED, 503) 처리를 그대로 쓴다.
 
 **pia-agent (PIA)** (Codex)
 - `app/main.py`: 같은 `broker_client`로 `BrokerReadTool`을 만들어 `read_tools`에 추가한다. Broker origin이 없으면 등록하지 않는다(`order`와 같음).
@@ -100,4 +135,4 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 2. 매수 가능 수량을 예수금÷가격으로 대신하는 판단이 괜찮은가?
 3. `quote`에 추가할 KIS 필드 이름(`prdy_vrss`, `prdy_ctrt`, `acml_vol`, `acml_tr_pbmn`, `hts_avls`, `per`, `pbr`, `w52_hgpr`, `w52_lwpr`)과 잔고 필드(`prdt_name`, `ord_psbl_qty`, `prpr`, `evlu_amt`, `evlu_pfls_amt`, `evlu_pfls_rt`, `dnca_tot_amt`, `tot_evlu_amt`, `evlu_pfls_smtl_amt`)가 맞는가?
 4. Broker 쪽 누락: IAM, API Gateway 경로, 테스트 계약, 시간 초과(Lambda 30초).
-5. 종목 목록(`instruments.json`)에 ETF·ETN이 들어 있는가? 없으면 이번에 추가하는 것이 맞는가?
+5. 새 모델(`QuoteDetail`·`AccountSummary`)로 기존 `Quote`·`Holding`·포트를 건드리지 않는 방식이 맞는가? NH 연결일 때 `quote`·`account`가 미연결(409)로 나오는 처리가 충분한가?
