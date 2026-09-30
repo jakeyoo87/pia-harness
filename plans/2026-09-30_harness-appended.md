@@ -76,3 +76,18 @@
 - 테스트: 주문 준비 Turn은 사용자에게 확인 질문이 마지막에 가고, 저장된 답변과 다음 Turn Context의 과거 답변에는 없으며, 확정 정보는 확인 대기 알림에 있다. Memory 실패 알림도 사용자에게만 간다.
 - README 3장.
 - 측정(Codex 비차단 3): execution 전체 + read 일부(Memory 알림 4·4-1·10, 링크 후속 2→6-1, 15→15-1→15-2).
+
+## Codex 구현 검토 (2026-09-30)
+
+기준 `main fb8d9b2...ebbcb18`의 변경 전체를 계획 변경 절과 현재 저장·재생·확인·Summary/Memory 코드에 대조했다. 로컬 `.venv`에서 orchestrator 테스트 59개와 전체 pytest 170개(추가 subtest 96개)를 다시 실행해 통과했고 `git diff --check`도 통과했다. Ruff는 재실행하지 않았다. 검토 외 코드·README 수정, 병합, AWS 변경, 배포, 실제 모델·공급자 호출은 하지 않았다.
+
+### Blocker
+
+없다. `_commit_response`는 `final_text`를 사용자에게 전달하고 `ConversationResult.final_text`로 돌려주되, 같은 Turn의 저장 `assistant_message`만 출처 번호를 적용한 `answer.text`로 바꿨다(`orchestrator.py` 1118–1155, 1203–1208행). 이전 Turn의 assistant 메시지는 바로 그 저장 칸을 Context에 넣는다(`context.py` 179–194행). 따라서 별도 필드·저장소 변경 없이 보고된 모방 경로를 줄인다. 주문 준비는 전달 뒤에만 `_pending_actions`로 보관하고, 다음 Turn의 `_waiting_note`가 action ID와 종목·방향·수량·지정가를 포함한 요약을 준다(`orchestrator.py` 1137–1143, 1291–1300행; `broker_order.py` 153–180행). “응” 처리와 실행권 확정·Broker 재전송 금지 경계는 바뀌지 않았다. 실행 뒤 모델 답변이 실패하면 도구의 고정 결과가 `answer.text`가 되어 같은 저장 경로를 탄다(1028–1052행). Summary/Memory의 `_turn_data`도 `assistant_message`를 쓰므로 붙인 안내가 빠지는 것은 새 사용자 결정과 일치한다(`openrouter.py` 615–620행).
+
+### Non-blocker
+
+1. **README 계약 한 줄이 반대다.** README 3장 130행은 붙인 글을 저장하지 않는다고 고쳤지만 6.4절 323행은 확인 문장을 “Turn에 저장한다”고 그대로 적었다. 구현에 맞게 “사용자에게 전달하고 Turn에는 저장하지 않는다”로 고치면 된다.
+2. **저장되지 않는 것의 범위를 정확히 설명하면 좋다.** 계획 변경 절의 “주문 기록은 Broker에 따로 남는다”는 *실행된 주문*에는 맞지만, 사용자가 확인하지 않은 준비 단계의 질문은 Broker에 제출되지 않는다(`broker_order.py` 153–187행). Bot 재시작 뒤 확인 대기가 사라지는 것은 기존 계약이므로 이번 변경을 막지 않지만, 그때 사용자가 봤던 정확한 질문은 Telegram 외에는 복원할 수 없다는 점을 명시하면 된다.
+
+현재 테스트는 확인 대기 알림이 있는 다음 Turn과 Memory 실패 안내의 전달/미저장을 고정한다. 모델이 같은 Turn에서 자발적으로 확인 질문을 쓰는 것까지 코드로 금지한 것은 아니므로, 계획한 execution 재측정에서 중복 0건을 확인하는 순서가 맞다. 추가 상태·마이그레이션·후처리 규칙을 지금 만들 이유는 없다.
