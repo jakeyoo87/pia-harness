@@ -166,7 +166,6 @@ class BrokerReadTool:
         reply = await self._get(f"/internal/members/{user_key}/account")
         totals = _join(
             ("cash (deposit)", _krw(reply.get("cash"))),
-            ("D+2 cash", _krw(reply.get("cash_d2"))),
             ("total valuation", _krw(reply.get("total_valuation"))),
             ("total profit", _krw(reply.get("total_profit"), signed=True)),
         )
@@ -225,13 +224,11 @@ class BrokerReadTool:
         )
         buyable = reply["buyable"]
         unit = _krw(buyable.get("unit_price"))
-        basis = f" (unit price used {unit})" if unit else ""
+        basis = f", unit price used by the broker {unit}" if unit else ""
         return (
             f"Buyable for {label} at {_kst(buyable['observed_at'])}, as calculated by "
             f"the broker without margin on a market-order basis{basis}: up to "
-            f"{_shares(buyable['quantity'])}, amount {_krw(buyable['amount'])}. A "
-            "market order is reserved at the upper price limit, so a limit order at a "
-            "lower price may buy somewhat more."
+            f"{_shares(buyable['quantity'])}, amount {_krw(buyable['amount'])}."
         )
 
     async def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:

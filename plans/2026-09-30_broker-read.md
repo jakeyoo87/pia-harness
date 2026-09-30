@@ -21,7 +21,7 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 - action은 네 개다: `status`, `quote`, `account`, `buyable`.
 - 매수 가능 금액·수량은 계산하지 않는다. KIS 매수 가능 조회(`TTTC8908R`)를 쓴다.
   - Broker README 규칙: "증권사가 증거금·수수료를 반영해 준 값을 쓰고 직접 계산하지 않는다".
-  - 예수금÷가격은 결제 대기, 미체결 주문, 증거금률, 시장가 상한가 기준 때문에 실제와 크게 다를 수 있다.
+  - 예수금÷가격은 결제 대기, 미체결 주문, 증거금률 때문에 실제와 크게 다를 수 있다.
   - **시장가(`ORD_DVSN=01`) 기준으로 조회한다.** KIS 공식 예제에 따르면 지정가(00)는 종목 증거금률을 반영하지 않는다.
   - **미수 없는 값(`nrcvb_buy_amt`, `nrcvb_buy_qty`)을 쓴다.** 미수 포함 최대값은 사용자가 모르고 미수를 쓰게 할 수 있다.
 - 매도 가능 수량은 잔고 조회의 종목별 `ord_psbl_qty`로 답한다. 별도 action은 두지 않는다.
@@ -49,7 +49,7 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 |---|---|---|
 | `status` | 증권사 연결 여부와 상태 | 기존 `GET /internal/members/{id}/broker-status` |
 | `quote` | 한 종목의 현재가·전일 대비·등락률·거래량·거래대금·시가총액·PER·PBR·52주 최고·최저 | 기존 `GET /internal/instruments` → 기존 `GET /internal/members/{id}/quote` (응답 필드 추가) |
-| `account` | 보유 종목(종목명·수량·매도 가능 수량·평균단가·현재가·평가금액·평가손익·수익률)과 계좌 요약(예수금·D+2 예수금·총평가금액·총평가손익) | **신규** `GET /internal/members/{id}/account` |
+| `account` | 보유 종목(종목명·수량·매도 가능 수량·평균단가·현재가·평가금액·평가손익·수익률)과 계좌 요약(예수금·총평가금액·총평가손익) | **신규** `GET /internal/members/{id}/account` |
 | `buyable` | 한 종목의 미수 없는 매수 가능 금액·수량(시장가 기준) | 같은 신규 경로에 `?code=` |
 
 - `quote`와 `buyable`은 `name`이 필요하다. `status`와 `account`는 `name`을 쓰지 않는다.
@@ -60,7 +60,7 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 - 결과 텍스트에는 조회 시각(KST)을 붙인다.
   - 지난 Turn의 시세·잔고는 저장된 기록이라 모델이 다시 조회해야 한다.
   - AGENT_INSTRUCTION에 "시간에 따라 바뀌는 사실은 다시 확인" 규칙이 이미 있다.
-- `buyable` 결과 문장에는 "미수 없이, 시장가 기준(상한가로 잡아 계산), 지정가로 사면 더 살 수 있음"을 적는다.
+- `buyable` 결과 문장에는 "미수 없이, 시장가 기준"과 KIS가 쓴 계산 단가만 적는다.
 - 409(`BROKER_NOT_CONNECTED`) 안내: "이 조회에 쓸 수 있는 확인된 KIS 연결이 없다. 웹에서 KIS 계좌를 연결·확인해 달라." NH 연결만 있어도 409가 나오므로 "연결되지 않았다"고 단정하지 않는다.
 - Broker 오류(5xx, 시간 초과)는 도구 실패 결과로 돌려준다. 재시도는 하지 않는다. 조회라서 사용자가 다시 물으면 된다.
 
@@ -110,7 +110,7 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
    - `get_account_summary()`
      - 기존 잔고 조회(TTTC8434R) 페이지 처리를 공유한다.
      - output1에서 `pdno`, `prdt_name`, `hldg_qty`, `ord_psbl_qty`, `pchs_avg_pric`, `prpr`, `evlu_amt`, `evlu_pfls_amt`, `evlu_pfls_rt`를 읽는다. 보유 수량 0인 행은 뺀다.
-     - output2에서 `dnca_tot_amt`, `prvs_rcdl_excc_amt`, `tot_evlu_amt`, `evlu_pfls_smtl_amt`를 읽는다.
+     - output2에서 `dnca_tot_amt`, `tot_evlu_amt`, `evlu_pfls_smtl_amt`를 읽는다.
      - output2는 계좌 합계라 **페이지마다 합산하지 않는다**. 마지막 페이지 값을 쓴다.
    - `get_buyable(instrument, price)`
      - TTTC8908R을 `ORD_DVSN=01`로 부르고 `nrcvb_buy_amt`, `nrcvb_buy_qty`, `psbl_qty_calc_unpr`을 읽는다.
@@ -265,3 +265,9 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 - `hts_avls`의 "억 원" 표시와 ETF 일반 현재가 경로는 실호출 전 미확인이다. dev에서 확인하기 전에는 사용자 대상 배포를 완료로 보지 않는다.
 - "시장가는 상한가로 계산된다"는 harness 문장은 KIS 예제가 보장하는 범위보다 강하다. KIS가 돌려준 계산 단가와 "시장가 기준"만 표시해도 충분하다.
 - PIA 연동은 Broker 경로와 권한을 적용한 뒤 Bot에 도구를 등록하는 순서로 한다.
+
+### 반영 (2026-09-30)
+
+- `cash_d2`(KIS `prvs_rcdl_excc_amt`, 공식 정의 "가수도정산금액")를 뺐다: Broker 모델·응답·픽스처·테스트·README와 harness 결과 문장·테스트·README. 첫 버전은 예수금(`dnca_tot_amt`)만 답한다. 위 계획 본문의 같은 표현도 고쳤다.
+- 매수 가능 결과에서 "시장가는 상한가로 잡아 계산하니 지정가로 더 살 수 있다"는 문장을 뺐다. 결과 문장은 "미수 없이, 시장가 기준"과 KIS 계산 단가만 적는다. harness README의 같은 이유 문구도 뺐다.
+- 확인: Broker ruff format·check, mypy, pytest 174. harness 단위 테스트 180 통과.

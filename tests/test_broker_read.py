@@ -50,7 +50,6 @@ ACCOUNT = {
         },
     ],
     "cash": 1500000,
-    "cash_d2": 1200000,
     "total_valuation": 2245000,
     "total_profit": 95333,
     "observed_at": AT,
@@ -145,7 +144,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         text = await self.lookup("account")
         self.assertIn("Account at 2026-09-28 09:31 KST", text)
         self.assertIn(
-            "Totals: cash (deposit) 1,500,000 KRW; D+2 cash 1,200,000 KRW; total valuation "
+            "Totals: cash (deposit) 1,500,000 KRW; total valuation "
             "2,245,000 KRW; total profit +95,333 KRW.",
             text,
         )
@@ -168,10 +167,10 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_buyable_reports_the_brokers_figures(self) -> None:
         text = await self.lookup("buyable", "삼성전자")
-        self.assertIn(
+        self.assertEqual(
             "Buyable for 삼성전자(005930) at 2026-09-28 09:31 KST, as calculated by the "
-            "broker without margin on a market-order basis (unit price used 91,000 KRW): "
-            "up to 12 shares, amount 1,180,000 KRW.",
+            "broker without margin on a market-order basis, unit price used by the broker "
+            "91,000 KRW: up to 12 shares, amount 1,180,000 KRW.",
             text,
         )
         request = self.broker.requests[-1]
