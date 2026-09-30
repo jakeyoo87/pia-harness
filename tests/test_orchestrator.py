@@ -569,36 +569,23 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
         self.assertEqual(["explicit"], self.memory.calls)
 
-    async def test_overflow_compacts_once_and_stops_without_progress(self) -> None:
+    async def test_overflow_ends_the_turn_without_compaction(self) -> None:
         generated = []
 
         async def generate(context):
             generated.append(context)
             return GeneratedAnswer("answer", "model", 10)
 
-        def counter(parts):
-            return 901 if not self.compactor.calls else 1
-
-        orchestrator = self.orchestrator(generate, counter=counter)
+        self.compactor.due = True
+        orchestrator = self.orchestrator(generate, counter=lambda parts: 901)
         result = await orchestrator.submit(
             user_key="user", message="question", accepted_at=self.now
         )
-        compact_calls = [call for call in self.compactor.calls if call[0] == "compact"]
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual(1, len(compact_calls))
-        self.assertEqual(901, compact_calls[0][1]["estimated_context_tokens"])
-        self.assertIsNone(compact_calls[0][1]["usage"])
-        self.assertIs(self.token_budget, compact_calls[0][1]["token_budget"])
-        self.assertEqual(1, len(generated))
 
-        self.compactor = FakeCompactor()
-        self.compactor.progress = False
-        orchestrator = self.orchestrator(generate, counter=lambda parts: 901)
-        result = await orchestrator.submit(
-            user_key="other", message="question", accepted_at=self.now
-        )
         self.assertEqual(OrchestratorStatus.CONTEXT_OVERFLOW, result.status)
-        self.assertEqual(1, len([c for c in self.compactor.calls if c[0] == "compact"]))
+        self.assertEqual([], generated)
+        # Compaction runs only after an answer, so the user never waits for it.
+        self.assertEqual([], self.compactor.calls)
 
     async def test_overflow_does_not_strand_later_messages(self) -> None:
         # The overflowing batch is deterministically unassemblable, so keeping it
@@ -607,7 +594,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             return GeneratedAnswer("answer", "model", 10)
 
         orchestrator = self.orchestrator(generate)
-        self.compactor.progress = False
         overflowed = await orchestrator.submit(
             user_key="member",
             message="x" * 2_000,
@@ -714,7 +700,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, recovered.status)
         self.assertEqual(["B"], seen)
 
-    async def test_memory_and_compaction_abandonment_do_not_deliver(self) -> None:
+    async def test_memory_abandonment_does_not_deliver(self) -> None:
         async def explicit(context):
             return GeneratedAnswer("answer", "model", 10)
 
@@ -726,28 +712,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.ABANDONED, result.status)
         self.assertEqual([], self.delivered)
         self.assertEqual([], self.store.turns)
-
-        async def ordinary(context):
-            return GeneratedAnswer("answer", "model", 90)
-
-        self.compactor.due = True
-        self.compactor.abandon = True
-        result = await self.orchestrator(ordinary).submit(
-            user_key="other", message="compact", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.ABANDONED, result.status)
-        self.assertEqual([], self.delivered)
-
-    async def test_compaction_abandonment_stops_before_delivery(self) -> None:
-        async def generate(context):
-            return GeneratedAnswer("answer", "model", 10)
-
-        self.compactor.abandon = True
-        compacted = await self.orchestrator(generate, counter=lambda parts: 901).submit(
-            user_key="overflow-compact", message="question", accepted_at=self.now
-        )
-        self.assertEqual(OrchestratorStatus.ABANDONED, compacted.status)
-        self.assertEqual([], self.delivered)
 
     async def test_delivery_and_post_delivery_append_abandonment_clear_batch(
         self,
@@ -856,22 +820,20 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         # Restoring the original would bring back what was removed.
         self.assertEqual(OrchestratorStatus.GENERATION_FAILED, result.status)
 
-    async def test_compaction_happens_before_answer_generation(self) -> None:
+    async def test_compaction_waits_for_the_answer(self) -> None:
         self.compactor.due = True
 
         async def generate(context):
-            self.assertEqual(
-                1, len([call for call in self.compactor.calls if call[0] == "compact"])
-            )
+            # Nothing is checked or compacted before the model call.
+            self.assertEqual([], self.compactor.calls)
             return GeneratedAnswer("answer", "model", 10)
 
         result = await self.orchestrator(generate).submit(
             user_key="user", message="question", accepted_at=self.now
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        # Still due after the answer, so it runs once more then.
         self.assertEqual(
-            2, len([call for call in self.compactor.calls if call[0] == "compact"])
+            1, len([call for call in self.compactor.calls if call[0] == "compact"])
         )
 
     async def test_no_tool_timeout_keeps_the_existing_pending_behavior(self) -> None:

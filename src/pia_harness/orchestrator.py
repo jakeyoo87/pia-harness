@@ -507,7 +507,6 @@ class ConversationOrchestrator:
             read_calls = 0
             answer_only = False
             closing_note: str | None = None
-            compacted = False
             loop = asyncio.get_running_loop()
             deadline = loop.time() + self._research_timeout_seconds
 
@@ -522,40 +521,29 @@ class ConversationOrchestrator:
                 ):
                     # A limit ends the research, not the Turn: results stay.
                     answer_only, closing_note = True, RESEARCH_LIMIT_NOTICE
-                (
-                    assembled,
-                    overflow_result,
-                    compact_failed,
-                ) = await self._assemble_with_overflow(
+                assembled = await self._assemble_context(
                     user_key,
-                    state,
-                    generation_id,
                     batch,
                     session,
                     observations,
                     tools=() if answer_only else tools,
                     note=note,
                     closing_note=closing_note,
-                    compact=not compacted,
                 )
-                compaction_failed = compaction_failed or compact_failed
-                if overflow_result is not None:
+                if assembled is None:
                     if not answer_only:
-                        # Tools make the request larger: answer without them,
-                        # on the context Compaction already produced.
+                        # Tools make the request larger: answer without them.
                         answer_only, closing_note = True, RESEARCH_LIMIT_NOTICE
-                        compacted = True
                         continue
                     await self._finish_generation(
                         user_key,
                         state,
                         generation_id,
                         batch,
-                        overflow_result,
+                        ConversationResult(OrchestratorStatus.CONTEXT_OVERFLOW),
                         clear_pending=True,
                     )
                     return
-                assert assembled is not None
                 if not await self._is_current(state, generation_id):
                     return
                 reply = await self._generate_reply(assembled)
@@ -925,11 +913,9 @@ class ConversationOrchestrator:
         except Exception:
             return
 
-    async def _assemble_with_overflow(
+    async def _assemble_context(
         self,
         user_key: str,
-        state: _UserState,
-        generation_id: int,
         batch: tuple[_Submission, ...],
         session: ActiveSession,
         tool_observations: tuple[ToolObservation, ...] = (),
@@ -937,9 +923,12 @@ class ConversationOrchestrator:
         tools: tuple[ToolSpec, ...] = (),
         note: str | None = None,
         closing_note: str | None = None,
-        compact: bool = True,
-    ) -> tuple[AssembledPromptContext | None, ConversationResult | None, bool]:
-        """(context, overflow result, whether Compaction failed)."""
+    ) -> AssembledPromptContext | None:
+        """This request's Context, or None when it does not fit the model.
+
+        Compaction runs only after an answer, on the model's reported usage
+        (see _commit_response), so the user never waits for it here.
+        """
         combined = _received_line(batch) + _combined_message(batch)
         memory, conversation = await asyncio.gather(
             asyncio.to_thread(self._store.get_memory, user_key),
@@ -950,68 +939,8 @@ class ConversationOrchestrator:
                 now=batch[-1].value.accepted_at,
             ),
         )
-        assembled = None
         try:
-            assembled = self._assemble(
-                user_key,
-                session,
-                memory,
-                conversation,
-                combined,
-                tool_observations,
-                tools=tools,
-                note=note,
-                closing_note=closing_note,
-            )
-            required_tokens = assembled.estimated_input_tokens
-        except ContextBudgetExceeded as overflow:
-            required_tokens = overflow.required_input_tokens
-
-        should_compact = self._compactor.should_compact(
-            token_budget=self._token_budget,
-            model_id=self._model_id,
-            estimated_context_tokens=required_tokens,
-        )
-        if assembled is not None and not should_compact:
-            return assembled, None, False
-        if not compact:
-            # Compaction already ran for this request; running it again would
-            # only repeat its model calls.
-            if assembled is not None:
-                return assembled, None, False
-            return None, ConversationResult(OrchestratorStatus.CONTEXT_OVERFLOW), False
-
-        compaction_failed = False
-        async with state.commit_lock:
-            if not await self._is_current(state, generation_id):
-                raise asyncio.CancelledError from None
-            try:
-                await _durable_call(
-                    self._compactor.compact,
-                    user_key=user_key,
-                    session_id=session.session_id,
-                    token_budget=self._token_budget,
-                    model_id=self._model_id,
-                    estimated_context_tokens=required_tokens,
-                    usage=None,
-                    now=batch[-1].value.accepted_at,
-                )
-            except ConversationAbandoned:
-                raise
-            except Exception:
-                compaction_failed = True
-
-        memory, conversation = await asyncio.gather(
-            asyncio.to_thread(self._store.get_memory, user_key),
-            asyncio.to_thread(
-                self._store.load_context,
-                user_key=user_key,
-                session_id=session.session_id,
-                now=batch[-1].value.accepted_at,
-            ),
-        )
-        try:
-            assembled = self._assemble(
+            return self._assemble(
                 user_key,
                 session,
                 memory,
@@ -1023,15 +952,7 @@ class ConversationOrchestrator:
                 closing_note=closing_note,
             )
         except ContextBudgetExceeded:
-            return (
-                None,
-                ConversationResult(
-                    OrchestratorStatus.CONTEXT_OVERFLOW,
-                    compaction_failed=compaction_failed,
-                ),
-                compaction_failed,
-            )
-        return assembled, None, compaction_failed
+            return None
 
     def _assemble(
         self,
@@ -1105,8 +1026,6 @@ class ConversationOrchestrator:
         observations = (*tool_observations, *made)
         answer = await self._answer_after_execution(
             user_key,
-            state,
-            generation_id,
             batch,
             session,
             observations,
@@ -1128,8 +1047,6 @@ class ConversationOrchestrator:
     async def _answer_after_execution(
         self,
         user_key: str,
-        state: _UserState,
-        generation_id: int,
         batch: tuple[_Submission, ...],
         session: ActiveSession,
         tool_observations: tuple[ToolObservation, ...],
@@ -1138,14 +1055,8 @@ class ConversationOrchestrator:
     ) -> GeneratedAnswer:
         fixed = GeneratedAnswer(executed_text, "fixed-text", 0)
         try:
-            assembled, _overflow, _ = await self._assemble_with_overflow(
-                user_key,
-                state,
-                generation_id,
-                batch,
-                session,
-                tool_observations,
-                note=note,
+            assembled = await self._assemble_context(
+                user_key, batch, session, tool_observations, note=note
             )
             if assembled is None:
                 return fixed
@@ -1283,7 +1194,8 @@ class ConversationOrchestrator:
                 ), True
 
             # Compaction runs here, after the answer is out, so the user does
-            # not wait for it; the next model call still checks before sending.
+            # not wait for it. The model's reported usage decides, not an
+            # estimate.
             size = {
                 "token_budget": self._token_budget,
                 "model_id": self._model_id,
