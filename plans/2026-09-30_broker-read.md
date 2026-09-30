@@ -136,3 +136,31 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 3. `quote`에 추가할 KIS 필드 이름(`prdy_vrss`, `prdy_ctrt`, `acml_vol`, `acml_tr_pbmn`, `hts_avls`, `per`, `pbr`, `w52_hgpr`, `w52_lwpr`)과 잔고 필드(`prdt_name`, `ord_psbl_qty`, `prpr`, `evlu_amt`, `evlu_pfls_amt`, `evlu_pfls_rt`, `dnca_tot_amt`, `tot_evlu_amt`, `evlu_pfls_smtl_amt`)가 맞는가?
 4. Broker 쪽 누락: IAM, API Gateway 경로, 테스트 계약, 시간 초과(Lambda 30초).
 5. 새 모델(`QuoteDetail`·`AccountSummary`)로 기존 `Quote`·`Holding`·포트를 건드리지 않는 방식이 맞는가? NH 연결일 때 `quote`·`account`가 미연결(409)로 나오는 처리가 충분한가?
+
+## Codex 계획 검토 (b91776d, 2026-09-30)
+
+방향은 맞다. 금융 수치에 관한 두 규칙은 구현 전에 고친다.
+
+**구현 전 수정 필요**
+1. 예수금÷현재가를 매수 가능 수량으로 답하면 안 된다.
+   - Broker README의 기존 계약은 이 값을 직접 계산하지 않도록 명시한다.
+   - 이번에는 예수금만 답하고 매수 가능 수량은 제공하지 않도록 범위를 좁힌다.
+   - 제공한다면 KIS `TTTC8908R`(`max_buy_qty`)을 쓴다.
+2. 하락·손실 값은 음수로 보존한다.
+   - 기존 금액 파서(`transport.py`)는 음수를 거부한다.
+   - 새 모델은 부호 있는 값을 다루고, 하락·손실 픽스처를 둔다.
+   - KIS의 전일 대비 부호 필드도 있다.
+
+**열린 질문 판단**
+- 1·5: `account` 한 경로와 새 모델이 맞다. 기존 `Quote`·`Holding`·포트는 유지한다. `TradingConnector`에 메서드를 추가하면 테스트용 구현도 맞춘다.
+- 3: 필드 이름은 공식 예제와 대체로 일치한다.
+  - `hts_avls`의 표시 단위를 확인하고 시가총액 문구를 정한다.
+  - 여러 페이지의 `output2` 총액을 합산하지 않는 테스트를 넣는다.
+- 4: Broker `GetAccount` 이벤트와 함께 PIA 쪽에도 다음이 필요하다.
+  - bootstrap의 새 account ARN 파라미터와 정확한 허용 리소스(기존 정책은 네 경로만 허용)
+  - 계약 테스트
+  - change set 입력
+  - harness 90초는 Lambda 30초를 늘리지 않는다. 다중 페이지 잔고의 시간 초과는 테스트·운영 확인 항목으로 남긴다.
+- NH: 409만 보고 "연결되지 않았다"고 안내하면 틀린다. "이 조회에 쓸 수 있는 확인된 KIS 연결이 없다"로 안내한다.
+- ETF·ETN: "추가 작업 없음"은 단정하기 어렵다. KIS에는 ETF/ETN 전용 현재가 API가 있다. 일반 현재가 경로가 ETF·ETN에서 되는지 확인하고, 안 되면 지원 범위를 좁혀 표시한다.
+- 데이터 범위: 예수금만 물어도 `account`는 전체 보유 종목을 돌려주고, 그 결과가 Turn에 저장된다. "저장 범위는 늘지 않는다"는 문장은 항상 성립하지 않는다. 경로를 나누자는 뜻이 아니라 결과를 정확히 기록하자는 의견이다.
