@@ -42,10 +42,18 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
   - 매도 가능 수량: KIS 잔고 조회(TTTC8434R) 결과에 종목별 주문 가능 수량(`ord_psbl_qty`)이 있다. `account` 결과에 포함한다.
   - 주문 가능 금액: 같은 잔고 조회의 예수금으로 답한다. "삼성전자 몇 주 살 수 있어?"는 모델이 예수금과 `quote` 가격으로 계산하고, 수수료 때문에 조금 다를 수 있다고 말한다.
   - 종목별 정확한 매수 가능 수량(TTTC8908R)은 필요해지면 action으로 추가한다. 지금 추가하면 Broker 경로와 IAM 허용이 하나 더 늘어난다.
-- 종목명 → 코드는 `order`와 같은 `/internal/instruments`를 쓴다. AMBIGUOUS면 후보를 보여 주고 사용자에게 묻게 하고, NOT FOUND면 정식 종목명을 묻게 한다(`order`와 같은 문구 방식).
+- 종목명 → 코드는 `order`와 같은 `/internal/instruments`를 쓴다(아래 "종목 코드" 참고). AMBIGUOUS면 후보를 보여 주고 사용자에게 묻게 하고, NOT FOUND면 정식 종목명을 묻게 한다(`order`와 같은 문구 방식).
 - 결과 텍스트에는 조회 시각(KST)을 붙인다. 지난 Turn의 시세·잔고는 저장된 기록이므로 모델이 다시 조회해야 한다. AGENT_INSTRUCTION의 "시간에 따라 바뀌는 사실은 다시 확인" 규칙이 이미 있다.
 - 연결이 없거나(`BROKER_NOT_CONNECTED`) 검증되지 않았으면 "웹에서 증권사를 연결하라"고 안내하게 하는 결과 문장을 준다.
 - Broker 오류(5xx, 시간 초과)는 도구 실패 결과로 돌려준다. 재시도는 하지 않는다. 조회라서 사용자가 다시 물으면 된다.
+
+### 종목 코드
+
+- 이미 있는 것을 그대로 쓴다: Broker `src/pia_broker/data/instruments.json`(KIS 종목 마스터 KOSPI·KOSDAQ, 2026-09-26 기준)과 `GET /internal/instruments`.
+- 검색 순서: 6자리 코드, 정규화한 종목명 정확 일치, 이름 일부 포함. 후보는 최대 5개다.
+- 별명("삼전")은 모델이 인자를 쓸 때 정식 이름으로 바꾼다(`order`와 같은 스키마 설명).
+- 확인할 것: **ETF·ETN이 목록에 있는지**. 사용자는 ETF 시세도 묻는다(예: SOL 반도체후공정). 없으면 ETF 마스터를 추가할지 이 작업에서 정한다.
+- 이번 범위 밖: 목록 자동 갱신. 신규 상장이나 종목명 변경은 목록을 다시 넣어야 반영된다. 갱신 방식(주기적 다운로드 등)은 나중에 정한다.
 
 ### 구현 위치
 
@@ -92,3 +100,4 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 2. 매수 가능 수량을 예수금÷가격으로 대신하는 판단이 괜찮은가?
 3. `quote`에 추가할 KIS 필드 이름(`prdy_vrss`, `prdy_ctrt`, `acml_vol`, `acml_tr_pbmn`, `hts_avls`, `per`, `pbr`, `w52_hgpr`, `w52_lwpr`)과 잔고 필드(`prdt_name`, `ord_psbl_qty`, `prpr`, `evlu_amt`, `evlu_pfls_amt`, `evlu_pfls_rt`, `dnca_tot_amt`, `tot_evlu_amt`, `evlu_pfls_smtl_amt`)가 맞는가?
 4. Broker 쪽 누락: IAM, API Gateway 경로, 테스트 계약, 시간 초과(Lambda 30초).
+5. 종목 목록(`instruments.json`)에 ETF·ETN이 들어 있는가? 없으면 이번에 추가하는 것이 맞는가?
