@@ -23,7 +23,7 @@ class TokenCompactionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.store = InMemoryConversationStore()
         self.now = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
-        self.policy = CompactionPolicy(trigger_tokens=81, tail_tokens=20)
+        self.policy = CompactionPolicy(trigger_tokens=81, tail_chars=10)
         self.token_budget = ModelTokenBudget(100, 10)
 
     def append_turns(
@@ -68,7 +68,10 @@ class TokenCompactionTest(unittest.TestCase):
 
     def test_policy_triggers_at_its_size_on_matching_provider_usage(self) -> None:
         policy = CompactionPolicy()
-        self.assertEqual((256_000, 32_000), (policy.trigger_tokens, policy.tail_tokens))
+        self.assertEqual(
+            (256_000, 100_000, 10_000),
+            (policy.trigger_tokens, policy.tail_chars, policy.summary_chars),
+        )
         # The budget is the model's own window, far above the trigger.
         token_budget = ModelTokenBudget(1_050_000)
 
@@ -85,11 +88,13 @@ class TokenCompactionTest(unittest.TestCase):
         self.assertFalse(compacts(ContextUsage("another-model", 999_999)))
 
     def test_policy_sizes_are_checked(self) -> None:
-        for values in ({"trigger_tokens": 0}, {"tail_tokens": True}):
+        for values in (
+            {"trigger_tokens": 0},
+            {"tail_chars": True},
+            {"summary_chars": -1},
+        ):
             with self.assertRaises(ValueError):
                 CompactionPolicy(**values)
-        with self.assertRaisesRegex(ValueError, "below trigger_tokens"):
-            CompactionPolicy(trigger_tokens=100, tail_tokens=100)
         # A trigger the model's input budget never reaches is a setup error.
         with self.assertRaisesRegex(ValueError, "below the input budget"):
             CompactionPolicy().should_compact(
@@ -98,7 +103,7 @@ class TokenCompactionTest(unittest.TestCase):
                 estimated_context_tokens=1,
             )
 
-    def test_reported_summary_over_the_response_reserve_is_rejected(self) -> None:
+    def test_reported_summary_over_the_output_limit_is_rejected(self) -> None:
         user_key = "compact-output-limit"
         session = self.store.get_or_create_active_session(user_key, now=self.now)
         turns = self.append_turns(user_key, session.session_id, 4)
@@ -110,13 +115,33 @@ class TokenCompactionTest(unittest.TestCase):
                 user_key,
                 session.session_id,
                 lambda request: SummaryOutput(
-                    "short", "nemotron", self.token_budget.response_tokens + 1
+                    "short", "nemotron", request.max_output_tokens + 1
                 ),
             )
         context = self.store.load_context(
             user_key=user_key, session_id=session.session_id, now=self.now
         )
         self.assertIsNone(context.summary)
+        self.assertEqual(tuple(turns), context.turns)
+
+    def test_a_summary_over_its_character_limit_is_rejected(self) -> None:
+        user_key = "compact-long-summary"
+        session = self.store.get_or_create_active_session(user_key, now=self.now)
+        turns = self.append_turns(user_key, session.session_id, 4, size=40)
+        requests = []
+
+        def summarize(request):
+            requests.append(request)
+            return SummaryOutput("가" * (request.max_characters + 1), "nemotron")
+
+        with self.assertRaisesRegex(SummaryValidationError, "character limit"):
+            self.compact(user_key, session.session_id, summarize)
+        # The writer is told the limit, and the output cap leaves room for it.
+        self.assertEqual(self.policy.summary_chars, requests[0].max_characters)
+        self.assertEqual(self.policy.summary_chars, requests[0].max_output_tokens)
+        context = self.store.load_context(
+            user_key=user_key, session_id=session.session_id, now=self.now
+        )
         self.assertEqual(tuple(turns), context.turns)
 
     def test_success_replaces_old_turns_with_summary_and_keeps_tail(self) -> None:

@@ -7,6 +7,9 @@ from uuid import uuid4
 
 
 MEMORY_MAX_CHARS = 4_000
+# What the Memory writer aims for; MEMORY_MAX_CHARS is only the hard limit,
+# so a document a little over the target is still kept.
+MEMORY_TARGET_CHARS = 2_000
 TURN_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{12}Z_[0-9a-f]{32}$")
 
 

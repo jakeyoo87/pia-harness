@@ -275,6 +275,7 @@ async def _run_summary(adapter: SmokeAdapter) -> SmokeResult:
                     ),
                 ),
                 max_output_tokens=4_096,
+                max_characters=10_000,
             ),
         )
         valid_tokens = output.token_count is None or (

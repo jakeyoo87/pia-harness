@@ -497,7 +497,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             return next(responses)
 
         adapter = self.adapter(handler)
-        request = SummaryRequest("summarize", "old", (completed_turn(),), 77)
+        request = SummaryRequest("summarize", "old", (completed_turn(),), 77, 10_000)
         estimated = adapter.summarize(request)
         reported = adapter.summarize(request)
 
@@ -524,7 +524,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
             )
 
         output = self.adapter(handler).summarize(
-            SummaryRequest("summarize", None, (completed_turn(),), 77)
+            SummaryRequest("summarize", None, (completed_turn(),), 77, 10_000)
         )
         self.assertIsNone(output.token_count)
 
@@ -852,7 +852,7 @@ class OpenRouterModelAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         with patch("pia_harness.openrouter.time.sleep") as sleeper:
             output = self.adapter(handler, max_attempts=2).summarize(
-                SummaryRequest("summarize", None, (completed_turn(),), 77)
+                SummaryRequest("summarize", None, (completed_turn(),), 77, 10_000)
             )
         self.assertEqual("짧은 요약", output.text)
         self.assertEqual(2, calls)

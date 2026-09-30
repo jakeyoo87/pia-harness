@@ -67,6 +67,7 @@ from .persistence import (
 )
 from .session import (
     MEMORY_MAX_CHARS,
+    MEMORY_TARGET_CHARS,
     ActiveSession,
     CompletedTurn,
     ConversationContext,
@@ -82,6 +83,7 @@ __all__ = [
     "MAX_CHANGE_SUMMARY_CHARS",
     "MAX_CHANGE_SUMMARY_ITEMS",
     "MEMORY_MAX_CHARS",
+    "MEMORY_TARGET_CHARS",
     "MEMORY_REVIEW_INSTRUCTION",
     "MESSAGE_SEPARATOR",
     "ActiveSession",

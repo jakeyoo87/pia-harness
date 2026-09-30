@@ -26,6 +26,7 @@ class SummaryRequest:
     previous_summary: str | None
     turns: tuple[CompletedTurn, ...]
     max_output_tokens: int
+    max_characters: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,18 +39,19 @@ class SummaryOutput:
 @dataclass(frozen=True, slots=True)
 class CompactionPolicy:
     # Sizes, not shares of the model window: the window can be far larger than
-    # what is worth resending every Turn. The tail is the recent Turns kept
-    # word for word after Compaction.
+    # what is worth resending every Turn. The trigger is in tokens because the
+    # model reports them; the Harness cannot count tokens, so what it measures
+    # itself is in characters. The tail is the recent Turns kept word for word
+    # after Compaction, beside the newest one that always stays.
     trigger_tokens: int = 256_000
-    tail_tokens: int = 32_000
+    tail_chars: int = 100_000
+    summary_chars: int = 10_000
 
     def __post_init__(self) -> None:
-        for name in ("trigger_tokens", "tail_tokens"):
+        for name in ("trigger_tokens", "tail_chars", "summary_chars"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if self.tail_tokens >= self.trigger_tokens:
-            raise ValueError("tail_tokens must be below trigger_tokens")
 
     def should_compact(
         self,
@@ -133,11 +135,7 @@ class TokenCompactor:
             session_id=session_id,
             now=checked_at,
         )
-        covered, _tail = _split_turns(
-            context.turns,
-            self._policy.tail_tokens,
-            self._estimate_tokens,
-        )
+        covered, _tail = _split_turns(context.turns, self._policy.tail_chars)
         if not covered:
             return None
 
@@ -147,21 +145,22 @@ class TokenCompactor:
                 None if context.summary is None else context.summary.summary_text
             ),
             turns=covered,
-            max_output_tokens=token_budget.response_tokens,
+            # A token is at least one character, so this never cuts a Summary
+            # within its character limit short.
+            max_output_tokens=self._policy.summary_chars,
+            max_characters=self._policy.summary_chars,
         )
         output = self._summarize(request)
         summary_text = output.text.strip()
         if not summary_text:
             raise SummaryValidationError("summary is empty")
+        if len(summary_text) > request.max_characters:
+            raise SummaryValidationError("summary exceeds the character limit")
         if not output.model_id:
             raise SummaryValidationError("summary model_id is empty")
 
-        estimated_summary_tokens = self._estimate_tokens(summary_text)
-        source_tokens = _source_tokens(
-            request.previous_summary, covered, self._estimate_tokens
-        )
         summary_tokens = (
-            estimated_summary_tokens
+            self._estimate_tokens(summary_text)
             if output.token_count is None
             else output.token_count
         )
@@ -169,10 +168,10 @@ class TokenCompactor:
             raise SummaryValidationError("summary token count must be positive")
         if (
             output.token_count is not None
-            and summary_tokens > token_budget.response_tokens
+            and summary_tokens > request.max_output_tokens
         ):
             raise SummaryValidationError("summary exceeds the output token limit")
-        if estimated_summary_tokens >= source_tokens:
+        if len(summary_text) >= _source_chars(request.previous_summary, covered):
             raise SummaryValidationError("summary is not smaller than its source")
 
         summary = RollingSummary(
@@ -201,43 +200,36 @@ def conservative_token_estimate(text: str) -> int:
 
 
 def _split_turns(
-    turns: Sequence[CompletedTurn],
-    tail_budget: int,
-    estimate_tokens: Callable[[str], int],
+    turns: Sequence[CompletedTurn], tail_chars: int
 ) -> tuple[tuple[CompletedTurn, ...], tuple[CompletedTurn, ...]]:
     if not turns:
         return (), ()
 
+    # The newest Turn always stays; earlier ones join it while they fit.
     tail_start = len(turns) - 1
-    used = _turn_tokens(turns[-1], estimate_tokens)
+    used = 0
     for index in range(len(turns) - 2, -1, -1):
-        cost = _turn_tokens(turns[index], estimate_tokens)
-        if used + cost > tail_budget:
+        size = _turn_chars(turns[index])
+        if used + size > tail_chars:
             break
-        used += cost
+        used += size
         tail_start = index
     return tuple(turns[:tail_start]), tuple(turns[tail_start:])
 
 
-def _turn_tokens(turn: CompletedTurn, estimate_tokens: Callable[[str], int]) -> int:
+def _turn_chars(turn: CompletedTurn) -> int:
     # What the Turn takes in the Context, tool records included; the Summary
     # itself is still written from the request and answer only.
     return (
-        estimate_tokens(turn.user_message)
-        + estimate_tokens(turn.assistant_message)
+        len(turn.user_message)
+        + len(turn.assistant_message)
         + sum(
-            estimate_tokens(item.name)
-            + estimate_tokens(item.arguments_json)
-            + estimate_tokens(item.result_text)
+            len(item.name) + len(item.arguments_json) + len(item.result_text)
             for item in turn.tool_observations
         )
     )
 
 
-def _source_tokens(
-    previous_summary: str | None,
-    turns: Sequence[CompletedTurn],
-    estimate_tokens: Callable[[str], int],
-) -> int:
-    total = 0 if previous_summary is None else estimate_tokens(previous_summary)
-    return total + sum(_turn_tokens(turn, estimate_tokens) for turn in turns)
+def _source_chars(previous_summary: str | None, turns: Sequence[CompletedTurn]) -> int:
+    total = 0 if previous_summary is None else len(previous_summary)
+    return total + sum(_turn_chars(turn) for turn in turns)
