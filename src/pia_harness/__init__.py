@@ -11,7 +11,6 @@ from .compaction import (
 )
 from .context import (
     AssembledPromptContext,
-    ContextBudgetExceeded,
     PromptContextAssembler,
     PromptContextKind,
     PromptContextPart,
@@ -91,7 +90,6 @@ __all__ = [
     "BrokerOrderTool",
     "CompactionPolicy",
     "CompletedTurn",
-    "ContextBudgetExceeded",
     "ContextUsage",
     "ConversationAbandoned",
     "ConversationContext",

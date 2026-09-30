@@ -71,22 +71,6 @@ class PromptContextValidationError(RuntimeError):
     pass
 
 
-class ContextBudgetExceeded(RuntimeError):
-    def __init__(
-        self,
-        *,
-        required_input_tokens: int,
-        input_budget: int,
-        token_budget: ModelTokenBudget,
-    ) -> None:
-        super().__init__(
-            f"input requires {required_input_tokens} tokens but budget is {input_budget}"
-        )
-        self.required_input_tokens = required_input_tokens
-        self.input_budget = input_budget
-        self.token_budget = token_budget
-
-
 class PromptContextAssembler:
     def __init__(
         self,
@@ -151,12 +135,6 @@ class PromptContextAssembler:
         ):
             raise PromptContextValidationError(
                 "count_input_tokens must return a non-negative integer"
-            )
-        if estimated_input_tokens > input_budget:
-            raise ContextBudgetExceeded(
-                required_input_tokens=estimated_input_tokens,
-                input_budget=input_budget,
-                token_budget=token_budget,
             )
         return AssembledPromptContext(
             parts, estimated_input_tokens, input_budget, user_key, tools

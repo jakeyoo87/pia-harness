@@ -32,3 +32,11 @@ README 대조(`plans/2026-09-30_naver-news.md` "Codex 검토 반영")에서 찾�
 1. ② 제거 뒤 넘침 경로(도구 없이 재조립 → `CONTEXT_OVERFLOW`, 대기 메시지 처리, 실행 확정 뒤 답변 경로)가 맞는지.
 2. 알려진 한계를 받아들이는 판단이 괜찮은지, 더 단순하게 막을 방법이 있는지.
 3. 빼도 되는 것, 빠진 것.
+
+## 추가 결정 (사용자): 호출 직전 크기 확인도 없앤다
+
+- 256K에서 압축하면 모델 한도(105만)까지 약 75%가 남는다. 답변 뒤 확인만으로 충분하다.
+- 직전 크기 확인도 바이트 추정을 입력 예산(105만)과 비교해, 실제 약 25만~35만 토큰에서 가짜 넘침(도구를 빼고 답하거나 `CONTEXT_OVERFLOW`)을 낼 수 있었다. 256K 근처의 긴 대화에서 조사가 끊길 수 있다.
+- 없앤 것: 조립 때의 예산 검사와 `ContextBudgetExceeded`(공개 이름), 도구를 빼고 다시 조립하는 경로, `OrchestratorStatus.CONTEXT_OVERFLOW`, 조사 한도 알림의 "input size". 모델 한도를 넘는 요청은 모델이 거절해 일반 모델 오류로 끝난다.
+- 남긴 것: 조립 결과의 추정치(`estimated_input_tokens`)와 `input_budget`(관찰용), `CompactionPolicy`의 `trigger_tokens < 입력 예산` 검증.
+- PIA는 아직 연동 전이라 공개 이름 제거의 영향이 없다. 연동 때 `CONTEXT_OVERFLOW` 처리를 두지 않는다.

@@ -7,7 +7,6 @@ from pia_harness import (
     DEFAULT_MAX_RESPONSE_TOKENS,
     AssembledPromptContext,
     CompletedTurn,
-    ContextBudgetExceeded,
     ConversationContext,
     MemoryDocument,
     ModelTokenBudget,
@@ -305,25 +304,17 @@ class PromptContextAssemblerTest(unittest.TestCase):
                 ),
             )
 
-    def test_exact_budget_succeeds_and_overflow_contains_counts_only(self) -> None:
-        exact = self.assemble(
-            lambda parts: 90,
+    def test_the_estimate_is_reported_and_not_checked_against_the_budget(
+        self,
+    ) -> None:
+        # The estimate counts bytes and can be far above the real tokens, so
+        # the model's own limit decides; Compaction keeps the size down.
+        over = self.assemble(
+            lambda parts: 91,
             token_budget=ModelTokenBudget(100, 10),
         )
-        self.assertEqual(90, exact.estimated_input_tokens)
-        self.assertEqual(90, exact.input_budget)
-
-        with self.assertRaises(ContextBudgetExceeded) as raised:
-            self.assemble(
-                lambda parts: 91,
-                token_budget=ModelTokenBudget(100, 10),
-            )
-        error = raised.exception
-        self.assertEqual(91, error.required_input_tokens)
-        self.assertEqual(90, error.input_budget)
-        self.assertEqual(ModelTokenBudget(100, 10), error.token_budget)
-        self.assertNotIn("PIA system policy", str(error))
-        self.assertNotIn("현재 질문", str(error))
+        self.assertEqual(91, over.estimated_input_tokens)
+        self.assertEqual(90, over.input_budget)
 
     def test_limits_required_text_and_counter_results_are_validated(self) -> None:
         invalid_calls = (

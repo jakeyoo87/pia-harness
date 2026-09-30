@@ -15,7 +15,6 @@ from .budget import ModelTokenBudget
 from .compaction import ContextUsage, TokenCompactor
 from .context import (
     AssembledPromptContext,
-    ContextBudgetExceeded,
     PromptContextAssembler,
     PromptContextKind,
     ToolObservation,
@@ -48,9 +47,9 @@ MAX_READ_TOOL_CALLS = 20
 # searches does not trip the search service's rate limit. The rest wait.
 MAX_CONCURRENT_READS = 3
 RESEARCH_LIMIT_NOTICE = (
-    "Research stopped at its limit (time, number of reads, or input size). Answer "
-    "now from the results above, without tools, and say plainly which parts could "
-    "not be confirmed."
+    "Research stopped at its limit (time or number of reads). Answer now from the "
+    "results above, without tools, and say plainly which parts could not be "
+    "confirmed."
 )
 CONFIRMATION_TTL_SECONDS = 300.0
 CONFIRMATION_EXPIRED_NOTICE = "확인 시간이 지났습니다. 다시 요청해 주세요."
@@ -89,7 +88,6 @@ class OrchestratorStatus(StrEnum):
     DELIVERED = "DELIVERED"
     SUPERSEDED = "SUPERSEDED"
     ABANDONED = "ABANDONED"
-    CONTEXT_OVERFLOW = "CONTEXT_OVERFLOW"
     GENERATION_FAILED = "GENERATION_FAILED"
     DELIVERY_FAILED = "DELIVERY_FAILED"
     PERSISTENCE_FAILED = "PERSISTENCE_FAILED"
@@ -530,20 +528,6 @@ class ConversationOrchestrator:
                     note=note,
                     closing_note=closing_note,
                 )
-                if assembled is None:
-                    if not answer_only:
-                        # Tools make the request larger: answer without them.
-                        answer_only, closing_note = True, RESEARCH_LIMIT_NOTICE
-                        continue
-                    await self._finish_generation(
-                        user_key,
-                        state,
-                        generation_id,
-                        batch,
-                        ConversationResult(OrchestratorStatus.CONTEXT_OVERFLOW),
-                        clear_pending=True,
-                    )
-                    return
                 if not await self._is_current(state, generation_id):
                     return
                 reply = await self._generate_reply(assembled)
@@ -923,11 +907,11 @@ class ConversationOrchestrator:
         tools: tuple[ToolSpec, ...] = (),
         note: str | None = None,
         closing_note: str | None = None,
-    ) -> AssembledPromptContext | None:
-        """This request's Context, or None when it does not fit the model.
-
-        Compaction runs only after an answer, on the model's reported usage
-        (see _commit_response), so the user never waits for it here.
+    ) -> AssembledPromptContext:
+        """This request's Context. Its size is not checked here: Compaction after
+        each answer, on the model's reported usage (see _commit_response), keeps
+        the conversation far below the model's limit, and the model rejects a
+        request over it.
         """
         combined = _received_line(batch) + _combined_message(batch)
         memory, conversation = await asyncio.gather(
@@ -939,20 +923,17 @@ class ConversationOrchestrator:
                 now=batch[-1].value.accepted_at,
             ),
         )
-        try:
-            return self._assemble(
-                user_key,
-                session,
-                memory,
-                conversation,
-                combined,
-                tool_observations,
-                tools=tools,
-                note=note,
-                closing_note=closing_note,
-            )
-        except ContextBudgetExceeded:
-            return None
+        return self._assemble(
+            user_key,
+            session,
+            memory,
+            conversation,
+            combined,
+            tool_observations,
+            tools=tools,
+            note=note,
+            closing_note=closing_note,
+        )
 
     def _assemble(
         self,
@@ -1058,8 +1039,6 @@ class ConversationOrchestrator:
             assembled = await self._assemble_context(
                 user_key, batch, session, tool_observations, note=note
             )
-            if assembled is None:
-                return fixed
             reply = await self._generate_reply(assembled)
             _validate_reply(reply, answer_only=True)
             assert reply.answer is not None

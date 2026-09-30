@@ -569,47 +569,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
         self.assertEqual(["explicit"], self.memory.calls)
 
-    async def test_overflow_ends_the_turn_without_compaction(self) -> None:
-        generated = []
-
-        async def generate(context):
-            generated.append(context)
-            return GeneratedAnswer("answer", "model", 10)
-
-        self.compactor.due = True
-        orchestrator = self.orchestrator(generate, counter=lambda parts: 901)
-        result = await orchestrator.submit(
-            user_key="user", message="question", accepted_at=self.now
-        )
-
-        self.assertEqual(OrchestratorStatus.CONTEXT_OVERFLOW, result.status)
-        self.assertEqual([], generated)
-        # Compaction runs only after an answer, so the user never waits for it.
-        self.assertEqual([], self.compactor.calls)
-
-    async def test_overflow_does_not_strand_later_messages(self) -> None:
-        # The overflowing batch is deterministically unassemblable, so keeping it
-        # pending would make every later message for that user fail the same way.
-        async def generate(assembled):
-            return GeneratedAnswer("answer", "model", 10)
-
-        orchestrator = self.orchestrator(generate)
-        overflowed = await orchestrator.submit(
-            user_key="member",
-            message="x" * 2_000,
-            accepted_at=self.now,
-        )
-        self.assertEqual(OrchestratorStatus.CONTEXT_OVERFLOW, overflowed.status)
-
-        followed = await orchestrator.submit(
-            user_key="member",
-            message="짧은 질문",
-            accepted_at=self.now + timedelta(seconds=1),
-        )
-        self.assertEqual(OrchestratorStatus.DELIVERED, followed.status)
-        self.assertEqual(1, len(self.store.turns))
-        self.assertEqual("짧은 질문", self.store.turns[0].user_message)
-
     async def test_delivery_and_persistence_failures_have_simple_boundaries(
         self,
     ) -> None:
@@ -1391,26 +1350,6 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("Not run: the research limit was reached.", _results(final)[2])
         self.assertEqual((), final.tools)
         self.assertEqual([RESEARCH_LIMIT_NOTICE], _notes(final))
-
-    async def test_a_request_too_large_with_tools_is_answered_without_them(
-        self,
-    ) -> None:
-        contexts = []
-        self.compactor.progress = False
-
-        def counter(parts, tools):
-            return 901 if tools else 10
-
-        orchestrator = self.orchestrator(
-            self.script("answer", contexts=contexts), count=counter
-        )
-        result = await orchestrator.submit(
-            user_key="user", message="question", accepted_at=self.now
-        )
-
-        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
-        self.assertEqual((), contexts[0].tools)
-        self.assertEqual([RESEARCH_LIMIT_NOTICE], _notes(contexts[0]))
 
     # --- Tool definitions -------------------------------------------------------
 
