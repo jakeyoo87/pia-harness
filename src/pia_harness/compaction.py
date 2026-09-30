@@ -44,8 +44,8 @@ class CompactionPolicy:
     # itself is in characters. The tail is the recent Turns kept word for word
     # after Compaction, beside the newest one that always stays.
     trigger_tokens: int = 256_000
-    tail_chars: int = 100_000
-    summary_chars: int = 10_000
+    tail_chars: int = 40_000
+    summary_chars: int = 20_000
 
     def __post_init__(self) -> None:
         for name in ("trigger_tokens", "tail_chars", "summary_chars"):

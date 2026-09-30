@@ -69,7 +69,7 @@ class TokenCompactionTest(unittest.TestCase):
     def test_policy_triggers_at_its_size_on_matching_provider_usage(self) -> None:
         policy = CompactionPolicy()
         self.assertEqual(
-            (256_000, 100_000, 10_000),
+            (256_000, 40_000, 20_000),
             (policy.trigger_tokens, policy.tail_chars, policy.summary_chars),
         )
         # The budget is the model's own window, far above the trigger.
