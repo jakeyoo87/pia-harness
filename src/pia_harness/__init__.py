@@ -21,6 +21,7 @@ from .context import (
     ToolSpec,
 )
 from .exa_search import ExaWebSearch
+from .news_search import NaverNewsSearch
 from .memory import (
     MAX_CHANGE_SUMMARY_CHARS,
     MAX_CHANGE_SUMMARY_ITEMS,
@@ -104,6 +105,7 @@ __all__ = [
     "ExecutionToolDefinition",
     "GeneratedAnswer",
     "JinaPageExtractor",
+    "NaverNewsSearch",
     "MemoryAction",
     "MemoryDocument",
     "MemoryReviewAction",

@@ -23,7 +23,8 @@ WEB_SEARCH_DESCRIPTION = (
     "Search the web, news included, for pages about the request: recent news, "
     "company and fund pages, ETF holdings, filings and reports. Returns up to five "
     "candidates with title, link, date and a short excerpt, not full pages. Choose "
-    "when the answer needs facts that are not already in the conversation."
+    "when the answer needs facts that are not already in the conversation. For "
+    "Korean news articles, news_search is usually better."
 )
 WEB_SEARCH_ARGUMENTS_SCHEMA: dict[str, Any] = {
     "type": "object",

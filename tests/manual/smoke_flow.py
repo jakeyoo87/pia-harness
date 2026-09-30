@@ -6,7 +6,8 @@ answers. Keys come from the environment and are never printed; Jina is called
 without a key. The execution set uses a fake pia-broker with fixed replies; no
 real order is ever sent.
 
-    OPENROUTER_API_KEY=... EXA_API_KEY=... python -m tests.manual.smoke_flow \\
+    OPENROUTER_API_KEY=... EXA_API_KEY=... NAVER_API_HUB_CLIENT_ID=... \\
+    NAVER_API_HUB_CLIENT_SECRET=... python -m tests.manual.smoke_flow \\
         [--set read|execution] [--only 1,2]
 """
 
@@ -31,6 +32,7 @@ from pia_harness import (
     ExaWebSearch,
     JinaPageExtractor,
     ModelTokenBudget,
+    NaverNewsSearch,
     OpenRouterModelAdapter,
     ReadToolDefinition,
 )
@@ -82,7 +84,7 @@ def _log(started: float, event: str, detail: str = "") -> None:
     )
 
 
-def _instrument(model: OpenRouterModelAdapter, search: ExaWebSearch):
+def _instrument(model: OpenRouterModelAdapter):
     """Wrap calls to log each model step, tool and HTTP attempt. No content is
     logged beyond the synthetic scenario's own arguments and answers."""
     state: dict[str, Any] = {"record": Record(), "started": time.monotonic()}
@@ -142,21 +144,30 @@ def _instrument(model: OpenRouterModelAdapter, search: ExaWebSearch):
         "response": [on_response],
     }
 
-    execute = search.execute
+    # Both search tools count as searches and log their candidates.
+    def logged(tool: ReadToolDefinition) -> ReadToolDefinition:
+        execute = tool.execute
 
-    async def logged_search(user_key, call, inputs):
-        state["record"].calls["search"] += 1
-        result = await execute(user_key, call, inputs)
-        _log(state["started"], "SEARCH", result.observation_text)
-        for link in result.links:
-            _log(
-                state["started"],
-                "  cand",
-                f"{link.published} {link.title} <{link.url}>",
-            )
-        return result
+        async def logged_search(user_key, call, inputs):
+            state["record"].calls["search"] += 1
+            result = await execute(user_key, call, inputs)
+            _log(state["started"], "SEARCH", result.observation_text)
+            for link in result.links:
+                _log(
+                    state["started"],
+                    "  cand",
+                    f"{link.published} {link.title} <{link.url}>",
+                )
+            return result
 
-    return state, logged_search
+        return ReadToolDefinition(
+            name=tool.name,
+            description=tool.description,
+            execute=logged_search,
+            arguments_schema=tool.arguments_schema,
+        )
+
+    return state, logged
 
 
 def _instrument_extract(state: dict[str, Any], extractor: JinaPageExtractor) -> None:
@@ -265,16 +276,14 @@ async def run(
         max_attempts=2,
     )
     search = ExaWebSearch(api_key=environ["EXA_API_KEY"])
-    state, logged_search = _instrument(model, search)
+    news = NaverNewsSearch(
+        client_id=environ["NAVER_API_HUB_CLIENT_ID"],
+        client_secret=environ["NAVER_API_HUB_CLIENT_SECRET"],
+    )
+    state, logged = _instrument(model)
     extractor = JinaPageExtractor(model.read_json)
     _instrument_extract(state, extractor)
-    tool = search.tool()
-    search_tool = ReadToolDefinition(
-        name=tool.name,
-        description=tool.description,
-        execute=logged_search,
-        arguments_schema=tool.arguments_schema,
-    )
+    search_tools = (logged(news.tool()), logged(search.tool()))
     store = InMemoryConversationStore()
     orders: list[dict[str, Any]] = []
     execution_tools = ()
@@ -303,7 +312,7 @@ async def run(
         token_budget=budget,
         model_id=model_id,
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
-        read_tools=(search_tool, extractor.tool()),
+        read_tools=(*search_tools, extractor.tool()),
         execution_tools=execution_tools,
     )
     rows = []
@@ -363,6 +372,7 @@ async def run(
             )
     finally:
         await search.aclose()
+        await news.aclose()
         await extractor.aclose()
         await model.aclose()
         if broker_client is not None:
@@ -389,7 +399,12 @@ def main() -> None:
         scenarios = [s for s in scenarios if s["id"] in wanted]
     missing = [
         name
-        for name in ("OPENROUTER_API_KEY", "EXA_API_KEY")
+        for name in (
+            "OPENROUTER_API_KEY",
+            "EXA_API_KEY",
+            "NAVER_API_HUB_CLIENT_ID",
+            "NAVER_API_HUB_CLIENT_SECRET",
+        )
         if not os.environ.get(name)
     ]
     if missing:

@@ -1,5 +1,6 @@
-"""The web_extract read tool: pages read through Jina Reader, each turned into a
-summary plus quotes checked against the page."""
+"""The web_extract read tool: pages read through Jina Reader, or NAVER News
+articles read directly, each turned into a summary plus quotes checked against
+the page."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from html.parser import HTMLParser
 from typing import Any
 
 import httpx
@@ -98,6 +100,14 @@ _URL = re.compile(r"https?://\S+")
 _PAGE_CAUSED = frozenset(
     {"openrouter.output_truncated", "openrouter.invalid_output", "openrouter.refusal"}
 )
+# A NAVER News article page is served whole, with the body in one fixed element,
+# so it is read directly instead of through Jina. Sports and entertainment
+# articles live on other hosts, drawn by scripts, and go to Jina.
+_NAVER_ARTICLE = re.compile(r"https://n\.news\.naver\.com/(?:mnews/)?article/\d+/\d+")
+_NAVER_BODY = re.compile(r'<article id="dic_area"[^>]*>(.*?)</article>', re.DOTALL)
+_NAVER_TITLE = re.compile(r'<h2 id="title_area"[^>]*>(.*?)</h2>', re.DOTALL)
+_NAVER_DATE = re.compile(r'_ARTICLE_DATE_TIME" data-date-time="([^"]+)"')
+_NAVER_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # (messages, schema name, schema) -> the model's JSON object.
 ReadJson = Callable[
@@ -122,7 +132,8 @@ class PageExcerpt:
 
 
 class JinaPageExtractor:
-    """Pages are fetched by Jina, so this client only ever connects to Jina."""
+    """Pages are fetched by Jina; only NAVER News article links are fetched
+    directly, from that one host and without following redirects."""
 
     def __init__(
         self,
@@ -288,6 +299,10 @@ class JinaPageExtractor:
         return summary.strip(), tuple(quotes)
 
     async def _read(self, url: str) -> str:
+        if _NAVER_ARTICLE.match(url):
+            page = await self._read_naver(url)
+            if page is not None:
+                return page
         try:
             response = await self._client.post(
                 JINA_READER_URL, json={"url": url}, headers=self._headers
@@ -301,9 +316,65 @@ class JinaPageExtractor:
             raise PageReadError("empty page")
         return page
 
+    async def _read_naver(self, url: str) -> str | None:
+        """Title, date and body of a NAVER News article; None sends it to Jina."""
+        try:
+            response = await self._client.get(url, headers=_NAVER_HEADERS)
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None
+        html = response.text
+        body = _NAVER_BODY.search(html)
+        text = _html_text(body.group(1)) if body else ""
+        if not text:
+            return None
+        title = _NAVER_TITLE.search(html)
+        date = _NAVER_DATE.search(html)
+        head = [
+            _html_text(title.group(1)) if title else "",
+            date.group(1) if date else "",
+        ]
+        return "\n".join([*(line for line in head if line), "", text])
+
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+class _Text(HTMLParser):
+    """Text of an HTML fragment, with a line break where a block starts or ends."""
+
+    _BLOCKS = frozenset({"br", "div", "p", "tr", "table", "li", "h2", "h3", "strong"})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+        self._skipped = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("script", "style"):
+            self._skipped += 1
+        elif tag in self._BLOCKS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style"):
+            self._skipped = max(0, self._skipped - 1)
+        elif tag in self._BLOCKS:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skipped:
+            self.parts.append(data)
+
+
+def _html_text(fragment: str) -> str:
+    parser = _Text()
+    parser.feed(fragment)
+    parser.close()
+    lines = (" ".join(line.split()) for line in "".join(parser.parts).split("\n"))
+    return "\n".join(line for line in lines if line)
 
 
 def _normalize(text: str) -> str:

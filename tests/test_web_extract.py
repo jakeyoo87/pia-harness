@@ -23,6 +23,19 @@ PAGE = (
     "기준일 2026.09.28 (장마감)\n"
 )
 REQUEST = "기판 관련 ETF 조사해줘"
+NAVER_URL = "https://n.news.naver.com/mnews/article/018/0006375530?sid=101"
+NAVER_PAGE = """<html><head><script>var ad = 1;</script></head><body>
+<div class="menu">뉴스 홈 | 경제 | 광고</div>
+<h2 id="title_area" class="media_end_head_headline"><span>삼성전자 목표가 극과극</span></h2>
+<span class="media_end_head_info_datestamp_time _ARTICLE_DATE_TIME" data-date-time="2026-09-25 16:10:10">2026.09.25.</span>
+<article id="dic_area" class="go_trans _article_content">
+<strong class="media_end_summary">목표가 두 배 이상 벌어져</strong>[이데일리 김소연 기자] 삼성전자 목표주가는
+유안타증권 63만원,<br>BNK투자증권 27만원입니다.
+<table class="nbd_table"><tr><td><img src="x.jpg"><em class="img_desc">사진 설명</em></td></tr></table>
+평균은 49만3864원&nbsp;입니다.
+</article>
+<div class="related">관련 기사 목록</div><div id="comment">댓글</div>
+</body></html>"""
 
 
 def _unlabel(content: str) -> str:
@@ -286,6 +299,78 @@ class JinaPageExtractorTest(unittest.IsolatedAsyncioTestCase):
         tool, _ = extractor(handler, "", (), api_key="synthetic-key")
         await tool.extract("https://a.example", "goal", REQUEST)
         self.assertEqual("Bearer synthetic-key", requests[0].headers["authorization"])
+
+    async def test_a_naver_news_article_is_read_directly(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, text=NAVER_PAGE)
+
+        quote = "평균은 49만3864원 입니다."
+        tool, calls = extractor(handler, "평균 목표주가가 있다.", (quote,))
+        excerpt = await tool.extract(NAVER_URL, "목표주가", REQUEST)
+
+        # One request to the article itself, not to Jina.
+        self.assertEqual(
+            [("GET", NAVER_URL)], [(r.method, str(r.url)) for r in requests]
+        )
+        self.assertEqual((quote,), excerpt.passages)
+        page = calls[0][2]
+        self.assertEqual(
+            "삼성전자 목표가 극과극\n2026-09-25 16:10:10\n\n"
+            "목표가 두 배 이상 벌어져\n[이데일리 김소연 기자] 삼성전자 목표주가는\n"
+            "유안타증권 63만원,\nBNK투자증권 27만원입니다.\n사진 설명\n"
+            "평균은 49만3864원 입니다.",
+            page,
+        )
+        # Nothing outside the article body comes along.
+        for outside in ("뉴스 홈", "관련 기사", "댓글", "var ad"):
+            self.assertNotIn(outside, page)
+
+    async def test_a_naver_page_without_a_body_goes_to_jina(self) -> None:
+        cases = {
+            "no body": lambda request: httpx.Response(200, text="<html>moved</html>"),
+            "redirect": lambda request: httpx.Response(
+                302, headers={"location": "https://m.sports.naver.com/x"}
+            ),
+            "status": lambda request: httpx.Response(500),
+        }
+        for name, naver in cases.items():
+            with self.subTest(case=name):
+                requests: list[httpx.Request] = []
+
+                def handler(
+                    request: httpx.Request, naver=naver, requests=requests
+                ) -> httpx.Response:
+                    requests.append(request)
+                    if request.url.host == "n.news.naver.com":
+                        return naver(request)
+                    return page_reply(request)
+
+                tool, _ = extractor(handler, "비중", ("기준일 2026.09.28 (장마감)",))
+                excerpt = await tool.extract(NAVER_URL, "비중", REQUEST)
+
+                self.assertEqual(
+                    ["n.news.naver.com", "r.jina.ai"], [r.url.host for r in requests]
+                )
+                self.assertEqual(("기준일 2026.09.28 (장마감)",), excerpt.passages)
+
+    async def test_other_naver_hosts_go_to_jina(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return page_reply(request)
+
+        tool, _ = extractor(handler, "비중", ())
+        for url in (
+            "https://m.sports.naver.com/kbaseball/article/001/0000001",
+            "https://news.naver.com/main/read.naver?oid=001&aid=1",
+            "http://n.news.naver.com/mnews/article/001/1",
+        ):
+            await tool.extract(url, "비중", REQUEST)
+        self.assertEqual({"r.jina.ai"}, {r.url.host for r in requests})
 
 
 if __name__ == "__main__":
