@@ -542,6 +542,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertTrue(result.memory_failed)
         self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
+        # The notice is for the user only; the Turn keeps the model's answer.
+        self.assertEqual("answer", self.store.turns[0].assistant_message)
 
     async def test_stale_explicit_review_reports_failure_like_an_exception(
         self,
@@ -1398,18 +1400,24 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("confirm", [tool.name for tool in contexts[0].tools])
         # After a draft the model answers without tools.
         self.assertEqual((), contexts[1].tools)
-        # The question is last and stored with the Turn.
+        # The user gets the question last; the Turn keeps only the model's
+        # answer, so later Turns never show the model a question it did not write.
         self.assertTrue(
             first.final_text.endswith("\n\nBuy 10 Samsung shares at 285,500 KRW?")
         )
-        self.assertEqual(first.final_text, self.store.turns[-1].assistant_message)
+        self.assertEqual("주문을 준비했어요.", self.store.turns[-1].assistant_message)
 
         second = await orchestrator.submit(
             user_key="user", message="응", accepted_at=self.now + timedelta(minutes=1)
         )
         self.assertEqual(OrchestratorStatus.DELIVERED, second.status)
         self.assertIn("confirm", [tool.name for tool in contexts[2].tools])
+        # What to confirm comes from the waiting note, not the earlier answer.
         self.assertIn("Samsung 10 shares limit buy", _notes(contexts[2])[0])
+        self.assertEqual(
+            ["주문을 준비했어요."],
+            [p.content for p in contexts[2].parts if p.kind.value == "ASSISTANT_TURN"],
+        )
         self.assertEqual(['{"name": "Samsung"}'], executed)
         self.assertEqual("주문했어요.", second.final_text)
         self.assertEqual("Order accepted: Samsung.", _results(contexts[3])[0])

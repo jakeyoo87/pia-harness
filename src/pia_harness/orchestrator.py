@@ -1145,7 +1145,10 @@ class ConversationOrchestrator:
                 "session_id": session.session_id,
                 "turn_id": batch[-1].value.turn_id,
                 "user_message": combined,
-                "assistant_message": final_text,
+                # Only what the model wrote: later Turns show it back as the
+                # model's own answer, and text the Harness appended (order
+                # questions, notices) would be copied from there.
+                "assistant_message": answer.text,
                 "created_at": batch[-1].value.accepted_at,
             }
             try:
@@ -1158,8 +1161,8 @@ class ConversationOrchestrator:
                 except TurnTooLargeError:
                     if not tool_observations:
                         raise
-                    # Too big with its tool records: keep at least what the
-                    # user saw, as before tool records were stored.
+                    # Too big with its tool records: keep at least the request
+                    # and the answer, as before tool records were stored.
                     await _durable_call(self._store.append_completed_turn, **turn)
             except ConversationAbandoned:
                 raise

@@ -61,3 +61,18 @@
 ### 구현 때 고정할 계약
 
 `model_answer`는 기존 `CompletedTurn`의 기본값 필드 뒤에 추가해 위치 인자 사용처를 깨지 않도록 한다. 저장소의 동일 `turn_id` 재호출 비교와 256KiB 한도에는 두 답변 칸을 모두 포함하고, 구형 row의 누락 필드는 빈 문자열로 읽는다. 최근 Turn 보호 크기는 Context에 실제 재생하는 답변을 세되, Summary/Memory 작성 데이터는 계속 최종본을 쓴다. PIA DynamoDB 저장소가 이 선택적 필드를 왕복하도록 바꾸기 전에는 PIA의 Harness wheel pin을 올리지 않는다. 이 이상의 라우터·후처리 추측 규칙은 필요 없다.
+
+## 계획 변경 (사용자, Codex 검토 뒤): 붙인 글은 저장하지 않는다
+
+- 두 칸(`model_answer` + 최종본)으로 나누지 않는다. `assistant_message`에 **모델이 쓴 답변만** 저장하고, Harness가 붙이는 글은 사용자에게 보낼 때만 붙인다. 새 칸, 저장소 계약·PIA DynamoDB 변경이 없다.
+- 두 칸 방식이 더 지켜 주는 것은 "저장본 = 사용자가 본 글" 하나다. PIA에서 저장된 답변을 쓰는 곳은 대화 저장소(`app/dynamodb_conversation_store.py`)뿐이고 화면에 보여주는 곳이 없다. 주문 기록은 pia-broker에 따로 남는다.
+- 잃는 것: Summary·Memory 작성 입력에서도 붙인 글이 빠진다. 모델 답변에 준비한 주문의 핵심(종목·수량·가격)이 들어 있어 요약에 남는 내용은 거의 같다. 모델이 과거 알림 문구를 못 보는 점은 두 칸 방식과 같다(Codex 비차단 1).
+- 예전에 저장된 Turn(최종본)은 그대로 재생되고, 새 Turn부터 적용된다(Codex 비차단 2).
+- 대화 기록을 사용자 화면에 보여줄 일이 생기면 그때 최종본 저장을 다시 검토한다.
+
+## 구현 (Claude)
+
+- `_commit_response`가 저장하는 `assistant_message`를 `final_text`에서 `answer.text`(번호 링크 적용 뒤, 붙이기 전)로 바꿨다. 실행 확정 뒤 답변도 같은 경로다. 사용자 전달과 `ConversationResult.final_text`는 그대로다.
+- 테스트: 주문 준비 Turn은 사용자에게 확인 질문이 마지막에 가고, 저장된 답변과 다음 Turn Context의 과거 답변에는 없으며, 확정 정보는 확인 대기 알림에 있다. Memory 실패 알림도 사용자에게만 간다.
+- README 3장.
+- 측정(Codex 비차단 3): execution 전체 + read 일부(Memory 알림 4·4-1·10, 링크 후속 2→6-1, 15→15-1→15-2).
