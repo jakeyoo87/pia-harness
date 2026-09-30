@@ -245,3 +245,23 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 - 유료 시나리오 측정은 하지 않았다. PIA 연동 뒤 실호출로 확인한다(순서 4).
 
 **PIA 연동 때 필요한 것(Codex)**: 위 "pia-agent" 항목 그대로다. `BrokerReadTool(base_url=str(broker_client.base_url), client=broker_client)`를 `read_tools`에 넣는다.
+
+## Codex 구현 검토 (broker 8a96cb9, harness 382a540, 2026-09-30)
+
+판정: 병합 전 수정 1건. 두 브랜치의 `git diff --check`는 통과했다. 테스트는 재실행하지 않았다.
+
+**차단**
+- `cash_d2`의 의미가 잘못 표시된다.
+  - Broker는 KIS `prvs_rcdl_excc_amt`를 `cash_d2`로 내보내고, harness는 이를 "D+2 cash"로 설명한다.
+  - KIS 공식 예제는 이 필드를 "가수도정산금액"으로 정의한다. D+2 예수금과 같다고 확인되지 않았다.
+  - 첫 버전에서 요청된 것은 예수금이므로, 가장 단순한 수정은 필드와 표시를 빼는 것이다. 테스트도 잘못된 명칭을 고정하고 있다.
+
+**비차단**
+- 확인된 것:
+  - 음수 보존, output2 비합산
+  - KIS `nrcvb_buy_amt`·`nrcvb_buy_qty`와 `ORD_DVSN=01` 사용, 자체 계산 없음
+  - 종목 찾기 공통화 뒤 주문 문구·순서 유지, `price`·`observed_at` 유지
+  - 잔고 본문 로깅·계좌번호 응답 없음
+- `hts_avls`의 "억 원" 표시와 ETF 일반 현재가 경로는 실호출 전 미확인이다. dev에서 확인하기 전에는 사용자 대상 배포를 완료로 보지 않는다.
+- "시장가는 상한가로 계산된다"는 harness 문장은 KIS 예제가 보장하는 범위보다 강하다. KIS가 돌려준 계산 단가와 "시장가 기준"만 표시해도 충분하다.
+- PIA 연동은 Broker 경로와 권한을 적용한 뒤 Bot에 도구를 등록하는 순서로 한다.
