@@ -1,4 +1,4 @@
-"""Run the README section 1 flow with the real model, Exa, and Jina.
+"""Run the README section 1 flow with the real model, NAVER, Exa, and Jina.
 
 Manual only: it calls paid APIs and model decisions vary, so it is not part of pytest
 or CI. Scenarios run in order in one conversation, so later ones can refer to earlier
