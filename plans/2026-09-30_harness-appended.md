@@ -43,3 +43,21 @@
 2. Context에 모델 답변만 넣을 때 확인 대기·"응" 해석·링크 경계·Summary/Memory에 빠지는 정보가 없는지.
 3. 저장 계약(새 칸, 빈 값 호환, 크기 한도)과 PIA 연동에서 챙길 것.
 4. 빼도 되는 것, 빠진 것.
+
+## Codex 검토 (2026-09-30)
+
+기준 `main fb8d9b2`의 Turn 저장·Context 조립·Summary·Memory·확인 대기 코드와 이 계획, 측정 기록을 대조했다. 검토만 했으며 구현·README 수정·병합·AWS 변경·배포·실제 모델/공급자 호출은 하지 않았다. 계획만 있는 브랜치라 테스트는 재실행하지 않았다.
+
+### Blocker
+
+없다. 현재 `_commit_response`는 출처를 정리한 `answer.text`에 Memory/만료 안내와 `PreparedAction.confirmation`을 붙여 전달·저장한다(`orchestrator.py` 1114–1158행). 이전 Turn의 `assistant_message`는 도구 기록 뒤에 네이티브 assistant 메시지로 재생된다(`context.py` 179–194행). 따라서 사용자가 본 최종본과 모델이 쓴 부분을 나누고, 재생에만 후자를 쓰는 변경은 보고된 중복의 원인에 맞는다. 확인 대기는 최종 답변 전달 뒤 Harness 메모리에 저장되고, 다음 Turn에 별도 `_waiting_note`로 action ID와 주문 요약이 주어진다(`orchestrator.py` 1134–1143, 1288–1298행). 확인 질문을 이전 assistant 메시지에서 빼도 `confirm`의 첫 호출·ID 검증·재실행 방지 규칙을 바꾸지 않는다. Summary/Memory의 `_turn_data`가 최종 `assistant_message`를 쓰는 경계(`openrouter.py` 615–620행)도 계획과 맞는다.
+
+### Non-blocker
+
+1. **바로 다음 Turn에서는 사용자가 본 Harness 안내 일부가 보이지 않는다(22–23행).** 예를 들어 Memory 저장 실패 뒤 사용자가 “왜 방금 기억에 반영하지 못했어?”라고 묻거나, 확인 만료 안내 뒤 “왜 시간이 지났다고 했어?”라고 물으면 `model_answer`에는 그 안내가 없고, Summary는 아직 만들어지지 않았을 수 있다. 현재 Memory 내용과 확인 대기 여부는 별도로 보이지만, *어떤 문구를 사용자에게 보여 줬는지*는 복원되지 않는다. 이것은 중복 방지를 위해 최종본을 네이티브 assistant 문맥에서 빼는 선택의 범위다. 새 상태를 추가하기보다 이 UX 한계를 명시하고, 실제 필요가 확인될 때만 별도 개선하는 편이 Simple-first에 맞는다.
+2. **기존 Turn의 중복 위험은 남는다(22·32행).** `model_answer`가 없는 0.5.0 row는 최종본을 재생하므로, 기존 대화에 붙은 확인 문장이 있으면 모델이 계속 볼 수 있다. PIA 연동 때 기존 기록이 즉시 새 모양으로 바뀐다고 설명하지 말고, 새로 저장되는 Turn부터 개선된다고 명시하라. 과거 기록에 대한 별도 migration을 이번 계획에 넣을 필요는 없다.
+3. **측정 범위(36–38행):** execution 26개 재측정이 핵심이다. 다만 Context 재생은 읽기 대화에도 적용되므로 전체 read 35개를 다시 돌릴 필요는 없지만, Memory 안내가 붙은 Turn의 바로 다음 질문과 번호 링크 후속 질문을 소수만 고른 수동 확인은 유효하다. 유료 실행은 계획대로 별도 승인 후에만 한다.
+
+### 구현 때 고정할 계약
+
+`model_answer`는 기존 `CompletedTurn`의 기본값 필드 뒤에 추가해 위치 인자 사용처를 깨지 않도록 한다. 저장소의 동일 `turn_id` 재호출 비교와 256KiB 한도에는 두 답변 칸을 모두 포함하고, 구형 row의 누락 필드는 빈 문자열로 읽는다. 최근 Turn 보호 크기는 Context에 실제 재생하는 답변을 세되, Summary/Memory 작성 데이터는 계속 최종본을 쓴다. PIA DynamoDB 저장소가 이 선택적 필드를 왕복하도록 바꾸기 전에는 PIA의 Harness wheel pin을 올리지 않는다. 이 이상의 라우터·후처리 추측 규칙은 필요 없다.
