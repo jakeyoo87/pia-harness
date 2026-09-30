@@ -145,9 +145,10 @@ class TokenCompactor:
                 None if context.summary is None else context.summary.summary_text
             ),
             turns=covered,
-            # A token is at least one character, so this never cuts a Summary
-            # within its character limit short.
-            max_output_tokens=self._policy.summary_chars,
+            # The character limit is the real one, checked below. The token cap
+            # only stops a runaway reply; a Korean character can take more than
+            # one token, so it is set with room and does not guarantee the limit.
+            max_output_tokens=2 * self._policy.summary_chars,
             max_characters=self._policy.summary_chars,
         )
         output = self._summarize(request)

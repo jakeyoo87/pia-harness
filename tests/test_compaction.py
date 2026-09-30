@@ -138,7 +138,7 @@ class TokenCompactionTest(unittest.TestCase):
             self.compact(user_key, session.session_id, summarize)
         # The writer is told the limit, and the output cap leaves room for it.
         self.assertEqual(self.policy.summary_chars, requests[0].max_characters)
-        self.assertEqual(self.policy.summary_chars, requests[0].max_output_tokens)
+        self.assertEqual(2 * self.policy.summary_chars, requests[0].max_output_tokens)
         context = self.store.load_context(
             user_key=user_key, session_id=session.session_id, now=self.now
         )

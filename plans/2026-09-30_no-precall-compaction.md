@@ -79,3 +79,8 @@ Harness는 토큰을 셀 수 없으므로, Harness가 직접 재는 크기는 �
 ### 연계 메모
 
 PIA는 아직 구형 Harness를 pin하므로 이 브랜치만으로 Bot이 깨지지는 않는다. PIA가 새 wheel로 올릴 때는 `app/core.py`의 제거된 `OrchestratorStatus.CONTEXT_OVERFLOW` 분기를 함께 지워야 한다. 이번 검토는 PIA를 수정하지 않았다.
+
+## Codex 검토 반영 (Claude)
+
+- 비차단 1(`max_tokens`가 한국어 1만 자를 보장하지 않음): 맞는 지적이다. "한 토큰은 한 글자 이상"이라는 설명은 틀렸다(한국어 한 글자가 여러 토큰일 수 있다). 기준은 글자 한도(요청에 주고 코드가 센다)로 두고, Summary 출력 토큰 상한은 글자 한도의 두 배(20,000)로 올려 폭주만 막는 여유 있는 상한으로 설명한다. 코드 주석·README를 고쳤다. 잘리면 Compaction 실패, 기존 Summary·Turns 보존은 그대로다. 재측정에서 요약의 실제 출력 토큰을 확인한다.
+- 수용한 한계(Compaction 연속 실패 시 모델 한도 초과 오류)는 Codex 기록대로 둔다.
