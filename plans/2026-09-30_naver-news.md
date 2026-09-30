@@ -41,3 +41,18 @@
 2. 네이버 직접 읽기의 보안 경계(정확한 호스트·https·redirect 없음·그 밖의 주소는 직접 접속하지 않음)와 실패 시 Jina 경로가 맞는지.
 3. 정규식으로 본문·제목·날짜 영역을 자르고 HTMLParser로 글자를 뽑는 방식이 충분히 단순하고 안전한지.
 4. 빼도 되는 것, 빠진 것.
+
+## Codex 검토 (2026-09-30)
+
+기준 `main 6122d31...fb67925`의 구현·테스트·README를 대조했다. 검토 외 코드·README 수정, 병합, AWS 변경, 배포, 실제 NAVER·Exa·Jina·모델 호출은 하지 않았다. 로컬 `.venv`에서 새 검색·본문 테스트 22개와 전체 pytest 173개(추가 subtest 96개)가 통과했고 `git diff --check`도 통과했다. Ruff는 재실행하지 않았다.
+
+### Blocker
+
+없다. `news_search`의 endpoint·인증 헤더·`query/display/start/sort`와 `items` 처리(`src/pia_harness/news_search.py` 22, 63–69, 94–127행)는 [NAVER API HUB 뉴스 검색 명세](https://api.ncloud-docs.com/docs/naver-api-hub-search-news)와 맞는다. 인자가 없거나 응답·연결이 잘못되면 후보 없는 관측을 돌려주고 키를 로그·URL에 넣지 않는다. 본문 직접 GET은 `https://n.news.naver.com/(mnews/)article/숫자/숫자` 접두부의 고정 host에만 적용된다(`web_extract.py` 106, 302–326행). 생산 client의 `trust_env=False`·redirect 금지, 그 밖/실패의 Jina 경로와 기존 `url_argument` 대화 링크 경계가 유지된다. 응답에서 추출한 제목·날짜·본문은 기존 요약·원문 대조를 그대로 탄다.
+
+### Non-blocker
+
+1. `tests/manual/README.md` 8행은 `smoke_flow.py`가 OpenRouter 키만 요구하고 Exa는 키 없이 호출한다고 설명한다. 실제 스크립트는 `OPENROUTER_API_KEY`, `EXA_API_KEY`, `NAVER_API_HUB_CLIENT_ID`, `NAVER_API_HUB_CLIENT_SECRET` 네 값을 요구한다(`tests/manual/smoke_flow.py` 399–411행). 수동 측정 전에 그 한 문장을 맞추면 된다.
+2. `README.md` 246행과 이 계획서 목적 절은 월 775,000회를 고정된 *무료 제공량*처럼 적었다. [NAVER API HUB 개요](https://guide.ncloud-docs.com/docs/apihub-overview)는 현재 한시적 무료와 검색 카테고리의 월 최대 호출 한도를 구분한다. 장래 유료 전환 뒤 무료량을 단정하지 말고 현재 요금 상태와 호출 상한으로 나눠 쓰는 것이 정확하다. 동작 결함은 아니다.
+
+두 검색 도구의 역할은 설명에만 두고 자동 대체·새 라우터를 만들지 않은 점이 Simple-first에 맞는다. 실제 모델의 도구 선택과 최신 뉴스 품질은 계획된 유료 read 측정에서 확인하면 충분하다. PIA 연동 때는 `news_search` 등록과 NAVER Secret 유지를 반영해야 하며, 이 검토는 그 통합을 수행하지 않았다.
