@@ -15,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from .broker_instruments import find_instrument
 from .orchestrator import (
     ExecutionToolDefinition,
     PreparationResult,
@@ -119,22 +120,10 @@ class BrokerOrderTool:
                 "(quantity and price must be positive whole numbers). Ask the user."
             )
 
-        found = await self._get_json("/internal/instruments", {"query": name})
-        status = found.get("status")
-        if status == "AMBIGUOUS":
-            candidates = ", ".join(
-                f"{item['name']}({item['code']})" for item in found["candidates"]
-            )
-            return PreparationResult(
-                f"Order not prepared. '{name}' matches several stocks: {candidates}. "
-                "Ask the user which one, listing these names in the answer."
-            )
-        if status != "FOUND":
-            return PreparationResult(
-                f"Order not prepared. No listed stock matches '{name}'. Ask the "
-                "user for the official listed name."
-            )
-        code, official_name = str(found["code"]), str(found["name"])
+        found = await find_instrument(self._client, name)
+        if found.code is None or found.name is None:
+            return PreparationResult(f"Order not prepared. {found.problem}")
+        code, official_name = found.code, found.name
 
         response = await self._client.get(
             f"/internal/members/{user_key}/quote", params={"code": code}
@@ -215,14 +204,6 @@ class BrokerOrderTool:
             f"주문 결과를 확인하지 못했습니다: {summary}. 주문이 들어갔을 수 있으니 "
             "다시 주문하기 전에 증권사 앱에서 꼭 확인해 주세요."
         )
-
-    async def _get_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
-        response = await self._client.get(path, params=params)
-        response.raise_for_status()
-        value = response.json()
-        if not isinstance(value, dict):
-            raise TypeError("Broker response must be an object")
-        return value
 
     async def aclose(self) -> None:
         if self._owns_client:

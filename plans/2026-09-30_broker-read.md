@@ -216,3 +216,32 @@ PIA가 사용자의 증권사 정보를 직접 조회해 답한다. 예:
 - 부호 있는 값을 다루는 파서와 모델을 새로 두고, 하락·손실 픽스처를 추가한다.
 - 그 밖의 지적은 모두 반영했다: `hts_avls` 단위 확인, output2 비합산 테스트, PIA bootstrap ARN 파라미터·계약 테스트·change set, Lambda 30초 운영 확인, 409 안내 문구, ETF·ETN 실호출 확인, 데이터 범위 문장.
 - Broker 구현도 Claude가 한다(사용자 결정).
+
+## 구현 (Claude, 2026-09-30)
+
+**pia-broker** `claude/broker-read` `8a96cb9` (main `6b63c94` 기준)
+- `models.py`: `QuoteDetail`, `AccountPosition`, `AccountSummary`, `Buyable`. `AccountPosition.code`는 문자열이다. 6자리가 아닌 잔고 코드 하나로 계좌 조회 전체가 실패하지 않게 하기 위해서다.
+- `transport.py`: `optional_decimal`(부호 허용, 없거나 읽을 수 없으면 None), `optional_nonnegative_int`, `optional_text`. 기존 파서는 그대로다.
+- `kis.py`:
+  - 잔고 페이지 처리를 `_balance_pages()`로 빼서 `get_holdings`와 `get_account_summary`가 함께 쓴다. `get_holdings`의 동작은 같다.
+  - `get_quote_detail`의 전일 대비·등락률은 `prdy_vrss_sign`을 따른다(4·5 음수, 1·2 양수, 그 밖은 받은 값 그대로).
+  - `get_buyable`은 `ORD_DVSN=01`로 조회하고 `nrcvb_buy_amt`, `nrcvb_buy_qty`, `psbl_qty_calc_unpr`을 읽는다.
+- `orders.py`: `TradingConnector`에 세 메서드를 추가했다. `TradingService.quote`는 `QuoteDetail`을 돌려준다. `account`, `buyable`을 추가했다. `buyable`은 현재가를 먼저 조회한다.
+- `credential_api.py`:
+  - `GET /internal/members/{id}/account[?code=]`를 추가했다. `code`가 있으면 `{"buyable": ...}`만 돌려준다.
+  - `quote` 응답에는 필드를 추가했다.
+  - 숫자는 정수면 int, 아니면 float로 낸다.
+- 템플릿 `GetAccount`, 인프라 테스트, 픽스처(하락·손실, output2, buyable), 테스트, README 6절.
+- 확인: ruff format·check, mypy, pytest 174개 통과.
+
+**pia-harness** (이 브랜치)
+- `broker_instruments.py`: 종목 찾기를 `order`와 `broker`가 공유한다. `order`의 결과 문장은 이전과 같다.
+- `broker_read.py`: `BrokerReadTool`, 도구 이름 `broker`.
+  - 인자 스키마의 `required`는 `action`뿐이다. Orchestrator는 필수 인자가 null이면 읽기 호출을 실행하지 않기 때문이다.
+  - 실패는 모두 결과 문장이다: 409는 확인된 KIS 연결 없음, 503·그 밖의 상태·무응답·잘못된 응답.
+  - 시가총액은 "억 원"으로 적는다(KIS `hts_avls`, 단위는 실호출로 확인할 항목).
+- `__init__.py`: `BrokerReadTool`을 내보낸다. README 6.2.3.
+- 확인: 단위 테스트 180개 통과(새 테스트 10개). 새 파일은 ruff를 통과한다.
+- 유료 시나리오 측정은 하지 않았다. PIA 연동 뒤 실호출로 확인한다(순서 4).
+
+**PIA 연동 때 필요한 것(Codex)**: 위 "pia-agent" 항목 그대로다. `BrokerReadTool(base_url=str(broker_client.base_url), client=broker_client)`를 `read_tools`에 넣는다.
