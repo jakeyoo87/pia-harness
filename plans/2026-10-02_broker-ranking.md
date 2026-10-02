@@ -319,3 +319,37 @@ README·계획과 구현 설명은 모두 "쓰지 않는 인자는 무시"라고
   - 새 테스트는 고치기 전 코드에서 실패(TypeError 2, 거부 3)하고 고친 코드에서 통과한다.
 - 비차단: 신고가·신저가 근접 문구를 "near-high rate"·"near-low rate"로 바꿨다. 계획 본문의 만료 계산 문장과 거래량 순위의 필터 값 설명을 고치고, 실호출 확인 항목에 거래량 필터 값과 근접 비율의 뜻을 더했다.
 - 확인: harness 전체 184개 통과, 바꾼 파일 ruff 통과. Broker는 바꾸지 않았다.
+
+## Codex 구현 재검토·Simple-first 검토 (2026-10-02)
+
+대상: Harness `claude/broker-ranking` `3d1b6abfc15f97aa8130e253a4df8c85a8dc42b0`(이전 검토 `8d3222a` 대비), Broker는 `f922bd2adb52adf46df44834503ed55c5239e50d` 그대로다. 최신 사용자 요청에 따라 기존 두 지적의 해소와 Broker/Harness의 불필요한 설계·추정한 예외를 함께 검토했다.
+
+**판정: 기존 P2 두 건 해소, 재검토 범위에서 blocker 없음.** 아래 객체형 응답 허용은 비차단 단순화 권고다. 다른 요청 영역은 현재 불변 조건을 지키는 데 필요한 범위이며 새 추상화나 추가 예외 경로가 필요하지 않다. 실호출 미확정 사항은 계획의 Bot 노출 전 검증 조건 그대로다.
+
+### 기존 두 지적 해소
+
+1. `src/pia_harness/broker_read.py:503~506`: by가 문자열인지 먼저 확인하므로 배열·객체도 기존 안내 문장으로 끝난다. FakeBroker에서 두 사례 모두 예외가 없고 HTTP 요청 0인 것을 재확인했다.
+2. `src/pia_harness/broker_read.py:507~527`: 실제 사용하는 market/count/period만 검사한다. 공매도 외 ranking의 잘못된 period, 종목 investors의 잘못된 market, 시장 investors의 count=0이 더는 조회를 막지 않는다. most_viewed는 **335행에서 market을 all로 정규화해 전송**하므로 무시한 nxt가 Broker 400으로 이어지지도 않는다. 네 사례의 실제 요청 쿼리까지 확인했다.
+3. 근접 비율 문구가 distance에서 near-high/near-low rate로 바뀌어 미확정 계산 의미를 덧붙이지 않는다. 계획 본문의 토큰 계산·거래량 필터 설명도 구현과 맞춰 정리돼 있다.
+
+### 덜어낼 부분과 유지할 부분
+
+| 영역·파일·행 | 판단과 근거 |
+|---|---|
+| Broker `src/pia_broker/connectors/kis.py:393~398` | **[P3] 객체형 output 허용 제거를 권고한다.** 현재 테스트는 목록형 행을 사용하며 평면 객체형 output을 KIS가 반환한다는 확인된 근거가 없다. `require_list(output)` → 빈 목록이면 기존 스키마 오류 → 첫 행에 `require_mapping`으로 충분하다. 새로운 타입 판별·객체→목록 변환·형태별 fallback을 추가하지 않는다. |
+| Harness `src/pia_harness/broker_read.py:500~528`, `334~337` | **유지.** by 타입 검사는 재현된 TypeError를 막고, 작은 uses 집합은 두 action의 실제 인자 범위를 드러낸다. most_viewed의 all 전송은 무시한 값이 HTTP 경계로 넘어가지 않게 하는 필수 정규화다. 새 validator/registry/예외 계층으로 바꾸거나 관계없는 인자 검사로 되돌리지 않는다. |
+| Broker `src/pia_broker/connectors/kis.py:578~592`와 `_RANKINGS` 표 | **유지.** API별 경로·TR ID·인자·코드 필드·output/output1 차이를 담는 작은 정적 데이터다. 17개 공개 메서드나 거대한 if 분기로 풀면 같은 요청·파싱을 반복한다. 현재 dataclass와 작은 요청 함수면 충분하며 일반적인 dispatch framework로 확장하지 않는다. |
+| Broker `src/pia_broker/connectors/kis.py:878~889`, `893~908` | **핵심 지표·코드·순매수 검사는 유지.** 순위 지표가 없는데도 가격만으로 성공한 순위처럼 답하지 않는 불변 조건이다. core를 figures 첫 항목에서 무조건 유도할 수도 없다(gainers/losers는 공통 change_rate가 핵심이고 figures는 비어 있으며 most_viewed는 코드만 있다). 같은 숫자를 한 번 더 읽는 정도를 줄이려고 별도 캐시·파싱 상태를 만들 이유는 없다. 보조 필드는 기존 optional 처리만 사용한다. |
+| Broker `src/pia_broker/live_kis.py:139~157` | **min 계산과 필수 응답 검사는 유지.** 재반환 토큰의 실제 만료를 넘기지 않으면서 기존 expires_in 상한도 지킨다. 한 줄의 상한 계산이며 새 상태·재시도·별도 예외 경로가 아니다. KST 파싱 실패 시 상대값으로 조용히 대체하는 fallback은 추가하지 않는다. |
+| Harness `tests/test_broker_read.py:392~429`, Broker `tests/test_live_kis.py:29~70`, `tests/test_token_lifecycle.py:183~202`, `tests/test_kis_connector.py:349~394` | **현재 회귀·계약 검증은 유지.** 실제 실패했던 인자 사례, 전송에서 무시값 제거, 정상/먼 토큰 만료의 다른 경계, DB 재사용, API별 다른 요청 코드를 확인한다. 전체 문자열 snapshot·17개 조합의 동일 파서 검증·사용하지 않는 인자의 모든 조합을 늘릴 필요는 없다. 객체형 응답 지원을 위한 테스트도 새로 만들지 않는다. |
+
+**목록형 후보의 근거 한계:** `pd.DataFrame(output)`만으로 실제 JSON이 반드시 list라고 확정할 수는 없다. pandas는 dict와 여러 iterable도 입력으로 받는다([pandas DataFrame 문서](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.html)). 위 권고는 “DataFrame이면 무조건 list”가 아니라, 현재 공식 예제·테스트에 맞춰 필요한 목록형 계약만 구현하고 확인되지 않은 평면 객체형 지원을 미리 넣지 않자는 판단이다. 실제 KIS 형태는 승인된 실호출에서 확인한다. 현 코드가 받는 평면 객체형과 pandas가 받는 dict-of-columns도 같은 형태가 아니다.
+
+KIS 근거: 고정 커밋 `277ec0eb7a9b7f63b6807829286c80f36649dad2`의 [시장 투자자 공식 함수](https://github.com/koreainvestment/open-trading-api/blob/277ec0eb7a9b7f63b6807829286c80f36649dad2/examples_llm/domestic_stock/inquire_investor_time_by_market/inquire_investor_time_by_market.py)(59~61행). Broker의 `test_kis_market_investors_ask_each_market_and_never_add_them_up`(486행)도 두 시장 각각 목록형 output을 전달한다. 축소 시 그 정상 계약과 빈 목록의 기존 해석 실패를 확인하면 충분하며, 근거 없이 “반드시 정확히 한 행” 같은 새 제한은 만들지 않는다.
+
+### 검증과 이후 순서
+
+- Harness `test_broker_read` 14개 통과. FakeBroker/MockTransport로 배열·객체 by 2개와 관계없는 인자 4개를 추가 확인했고, most_viewed는 최종 쿼리가 정확히 `by=most_viewed&market=all`임을 확인했다. 모두 네트워크 차단·read-only mount·가짜 데이터로 수행했다.
+- Broker는 커밋이 변하지 않아 앞선 72개 변경 영역 검증을 반복하지 않았다. Harness 전체 184개·ruff는 Claude 보고를 근거로 하며 이번에는 관련 테스트만 실행했다.
+- 기록에 git diff --check를 수행한다. 제품 코드·테스트 파일·AWS·배포·KIS 실호출은 변경하거나 실행하지 않았다.
+- 이후에는 계획대로 **사용자 승인 후 Broker 병합·dev 배포·bootstrap ranking/investors ARN 두 개 적용**, **별도 승인된 실호출로 단위·정렬·시장 코드·응답 형태 확정**, 그다음 Harness 릴리스·PIA Bot 노출 순서를 지킨다. 릴리스 버전은 사용자에게 물어 확정한다. 이번 검토 결과를 그 실행 승인으로 재사용하지 않는다.
