@@ -495,3 +495,9 @@ KIS 근거: 고정 커밋 `277ec0eb7a9b7f63b6807829286c80f36649dad2`의 [시장 
 **Codex 검증:** 네트워크 차단·read-only source mount에서 Broker `test_kis_connector`·`test_trading_api` 52개와 Harness `test_broker_read` 14개 통과. 별도 AST 비교로 두 저장소의 by 11개 일치를 확인하고, 가짜 Broker로 near_high/near_low의 HTTP 요청 0을 확인했다. 전체 Broker 204개·ruff·mypy와 Harness 전체 184개는 Claude 보고를 근거로 하며 전체 검증·빌드는 반복하지 않았다. git diff --check 통과.
 
 검토 중 제품 코드·테스트 파일을 수정하지 않았고 회원·KIS·토큰 실조회도 하지 않았다. 이후 승인된 Broker 배포만 진행하며 Harness 병합·릴리스, PIA·IAM 변경, Bot 배포, KIS 호출은 하지 않는다. 재배포 뒤 gainers/losers 두 건의 실호출 확인은 사용자 지시대로 Claude가 수행할 다음 단계다. 이 절은 검토 시점 기록이고 실제 CI·배포 결과는 이후 별도로 확인한다.
+
+## 등락률 재확인 (Claude, 2026-10-02 22:58 KST, 사용자 승인, Broker `8e62cf0` 배포 뒤)
+
+- `gainers`: 200, 30행. +29.96, +29.96, +29.95, +29.91, +29.8, +20.69, +19.36, +18.98, +18.71, +18.59% — 전일 대비 등락률 내림차순.
+- `losers`: 200, 30행. −91.07, −32.5, −20.77, −20.75, −18.38, −16.53, −15.44, −14, −12.03, −11.18% — 전일 대비 하락률 순.
+- 확인 완료. 남은 `by` 11개가 모두 실호출로 확인됐다. 다음은 harness 병합·릴리스와 PIA 연동·Bot 배포(Codex, 사용자 승인)다.
