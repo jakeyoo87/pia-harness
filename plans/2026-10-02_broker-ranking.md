@@ -263,3 +263,49 @@ Codex 계획 검토의 두 사항과 정정을 모두 받았다.
 - 테스트 4개 추가(184 통과), README 6.2.3.
 
 **다음**: Codex 구현 검토 → Broker 병합·dev 배포·IAM(Codex, 승인) → 실호출 확인(승인) → 단위·정렬·시장 코드 확정 → harness 릴리스·Bot.
+
+## Codex 구현 검토 (2026-10-02)
+
+대상: Broker `claude/broker-ranking` `f922bd2adb52adf46df44834503ed55c5239e50d`, Harness 같은 이름의 브랜치 `4ed2838a43c7c0e4bdf95d544bea513e1e8397f9`. 계획 검토 `7beed18`, 반영 `a849a44`, 이 문서의 Claude 구현 절, 각 README와 main 대비 전체 변경을 대조했다. KIS 공식 예제는 앞선 검토와 같은 `277ec0eb7a9b7f63b6807829286c80f36649dad2`의 함수·`chk_*.py`를 정적으로 확인했다.
+
+**판정: Harness 수정 필요 2개. Broker에는 이번 정적·오프라인 검토 범위에서 병합을 막는 결함을 발견하지 못했다.** 이는 KIS 실호출 확인 완료나 배포 승인이 아니다. 아래 Harness 두 항목을 고친 뒤 다시 검토해야 한다.
+
+### 수정 필요
+
+**1. [P2] 잘못된 by 타입을 결과 문장으로 돌려주지 않고 TypeError로 끝낸다** — `src/pia_harness/broker_read.py:502`, 호출 위치 198행.
+
+`arguments.get("by") not in _RANKINGS`는 dict의 키 조회라 `by`가 JSON 배열·객체이면 `TypeError: unhashable type`을 낸다. `_argument_problem`은 execute의 try 바깥에서 호출되고, Orchestrator는 JSON 객체 여부와 required 인자 누락만 검사하므로 인자 스키마가 이것을 미리 막지 않는다. FakeBroker/MockTransport로 `{"action":"ranking","by":["gainers"]}`와 `by={"value":"gainers"}` 두 경우 모두 execute 밖으로 TypeError가 나가는 것을 확인했다(HTTP 호출 0). 모델의 잘못된 도구 인자는 기존처럼 모델이 고칠 수 있는 안내 문장이어야 하며 Turn 실패로 이어져서는 안 된다.
+
+- ranking이 쓰는 by가 문자열인지 먼저 검사한 뒤 허용 값에 대조한다. 새 스키마 검증기나 예외 계층은 필요 없다.
+- 배열·객체 by가 예외 없이 `Broker lookup not run`을 반환하고 Broker를 호출하지 않는 회귀 검증을 추가한다. 지금 문자열의 누락·허용 밖 테스트만으로는 이 경로를 잡지 못한다.
+
+**2. [P2] 관계없는 인자를 무시한다는 계약과 다르게 요청을 막는다** — `src/pia_harness/broker_read.py:504~513`.
+
+market/count를 ranking과 investors 전체에 일괄 검사하고 period를 모든 ranking에 검사한다. 하지만 종목 investors는 market을 쓰지 않고, 시장 investors는 count를 쓰지 않으며, period는 short_selling만 쓴다. 다음 세 사례를 FakeBroker로 재현했는데 모두 인자 오류 결과와 HTTP 호출 0이었다.
+
+- `ranking(by="market_cap", period="5d")`: 사용하지 않는 period 때문에 차단.
+- `investors(name="삼성전자", market="nxt")`: 종목 조회에서 사용하지 않는 market 때문에 차단.
+- `investors(name 없음, count=0)`: 시장 조회에서 사용하지 않는 count 때문에 차단.
+
+README·계획과 구현 설명은 모두 "쓰지 않는 인자는 무시"라고 한다. 실제로 전송·사용하는 필드만 검사하도록 조건을 좁히고, 위 사례와 함께 관련 인자 오류는 계속 거부되는지 검증한다. most_viewed의 market도 Broker가 전체로 정규화하고 의미를 사용하지 않으므로 같은 정책으로 처리한다. count와 market 기본값을 준비하는 것 자체는 문제가 아니며 공통 스키마·oneOf 구조를 바꿀 필요도 없다.
+
+### 확인한 정상 동작
+
+- **KIS 요청·파서:** 17개 by는 계획의 9개 순위 API에 대응하고 investors 두 API도 경로·TR ID가 맞다. 외국인/기관 가집계의 V·16449·금액 정렬·매수/매도·투자자 구분, HTS output1와 빈 query, 등락률 stck_shrn_iscd, 관심종목의 시작 순위 1, 가치 순위 23/24/27과 결산 3, 공매도 10개 기간 매핑을 확인했다. 종목 투자자의 stck_bsop_date/stck_clpr와 시장 all의 개별 두 호출도 대조했다. 순매수 부호를 가격 부호로 덮지 않고, 핵심 지표·코드가 없으면 스키마 오류가 된다. 관측 시각·기간 기준일·KST 회계연도 메타데이터를 Broker에서 반환하고 Harness는 이를 표시한다.
+- **인증 경계:** 새 GET 두 경로는 AWS_IAM과 기존 Bot role 검사, verified KIS 연결 검사를 사용한다. 기존 조회의 400/409/503/502 처리를 재사용하고 삭제·주문 실행 경계를 바꾸지 않는다. bootstrap의 invoke ARN 두 개 추가는 앞으로의 별도 승인 작업이며 이번 브랜치에서 실행한 것이 아니다.
+- **토큰 설계 변경은 타당:** `min(KIS 절대 만료, 요청 시작 시각 + expires_in)`은 정상 응답에서는 실제 만료를 쓰고, 2099년 같은 먼 시각에서는 기존 상대 유효기간 상한을 유지한다. 누락·잘못된 형식·이미 만료된 절대 시각은 기존 설계에 맞게 오류로 처리한다. TokenManager의 이전 만료 되돌림 분기는 제거됐고, 성공한 응답의 더 이른 만료를 저장하는 회귀 테스트와 재시작 뒤 DB 재사용 검증이 있다. 연결 version·lease·소유자 조건부 저장·60초 발급 간격은 유지된다. 이 계산 변경 때문에 6시간 주기 작업이나 기존 토큰 일괄 삭제를 추가할 필요는 없다.
+- **결과·단순성:** count는 Harness에서만 자르고 재정렬·연속조회·추가 현재가 조회가 없다. 순위 값과 투자자 금액에 아직 미확정인 단위를 붙이지 않은 것은 중간 구현 단계로 적절하다. 단, 계획의 Broker 배포 → 승인된 실호출 검증 → 단위/기준 확정 → Harness 릴리스·Bot 노출 순서를 그대로 지켜야 한다. 숫자만 표시한 현재 상태가 최종 사용자 문구의 검증 완료를 뜻하지 않는다.
+
+### 비차단 정리와 실호출 때 볼 점
+
+- `_volume_params`는 함수 docstring이 아니라 `chk_volume_rank.py` 실행 예처럼 가격·거래량·날짜에 `"0"`, 제외 비트에 `"000000"`을 쓴다. 공식 함수 설명은 전체 대상 필터를 공란, 제외 비트를 10자리로 설명하므로 공개 예제끼리도 일치하지 않는다. 동작 오류라고 단정하지 않지만, volume/trading_value 실호출 확인에 전체 대상 조회·가격 상한 0·날짜 0·제외 비트의 의미도 포함한다. 구현 절의 "필터 인자를 비워 둔다"는 설명은 현재 코드와 맞춰 정리한다.
+- 하락률 `0001`, 시장 투자자 `KSP/KSQ` 및 `0001/1001`, 거래량 평균/누적 기준, 공매도·PER 정렬과 금액 단위는 여전히 실호출 미확정이다. 테스트에 같은 상수를 넣어 통과한 것은 KIS가 그 값을 받아 원하는 결과를 준다는 증거가 아니다. 계획대로 Bot 노출 전 확정한다. near_high/near_low 결과의 "distance" 문구도 실제 근접 비율이 거리인지 비율인지 확인해 확정한다.
+- 계획 본문의 "expires_in은 만료 계산에 쓰지 않는다"는 종전 문장은 이제 두 값 중 이른 값을 쓰는 결정과 다르다. Claude 구현 절·Broker README는 새 결정을 설명하고 있으므로, 다음 계획 정리 때 본문도 맞춘다.
+- 현재 표와 작은 요청·파서 함수를 유지하면 충분하다. 인자 검사 두 문제를 해결하려고 별도 validation framework·도구·client·재시도·캐시 계층을 추가할 필요는 없다.
+
+### Codex 검증
+
+- 네트워크 차단·저장소 read-only mount의 기존 검증 이미지에서 Broker 변경 영역 72개 통과(`test_kis_connector`, `test_trading_api`, `test_live_kis`, `test_token_lifecycle`). Harness `test_broker_read` 14개 통과.
+- 위 테스트와 별도로 FakeBroker/MockTransport에서 잘못된 by 타입 2개와 관계없는 인자 3개를 재현했다. 재현 스크립트는 메모리에서만 실행했고 테스트 파일·제품 코드를 수정하지 않았다.
+- 전체 Broker 212개·ruff·mypy·package build와 Harness 전체 184개·ruff는 Claude의 앞선 검증 보고이며, 이번에는 변경 영역 검증만 수행했다. 문서 기록에 대해 git diff --check를 확인했다.
+- 실제 Credential·회원 데이터·토큰을 읽거나 출력하지 않았다. 코드 수정·병합·AWS 변경·배포·KIS 실호출은 하지 않았다. 검토 기록만 Harness 브랜치에 커밋·push한다.
