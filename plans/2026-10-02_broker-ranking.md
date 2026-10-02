@@ -104,7 +104,7 @@ PIA가 시장 전체의 순위와 투자자별 매매 동향을 증권사 값으
 
 - 지금 `KisTokenIssuer.issue`(`live_kis.py`)는 만료를 "요청 시각 + `expires_in`"으로 저장한다.
 - KIS 공식 예제(`kis_auth.py`)에 따르면 6시간 안에 다시 요청하면 기존 토큰을 그대로 돌려준다. 이때 `expires_in`이 전체 기간이면 실제보다 늦게 만료를 잡는다.
-- 수정 1(`live_kis.py`): KIS 응답의 `access_token_token_expired`(KST, `YYYY-MM-DD HH:MM:SS`)를 UTC로 바꿔 만료 시각으로 쓴다. 없거나 형식이 틀리거나 이미 지난 시각이면 스키마 오류다. `expires_in` 범위 검사는 남기되 만료 계산에는 쓰지 않는다.
+- 수정 1(`live_kis.py`): KIS 응답의 `access_token_token_expired`(KST, `YYYY-MM-DD HH:MM:SS`)를 UTC로 바꿔 만료 시각으로 쓴다. 없거나 형식이 틀리거나 이미 지난 시각이면 스키마 오류다. 만료는 이 값과 `issued_at + expires_in` 중 이른 쪽이다(구현 때 정함, 아래 "구현" 절).
 - 수정 2(`token_lifecycle.py`, Codex 계획 검토 1): `get_token`에서 "새 만료가 저장된 만료보다 이르면 저장된 토큰을 다시 쓰는" 분기를 지운다. 발급에 성공하면 KIS가 준 토큰과 만료 시각을 그대로 저장하고 돌려준다.
   - 이 분기가 남으면, 지금 잘못 늘어나 저장된 만료 시각이 KIS의 정확한 값을 이긴다(Codex가 가짜 객체로 재현).
   - 동시 발급은 이미 30초 lease와 소유자 조건부 저장(`store_refresh`)이 막는다. 메모리·DB 재사용, Credential version 구분, 60초 발급 간격은 그대로다.
@@ -141,7 +141,8 @@ PIA가 시장 전체의 순위와 투자자별 매매 동향을 증권사 값으
 
 - 금액 필드 단위: `stck_avls`, `acml_tr_pbmn`, `*_ntby_tr_pbmn`(원·백만 원·억 원 중 무엇인지)
 - 등락률 순위: 하락률 정렬 코드(공식 설명 `0000`과 실행 예 `0`이 다름)
-- 거래량 순위: 소속 구분 `0`이 공식 설명대로 "평균 거래량" 기준인지, 오늘 누적 거래량 순인지
+- 거래량 순위: 소속 구분 `0`이 공식 설명대로 "평균 거래량" 기준인지, 오늘 누적 거래량 순인지. 가격 `0`·날짜 `0`·제외 비트 `000000`이 전체 대상인지
+- 신고가·신저가 근접: `hprc_near_rate`·`lwpr_near_rate`가 거리인지 비율인지(결과 문구는 그때까지 "near-high rate")
 - 공매도: 정렬 기준(금액인지 비중인지), `1w`의 실제 기준일 범위
 - PER 순위: 정렬 방향, 적자(음수 PER) 위치
 - 외국인·기관 순위: 장중 갱신 시각("가집계")
@@ -248,7 +249,7 @@ Codex 계획 검토의 두 사항과 정정을 모두 받았다.
 - `connectors/kis.py`: `get_ranking` 하나와 `_RANKINGS` 표(API별 경로·TR ID·요청 함수·코드 필드·핵심 필드·`figures`). `get_stock_investors`, `get_market_investors`(all이면 코스피·코스닥 각 1회, 더하지 않음). 기존 `_send`(만료 시 한 번 재시도)를 쓴다.
   - 핵심 필드(순위 지표)나 종목코드가 없으면 스키마 오류, 나머지는 `None`. 투자자 순매수 수량·금액은 모두 필수.
   - 전일 대비·등락률만 `prdy_vrss_sign`을 따르고, 순매수는 KIS 부호 그대로.
-  - 가격·거래량·괴리율 같은 필터 인자는 비워 둔다(공식 예제의 필터 값을 그대로 쓰지 않음). 신고가 근접의 괴리율 범위도 비운다.
+  - 가격·거래량·괴리율 같은 필터 인자는 비워 둔다(공식 예제의 필터 값을 그대로 쓰지 않음). 신고가 근접의 괴리율 범위도 비운다. 예외로 거래량 순위는 공식 실행 예(`chk_volume_rank.py`)처럼 가격·거래량·날짜에 `"0"`, 제외 비트에 `"000000"`을 쓴다(함수 설명과 실행 예가 서로 다름, 실호출로 확인).
   - 실호출 전 미확정 값은 코드 주석으로 표시했다: 하락률 정렬 `0001`, 시장 투자자 코드 `KSP`/`KSQ`와 `0001`/`1001`(일별 API를 따름).
 - `orders.py`: 포트에 세 메서드, `TradingService.ranking`(HTS 조회 상위는 시장을 all로, PER·PBR·EPS는 `settled_fiscal_year`로 회계연도를 채움), `stock_investors`, `market_investors`.
 - `credential_api.py`: `GET …/ranking?by=&market=&period=`, `GET …/investors?code=|market=`. 허용 값 밖이면 400, 연결이 없으면 409. HTS 조회 상위의 이름은 종목 목록(`InstrumentCatalog.name_of`)으로 채운다.
@@ -309,3 +310,12 @@ README·계획과 구현 설명은 모두 "쓰지 않는 인자는 무시"라고
 - 위 테스트와 별도로 FakeBroker/MockTransport에서 잘못된 by 타입 2개와 관계없는 인자 3개를 재현했다. 재현 스크립트는 메모리에서만 실행했고 테스트 파일·제품 코드를 수정하지 않았다.
 - 전체 Broker 212개·ruff·mypy·package build와 Harness 전체 184개·ruff는 Claude의 앞선 검증 보고이며, 이번에는 변경 영역 검증만 수행했다. 문서 기록에 대해 git diff --check를 확인했다.
 - 실제 Credential·회원 데이터·토큰을 읽거나 출력하지 않았다. 코드 수정·병합·AWS 변경·배포·KIS 실호출은 하지 않았다. 검토 기록만 Harness 브랜치에 커밋·push한다.
+
+### 반영 (Claude, 2026-10-02)
+
+- 1(`by` 타입): 문자열인지 먼저 확인한다. 배열·객체 `by`가 "Broker lookup not run" 문장으로 끝나고 요청이 없는지 테스트한다.
+- 2(쓰지 않는 인자): action이 실제로 쓰는 인자만 검사한다. `ranking`은 `by`·`count`, HTS 조회 상위가 아니면 `market`, 공매도면 `period`. `investors`는 종목이면 `count`, 시장이면 `market`. Codex가 재현한 세 사례와 HTS 조회 상위의 `market`을 테스트에 넣었다.
+  - 추가로 찾은 것: 검사에서 무시한 HTS 조회 상위의 잘못된 `market`을 Broker에 그대로 보내면 Broker가 400을 낸다. 이 경우 `all`을 보낸다. 무시한 값이 요청에 실리지 않는지 테스트한다(가짜 Broker가 `market`을 검사하지 않아 놓친 부분).
+  - 새 테스트는 고치기 전 코드에서 실패(TypeError 2, 거부 3)하고 고친 코드에서 통과한다.
+- 비차단: 신고가·신저가 근접 문구를 "near-high rate"·"near-low rate"로 바꿨다. 계획 본문의 만료 계산 문장과 거래량 순위의 필터 값 설명을 고치고, 실호출 확인 항목에 거래량 필터 값과 근접 비율의 뜻을 더했다.
+- 확인: harness 전체 184개 통과, 바꾼 파일 ruff 통과. Broker는 바꾸지 않았다.

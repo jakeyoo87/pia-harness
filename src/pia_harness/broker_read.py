@@ -59,9 +59,9 @@ _FIGURES = {
     "average_volume": "average volume",
     "trading_value": "trading value",
     "new_high": "new high",
-    "near_high_rate": "distance from the high",
+    "near_high_rate": "near-high rate",
     "new_low": "new low",
-    "near_low_rate": "distance from the low",
+    "near_low_rate": "near-low rate",
     "short_volume": "short-sold volume",
     "short_volume_share": "short share of volume",
     "short_value": "short-sold value",
@@ -331,7 +331,8 @@ class BrokerReadTool:
     async def _ranking(
         self, user_key: str, by: str, market: str, period: str, count: int
     ) -> str:
-        params = {"by": by, "market": market}
+        # The broker answers most_viewed for the whole market; send only what is used.
+        params = {"by": by, "market": "all" if by == "most_viewed" else market}
         if by == "short_selling":
             params["period"] = period
         reply = await self._get(f"/internal/members/{user_key}/ranking", params)
@@ -499,17 +500,30 @@ def _change(quote: dict[str, Any]) -> str | None:
 def _argument_problem(action: str, arguments: dict[str, Any]) -> str | None:
     """Check only the arguments this action uses; the others are ignored."""
 
-    if action == "ranking" and arguments.get("by") not in _RANKINGS:
-        return f"ranking needs by, one of {', '.join(_RANKINGS)}."
-    if action in {"ranking", "investors"}:
-        if arguments.get("market") not in (*_MARKETS, None):
-            return f"market must be one of {', '.join(_MARKETS)}."
-        count = arguments.get("count")
-        if count is not None and (
-            isinstance(count, bool) or not isinstance(count, int) or count < 1
-        ):
-            return "count must be a whole number of 1 or more."
-    if action == "ranking" and arguments.get("period") not in (*_PERIODS, None):
+    if action == "ranking":
+        by = arguments.get("by")
+        if not isinstance(by, str) or by not in _RANKINGS:
+            return f"ranking needs by, one of {', '.join(_RANKINGS)}."
+        uses = {"count"}
+        if by != "most_viewed":  # KIS has no market choice there
+            uses.add("market")
+        if by == "short_selling":
+            uses.add("period")
+    elif action == "investors":
+        name = arguments.get("name")
+        uses = {"count"} if isinstance(name, str) and name.strip() else {"market"}
+    else:
+        return None
+    if "market" in uses and arguments.get("market") not in (*_MARKETS, None):
+        return f"market must be one of {', '.join(_MARKETS)}."
+    count = arguments.get("count")
+    if (
+        "count" in uses
+        and count is not None
+        and (isinstance(count, bool) or not isinstance(count, int) or count < 1)
+    ):
+        return "count must be a whole number of 1 or more."
+    if "period" in uses and arguments.get("period") not in (*_PERIODS, None):
         return f"period must be one of {', '.join(_PERIODS)}."
     return None
 

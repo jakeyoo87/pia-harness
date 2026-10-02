@@ -392,6 +392,9 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
     async def test_ranking_and_investor_arguments(self) -> None:
         self.assertIn("ranking needs by", await self.lookup("ranking"))
         self.assertIn("ranking needs by", await self.lookup("ranking", by="dividend"))
+        for by in (["gainers"], {"value": "gainers"}):
+            with self.subTest(by=by):
+                self.assertIn("ranking needs by", await self.lookup("ranking", by=by))
         self.assertIn("market must be", await self.lookup("investors", market="nxt"))
         for count in (0, 1.5, True, "10"):
             with self.subTest(count=count):
@@ -401,10 +404,29 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             "period must be",
             await self.lookup("ranking", by="short_selling", period="5d"),
         )
+        self.assertIn(
+            "market must be", await self.lookup("ranking", by="gainers", market="nxt")
+        )
+        self.assertIn(
+            "count must be", await self.lookup("investors", "삼성전자", count=0)
+        )
         self.assertEqual(0, len(self.broker.requests))
         # Arguments an action does not use are ignored.
         text = await self.lookup("quote", "삼성전자", by="dividend", count=0)
         self.assertIn("Quote for 삼성전자(005930)", text)
+        unused = (
+            ("ranking", None, {"by": "market_cap", "period": "5d"}),
+            ("ranking", None, {"by": "most_viewed", "market": "nxt"}),
+            ("investors", "삼성전자", {"market": "nxt"}),
+            ("investors", None, {"count": 0}),
+        )
+        for action, name, arguments in unused:
+            with self.subTest(action=action, arguments=arguments):
+                text = await self.lookup(action, name, **arguments)
+                self.assertNotIn("Broker lookup not run", text)
+                params = self.broker.requests[-1].url.params
+                self.assertNotIn("nxt", params.values())
+                self.assertNotIn("5d", params.values())
         self.broker.reply_status = 409
         self.assertIn(
             "no verified KIS account connection",
