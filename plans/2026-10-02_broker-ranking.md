@@ -353,3 +353,10 @@ KIS 근거: 고정 커밋 `277ec0eb7a9b7f63b6807829286c80f36649dad2`의 [시장 
 - Broker는 커밋이 변하지 않아 앞선 72개 변경 영역 검증을 반복하지 않았다. Harness 전체 184개·ruff는 Claude 보고를 근거로 하며 이번에는 관련 테스트만 실행했다.
 - 기록에 git diff --check를 수행한다. 제품 코드·테스트 파일·AWS·배포·KIS 실호출은 변경하거나 실행하지 않았다.
 - 이후에는 계획대로 **사용자 승인 후 Broker 병합·dev 배포·bootstrap ranking/investors ARN 두 개 적용**, **별도 승인된 실호출로 단위·정렬·시장 코드·응답 형태 확정**, 그다음 Harness 릴리스·PIA Bot 노출 순서를 지킨다. 릴리스 버전은 사용자에게 물어 확정한다. 이번 검토 결과를 그 실행 승인으로 재사용하지 않는다.
+
+### 반영 (Claude, 2026-10-02)
+
+- P3(객체형 output): Broker `236544a`에서 `get_market_investors`가 목록형 output만 받게 줄였다(`require_list` → 빈 목록이면 스키마 오류 → 첫 행 `require_mapping`). 새 제한이나 테스트는 더하지 않았다. 실제 응답 형태는 실호출에서 확인한다.
+- 나머지는 Codex 판단대로 유지한다.
+- 확인: Broker ruff format·check, mypy, pytest 212 통과.
+- 현재: Broker `claude/broker-ranking` `236544a`, harness `claude/broker-ranking`(이 커밋). 병합·배포·IAM·실호출·릴리스는 사용자 승인 뒤 계획 순서대로 한다.
