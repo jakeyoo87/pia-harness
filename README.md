@@ -298,7 +298,7 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
   ├─ quote     → 종목 찾기 → 현재가·전일 대비·등락률·거래량·거래대금·시가총액·PER·PBR·52주 최고·최저
   ├─ account   → 보유 종목(매도 가능 수량 포함)·예수금·총평가·총손익
   ├─ buyable   → 종목 찾기 → 증권사가 계산한 미수 없는 매수 가능 금액·수량 (시장가 기준)
-  ├─ ranking   → by(17개)·market·period(공매도만) → 순위 앞에서 count개(기본 10)
+  ├─ ranking   → by(13개)·market·period(공매도만) → 순위 앞에서 count개(기본 10)
   └─ investors → name 있음: 종목 찾기 → 거래일별 개인·외국인·기관 순매수(최근 count일, 기본 10)
                  name 없음: 오늘 시장별(market, 기본 코스피·코스닥 둘 다) 개인·외국인·기관·연기금 순매수
     ↓
@@ -311,10 +311,10 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
 - **실패**: Broker 409는 "쓸 수 있는 확인된 KIS 연결이 없음"으로 알린다. 다른 증권사 연결만 있어도 409이므로 "연결 안 됨"이라고 단정하지 않는다. 503·그 밖의 상태·무응답·해석할 수 없는 응답도 결과 문장이다. 한 번의 Broker 문제로 Turn을 끝내지 않는다. 다시 시도하지 않는다.
 - **최신성**: 결과에 조회 시각을 붙인다. 저장된 지난 Turn의 시세·잔고는 그때 값이므로 나중 질문에는 다시 조회한다(도구 설명과 AGENT_INSTRUCTION).
 - **데이터**: 결과에 계좌번호·자격 증명은 없다. `account`는 예수금만 물어도 보유 종목 전체를 돌려주고, 그 결과가 Turn 도구 기록으로 저장된다.
-- **순위(`ranking`)**: `by`는 `market_cap`, `gainers`·`losers`, `volume`·`trading_value`, `near_high`·`near_low`, `short_selling`, `most_viewed`, `most_watched`, `per`·`pbr`·`eps`, `foreign_buying`·`foreign_selling`·`institution_buying`·`institution_selling`이다. 배당 순위는 없다(KIS 배당률 순위는 배당 한 건씩이라 연간 배당률이 아니다). 결과 첫 줄에 기준을 적는다: 시장, 공매도 기간과 KIS 기준일, PER·PBR·EPS의 회계연도(Broker가 정한 최근 결산), 외국인·기관 순위는 장중 가집계, HTS 조회 상위는 시장 선택 없음. 순서는 Broker(KIS) 그대로이고, `count`가 응답보다 크면 실제 개수를 적는다.
+- **순위(`ranking`)**: `by`는 `market_cap`, `gainers`·`losers`, `volume`·`trading_value`, `near_high`·`near_low`, `short_selling`, `most_viewed`, `foreign_buying`·`foreign_selling`·`institution_buying`·`institution_selling`이다. 배당·PER·PBR·관심종목 순위는 없다(KIS 배당률 순위는 배당 한 건씩이고, PER 순위는 높은 순만 있으며, 관심종목 순위는 실호출에서 값이 시가총액과 같았다). 결과 첫 줄에 기준을 적는다: 시장, 공매도 기간과 KIS 기준일(행의 거래량은 기간 누적), 외국인·기관 순위는 장중 가집계, HTS 조회 상위는 시장 선택 없음. 순서는 Broker(KIS) 그대로이고, `count`가 응답보다 크면 실제 개수를 적는다.
 - **투자자 동향(`investors`)**: 순매수 수량과 금액을 KIS 부호 그대로(순매도는 음수) 보여 준다. 시장 조회는 코스피·코스닥을 따로 보여 주고 더하지 않는다.
 - **원칙**: action·`by` 값 하나는 KIS 데이터 하나에 대응한다. 기존 데이터를 조합해 답할 수 있는 질문에는 새 action을 만들지 않는다.
-- **확인 전 단위**: 순위 값과 투자자 금액의 단위는 실호출로 확인한 뒤 결과 문장에 붙인다. 그때까지 숫자만 적는다(시세의 원·주와 시가총액의 억 원은 확인됨).
+- **단위**(2026-10-02 실호출 확인): 시가총액 억 원, 거래대금·공매도 금액·신고가 원, 외국인·기관 순매수 금액 백만 원, 투자자 동향 금액 백만 원, 수량은 종목 조회 주·시장 조회 천 주. 신고가·신저가 근접 비율은 아직 숫자만 적는다.
 
 ### 6.3 코딩 도구
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -39,10 +40,6 @@ _RANKINGS = {
     "near_low": "closest to a new low",
     "short_selling": "short selling",
     "most_viewed": "most viewed on the KIS trading app",
-    "most_watched": "most added to watchlists",
-    "per": "PER",
-    "pbr": "PBR",
-    "eps": "EPS",
     "foreign_buying": "foreign net buying by amount",
     "foreign_selling": "foreign net selling by amount",
     "institution_buying": "institutional net buying by amount",
@@ -51,28 +48,6 @@ _RANKINGS = {
 _MARKETS = ("all", "kospi", "kosdaq")
 _PERIODS = ("1d", "2d", "3d", "4d", "1w", "2w", "3w", "1m", "2m", "3m")
 _DEFAULT_COUNT = 10
-# Figure names from the broker, and how to read them out. Units are added only
-# once confirmed against live KIS replies (plans/2026-10-02_broker-ranking.md).
-_FIGURES = {
-    "market_cap": "market cap",
-    "market_cap_share": "share of the market's total cap",
-    "average_volume": "average volume",
-    "trading_value": "trading value",
-    "new_high": "new high",
-    "near_high_rate": "near-high rate",
-    "new_low": "new low",
-    "near_low_rate": "near-low rate",
-    "short_volume": "short-sold volume",
-    "short_volume_share": "short share of volume",
-    "short_value": "short-sold value",
-    "short_value_share": "short share of value",
-    "watchlist_count": "watchlist registrations",
-    "per": "PER",
-    "pbr": "PBR",
-    "eps": "EPS",
-    "net_buy_value": "net buying value",
-    "net_buy_volume": "net buying volume",
-}
 _GROUPS = (
     ("individual", "individuals"),
     ("foreign", "foreigners"),
@@ -107,8 +82,7 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
             "enum": [*_RANKINGS, None],
             "description": "For ranking: "
             + "; ".join(f"{key} = {label}" for key, label in _RANKINGS.items())
-            + ". PER, PBR and EPS use the latest annual results. There is no dividend "
-            "ranking.",
+            + ". There is no dividend, PER, PBR or watchlist ranking.",
         },
         "market": {
             "type": ["string", "null"],
@@ -342,10 +316,10 @@ class BrokerReadTool:
         if by == "short_selling":
             dates = "–".join(_date(value) for value in reply.get("basis_dates") or ())
             basis.append(
-                f"period {reply['period']}" + (f", KIS dates {dates}" if dates else "")
+                f"period {reply['period']}"
+                + (f", KIS dates {dates}" if dates else "")
+                + ", volume over the period"
             )
-        if reply.get("fiscal_year") is not None:
-            basis.append(f"annual results for fiscal year {reply['fiscal_year']}")
         if by.startswith(("foreign_", "institution_")):
             basis.append("a provisional intraday tally while the market is open")
         lines = [
@@ -364,10 +338,7 @@ class BrokerReadTool:
                 ("price", _krw(row.get("price"))),
                 ("change", _change(row)),
                 ("volume", _shares(row.get("volume"))),
-                *(
-                    (_FIGURES.get(key, key), _plain(value))
-                    for key, value in figures.items()
-                ),
+                *(_figure(key, value) for key, value in figures.items()),
             )
             lines.append(f"{number}. {label}" + (f": {details}" if details else ""))
         if count > len(rows):
@@ -388,7 +359,8 @@ class BrokerReadTool:
                 )
             ]
             lines.extend(
-                f"- {row['label']}: {_flows(row['flows'])}" for row in reply["rows"]
+                f"- {row['label']}: {_flows(row['flows'], 'thousand shares')}"
+                for row in reply["rows"]
             )
             return "\n".join(lines)
         found = await find_instrument(self._client, name)
@@ -410,7 +382,9 @@ class BrokerReadTool:
                 ("close", _krw(row.get("close"))),
                 ("change", _krw(row.get("change"), signed=True)),
             )
-            lines.append(f"- {_date(row['label'])}: {day}; {_flows(row['flows'])}")
+            lines.append(
+                f"- {_date(row['label'])}: {day}; {_flows(row['flows'], 'shares')}"
+            )
         if count > len(rows):
             lines.append(f"The broker returned {len(rows)} trading days.")
         return "\n".join(lines)
@@ -483,6 +457,16 @@ def _plain(value: object) -> str | None:
     return None if number is None else _format(number)
 
 
+def _million(value: object) -> str | None:
+    number = _number(value)
+    return None if number is None else f"{_format(number)} million KRW (백만 원)"
+
+
+def _share(value: object) -> str | None:
+    number = _number(value)
+    return None if number is None else f"{_format(number)}%"
+
+
 def _hundred_million(value: object) -> str | None:
     # KIS hts_avls is in 100 million KRW (checked live on 2026-10-01).
     number = _number(value)
@@ -528,12 +512,19 @@ def _argument_problem(action: str, arguments: dict[str, Any]) -> str | None:
     return None
 
 
-def _flows(flows: dict[str, Any]) -> str:
+def _figure(key: str, value: object) -> tuple[str, str | None]:
+    label, unit = _FIGURES.get(key, (key, _plain))
+    return label, unit(value)
+
+
+def _flows(flows: dict[str, Any], volume_unit: str) -> str:
     parts = []
     for key, label in _GROUPS:
+        volume = _signed(flows.get(f"{key}_net_volume"))
+        value = _signed(flows.get(f"{key}_net_value"))
         figures = _join(
-            ("volume", _signed(flows.get(f"{key}_net_volume"))),
-            ("value", _signed(flows.get(f"{key}_net_value"))),
+            ("volume", None if volume is None else f"{volume} {volume_unit}"),
+            ("value", None if value is None else f"{value} million KRW"),
         )
         if figures:
             parts.append(f"{label} {figures.replace('; ', ', ')}")
@@ -558,3 +549,22 @@ def _join(*pairs: tuple[str, str | None]) -> str:
 def _kst(value: str) -> str:
     moment = datetime.fromisoformat(value)
     return moment.astimezone(_KST).strftime("%Y-%m-%d %H:%M KST")
+
+
+# Figure names from the broker and how to read them out; units as checked live
+# (plans/2026-10-02_broker-ranking.md "실호출 확인").
+_FIGURES: dict[str, tuple[str, Callable[[object], str | None]]] = {
+    "market_cap": ("market cap", _hundred_million),
+    "market_cap_share": ("share of the market's total cap", _share),
+    "trading_value": ("trading value", _krw),
+    "new_high": ("new high", _krw),
+    "near_high_rate": ("near-high rate", _plain),
+    "new_low": ("new low", _krw),
+    "near_low_rate": ("near-low rate", _plain),
+    "short_volume": ("short-sold volume", _shares),
+    "short_volume_share": ("short share of volume", _share),
+    "short_value": ("short-sold value", _krw),
+    "short_value_share": ("short share of value", _share),
+    "net_buy_value": ("net buying value", _million),
+    "net_buy_volume": ("net buying volume", _shares),
+}

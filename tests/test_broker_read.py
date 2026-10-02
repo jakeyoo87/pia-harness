@@ -336,19 +336,25 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             ],
         }
         text = await self.lookup("ranking", by="short_selling", period="1w")
-        self.assertIn("period 1w, KIS dates 2026-09-24–2026-10-01", text)
-        self.assertIn("short-sold value 8,400,000,000", text)
+        self.assertIn(
+            "period 1w, KIS dates 2026-09-24–2026-10-01, volume over the period", text
+        )
+        self.assertIn("short-sold value 8,400,000,000 KRW", text)
         self.assertNotIn("short share of value", text)
         self.assertEqual("1w", self.broker.requests[-1].url.params["period"])
         self.broker.ranking = {
-            "by": "per",
-            "market": "all",
-            "fiscal_year": 2025,
-            "observed_at": AT,
-            "rows": [ranking_row("005930", 0, per=13.2)],
+            **RANKING,
+            "by": "market_cap",
+            "rows": [
+                ranking_row("005930", 0, market_cap=16135729, market_cap_share=23.84)
+            ],
         }
-        text = await self.lookup("ranking", by="per", period="1w")
-        self.assertIn("annual results for fiscal year 2025", text)
+        text = await self.lookup("ranking", by="market_cap", period="1w")
+        self.assertIn(
+            "market cap 16,135,729 hundred million KRW (억 원); share of the market's "
+            "total cap 23.84%",
+            text,
+        )
         self.assertNotIn("period", self.broker.requests[-1].url.params)
         self.broker.ranking = {
             **RANKING,
@@ -368,7 +374,11 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         }
         text = await self.lookup("ranking", by="foreign_selling")
         self.assertIn("provisional intraday tally", text)
-        self.assertIn("net buying value -10,500; net buying volume -150,000", text)
+        self.assertIn(
+            "net buying value -10,500 million KRW (백만 원); net buying volume "
+            "-150,000 shares",
+            text,
+        )
 
     async def test_investors_for_one_stock_or_the_market(self) -> None:
         text = await self.lookup("investors", "삼성전자", count=1)
@@ -376,22 +386,25 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             "Net buying in 삼성전자(005930) by investor group, by trading day", text
         )
         self.assertIn(
-            "- 2026-10-02: close 68,500 KRW; change -1,500 KRW; individuals volume +250,000, "
-            "value +17,125; foreigners volume -300,000, value -20,550; institutions volume "
-            "+50,000, value +3,425",
+            "- 2026-10-02: close 68,500 KRW; change -1,500 KRW; individuals volume "
+            "+250,000 shares, value +17,125 million KRW; foreigners volume -300,000 "
+            "shares, value -20,550 million KRW; institutions volume +50,000 shares, "
+            "value +3,425 million KRW",
             text,
         )
         self.assertNotIn("2026-10-01", text)
         self.assertEqual("005930", self.broker.requests[-1].url.params["code"])
         text = await self.lookup("investors", market="kosdaq")
-        self.assertIn("- kospi: pension funds value +30", text)
+        self.assertIn("- kospi: pension funds value +30 million KRW", text)
         self.assertEqual(
             {"market": "kosdaq"}, dict(self.broker.requests[-1].url.params)
         )
 
     async def test_ranking_and_investor_arguments(self) -> None:
         self.assertIn("ranking needs by", await self.lookup("ranking"))
-        self.assertIn("ranking needs by", await self.lookup("ranking", by="dividend"))
+        for by in ("dividend", "per", "most_watched"):
+            with self.subTest(by=by):
+                self.assertIn("ranking needs by", await self.lookup("ranking", by=by))
         for by in (["gainers"], {"value": "gainers"}):
             with self.subTest(by=by):
                 self.assertIn("ranking needs by", await self.lookup("ranking", by=by))
