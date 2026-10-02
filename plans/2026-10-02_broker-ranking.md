@@ -432,3 +432,30 @@ KIS 근거: 고정 커밋 `277ec0eb7a9b7f63b6807829286c80f36649dad2`의 [시장 
 - Broker `claude/broker-ranking-fixes` `1066fc5`(main `236544a` 기준): 네 순위와 회계연도 계산(`settled_fiscal_year`, `RankingQuery.fiscal_year`)을 지웠다. 등락률 정렬을 공식 실행 예처럼 `"0"`(상승)·`"1"`(하락, 확인 필요)로, 신고가·신저가는 공식 실행 예의 거래량 100주·괴리율 0~10% 필터를 넣었다(가격 범위는 넣지 않음). 거래량 순위의 `average_volume`을 뺐다. ruff·mypy·pytest 205.
 - harness(이 커밋): 같은 네 순위를 뺐다. 확인된 단위를 결과 문장에 붙였다(시가총액 억 원, 비중 %, 거래대금·공매도 금액·신고가 원, 순매수 백만 원, 수량 주/천 주). 공매도 기준에 "volume over the period"를 적는다. 근접 비율은 다시 확인할 때까지 숫자만. 테스트 184 통과.
 - 다시 확인할 것(Broker 재배포 뒤, 4회): `gainers`, `losers`(정렬 `1`이 하락률순인지), `near_high`, `near_low`(거래 있는 종목이 근접 순으로 나오는지, 근접 비율의 뜻).
+
+## Codex 실호출 후 수정 검토 (2026-10-02)
+
+대상: Broker `claude/broker-ranking-fixes` `1066fc59a7dae37c8c2fbaf1d40a44dc9158ab88`(main `236544a` 대비), Harness `claude/broker-ranking` `f9f4bb544fe98b0d7117b7c23af7c4ddcd43c40f`(이전 `e4251bb` 대비). 본문 Claude 실호출 확인·최신 사용자 결정·수정 기록, README, 코드·테스트와 앞선 공식 예제 고정 커밋 `277ec0e`를 대조했다.
+
+**판정: blocker 없음.** 승인된 범위대로 검토 기록 후 Broker만 main 병합·CI 확인·broker-credential dev 재배포를 진행할 수 있다. 이는 Harness 병합·릴리스, PIA/IAM 변경, Bot 배포, KIS 재확인의 승인이 아니다.
+
+### 확인 결과
+
+- **13개 계약으로 함께 축소:** Broker `RankingKind`, `_RANKINGS`와 Harness enum·설명·단위 표에서 most_watched/per/pbr/eps가 제거됐다. Broker의 관련 요청 함수·가치 순위 표·회계연도 필드·JSON 출력·서비스 연도 계산·전용 테스트도 함께 없어졌고 잔존 참조를 확인했다. 기존 quote의 PER/PBR는 별개 데이터이므로 정상적으로 유지한다. Harness는 네 삭제값을 안내 문장으로 거부하고 HTTP를 보내지 않는다.
+- **요청 수정:** 등락률 정렬은 `0000/0001`에서 `0/1`로 좁은 값 교체다. 공식 chk_fluctuation 실행 예의 0과 일치하며 하락 1의 실제 뜻은 아직 재확인 대상이다. 근접 순위는 공식 chk_near_new_highlow 실행 예의 거래량 100·괴리율 0/10을 적용하되 가격 10,000~50,000 필터를 따라 넣지 않았다. 기존 시장 선택·상승/하락 및 신고/신저 구분은 유지된다. 재정렬·새 조회·추정 응답 fallback은 추가하지 않았다.
+- **결과 단위:** 실호출 기록의 시가총액 억 원, 거래대금·공매도 금액·신고/신저가 원, 비중 %, 순매수 백만 원, 종목 수량 주·시장 수량 천 주가 해당 formatter에 대응한다. 음수 순매수 부호는 유지하고 값을 임의로 배율 계산하지 않는다. 공매도 행 거래량은 기간 누적이라는 기준이 붙었다. near_high_rate/near_low_rate는 미확정이므로 숫자만 표시한다.
+- **경계 유지:** 기존 by 타입 검사, action별 관련 인자 검사, most_viewed의 market=all 전송, Bot role·verified 연결·서명 client·토큰 정책·주문 확인 경계는 바뀌지 않았다. IAM과 새 API 경로를 다시 변경할 필요가 없다.
+
+### Simple-first와 재확인 범위
+
+- 네 순위와 연도 계산, 중복 average_volume을 제거한 것은 최신 결정에 맞는 실제 축소다. 나머지 정적 순위 표·필수 지표/코드 검사·목록형 응답 검사는 필요한 계약이므로 유지한다. unit callback을 이름과 함께 둔 작은 `_FIGURES` 표와 공유 formatter는 단위를 반복 if문으로 처리하는 것보다 단순하다. 새 provider/validation/formatter framework가 필요하지 않다.
+- 현재 표와 함수에서 추가로 없애야 할 설계 과잉은 찾지 못했다. 삭제된 기능의 전용 테스트는 제거하고 남은 요청 코드·필터·부호·단위·인자 회귀 검증은 유지하는 것이 맞다.
+- `0/1`과 100주·0~10% 필터는 코드·예제 대조와 가짜 테스트로 검증했을 뿐, 새 배포에서 실제 의미까지 확인된 것은 아니다. 사용자 지시대로 재배포 뒤 Claude가 gainers/losers/near_high/near_low 네 개만 별도 승인 범위로 확인한다. 이번 Codex 작업은 이를 호출하지 않는다.
+- Bot 노출 전 근접 비율의 의미·단위를 확정할 때 100주·0~10%로 제한된 대상이라는 기준도 결과 문구에 드러나게 확인한다. 시장 투자자 천 주 단위는 기존 실호출 기록의 해석을 근거로 했으며 Codex가 이번에 독립 실측한 것이 아니다.
+
+### Codex 검증
+
+- 네트워크 차단·read-only source mount에서 Broker 변경 영역 85개 통과(`test_kis_connector`, `test_trading_api`, `test_orders`), Harness `test_broker_read` 14개 통과.
+- 별도 메모리 내 가짜 Broker 검증: Harness by 13개, 삭제값 네 개 요청 0, 제거한 formatter 키 없음, 억 원·백만 원·%·주/천 주와 음수 부호, 근접 비율의 무단위 표시를 확인했다. 제품 코드·테스트 파일은 수정하지 않았다.
+- 전체 Broker 205개·ruff·mypy·package build와 Harness 전체 184개는 Claude의 앞선 검증 보고다. 이번에는 변경 영역만 확인했고 삭제 기능과 관계없는 검사·전체 빌드는 반복하지 않았다. git diff --check 통과.
+- KIS·회원 데이터·토큰 조회·실호출·강제 발급은 하지 않았다. 이 절은 검토 시점의 기록이며 실제 main CI·배포 결과는 이후 별도로 확인한다.
