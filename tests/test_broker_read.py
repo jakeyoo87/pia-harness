@@ -402,7 +402,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_ranking_and_investor_arguments(self) -> None:
         self.assertIn("ranking needs by", await self.lookup("ranking"))
-        for by in ("dividend", "per", "most_watched"):
+        for by in ("dividend", "per", "most_watched", "near_high"):
             with self.subTest(by=by):
                 self.assertIn("ranking needs by", await self.lookup("ranking", by=by))
         for by in (["gainers"], {"value": "gainers"}):

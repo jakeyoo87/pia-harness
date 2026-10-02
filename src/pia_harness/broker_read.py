@@ -36,8 +36,6 @@ _RANKINGS = {
     "losers": "top losers by change rate",
     "volume": "trading volume",
     "trading_value": "trading value",
-    "near_high": "closest to a new high",
-    "near_low": "closest to a new low",
     "short_selling": "short selling",
     "most_viewed": "most viewed on the KIS trading app",
     "foreign_buying": "foreign net buying by amount",
@@ -82,7 +80,7 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
             "enum": [*_RANKINGS, None],
             "description": "For ranking: "
             + "; ".join(f"{key} = {label}" for key, label in _RANKINGS.items())
-            + ". There is no dividend, PER, PBR or watchlist ranking.",
+            + ". There is no dividend, PER, PBR, watchlist or new-high ranking.",
         },
         "market": {
             "type": ["string", "null"],
@@ -557,10 +555,6 @@ _FIGURES: dict[str, tuple[str, Callable[[object], str | None]]] = {
     "market_cap": ("market cap", _hundred_million),
     "market_cap_share": ("share of the market's total cap", _share),
     "trading_value": ("trading value", _krw),
-    "new_high": ("new high", _krw),
-    "near_high_rate": ("near-high rate", _plain),
-    "new_low": ("new low", _krw),
-    "near_low_rate": ("near-low rate", _plain),
     "short_volume": ("short-sold volume", _shares),
     "short_volume_share": ("short share of volume", _share),
     "short_value": ("short-sold value", _krw),
