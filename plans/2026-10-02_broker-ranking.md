@@ -156,3 +156,68 @@ PIA가 시장 전체의 순위와 투자자별 매매 동향을 증권사 값으
 1. 새 Broker 경로를 둘(`ranking`, `investors`)로 둘지, 하나로 합쳐 IAM 허용을 하나로 할지. 계획은 둘이다(뜻이 다르고 bootstrap 변경은 어차피 한 번이다).
 2. 17개 `by` 값의 KIS 호출을 한 커넥터 메서드(`get_ranking(by, …)`)로 묶는 지금 설계가 Broker 포트 규칙에 맞는지.
 3. 공식 예제에 출력 필드가 없는 API(등락률)와 필드 설명이 부족한 API(HTS 조회 상위)를 실호출 전에 어디까지 구현할지. 계획은 공통 필드만 읽고 없으면 뺀다.
+
+## Codex 계획 검토 (2026-10-02)
+
+대상: harness `claude/broker-ranking`의 `730004d23fc6dfc4104589b1e24a358a951c6af6`. 대조 기준은 harness main `415b0d4`(v0.7.0), Broker main `9c39182`, PIA main `b9a2aa99f`다. 세 저장소의 지침·README·관련 코드를 확인했다. KIS 공식 저장소는 검토 때 받은 `277ec0eb7a9b7f63b6807829286c80f36649dad2`로 고정하고, `examples_llm/domestic_stock`의 함수뿐 아니라 각 `chk_*.py`의 `COLUMN_MAPPING`도 읽었다. 공식 코드는 실행하지 않았다.
+
+**판정: 보완 필요.** 사용자 결정인 action 두 개·by 17개·기본값·제외 범위는 유지한다. 아래 두 사항을 계획에 반영한 뒤 구현 계획을 확정하는 것이 맞다.
+
+### 반영이 필요한 사항
+
+**1. [P2] 발급 함수만 고치면 TokenManager가 올바른 만료 시각을 다시 버릴 수 있다** (본문 103~118행).
+
+`TokenManager.get_token`은 같은 Credential version의 저장된 토큰이 있고 `issued.expires_at <= stored.expires_at`이면, 저장된 토큰을 아직 쓸 수 있다고 판단할 때 저장된 만료 시각을 그대로 다시 저장한다(`token_lifecycle.py` 179~198행). 기존 `started_at + expires_in` 때문에 저장된 시각이 실제보다 늦다면, 새 발급 함수가 받은 더 이른 절대 시각을 이 분기에서 버린다. 코드 수정 없이 가짜 TokenRepository·Issuer로 재현했다: 저장 만료를 기준 시각 +30시간으로 두고 2시간 뒤 강제 갱신 응답의 실제 만료를 +24시간으로 주면, 반환·저장 값은 여전히 +30시간이었다. 이 재현은 합성 데이터이며 운영 토큰을 읽거나 발급한 것이 아니다.
+
+- 구현 범위에 `token_lifecycle.py`와 해당 회귀 테스트도 포함한다. 성공한 KIS 응답의 확정된 만료 시각이 잘못 연장된 기존 시각보다 이르다는 이유만으로 버려지지 않도록 한다. 기존 토큰 재반환 시 실제 만료를 연장하지 않는다는 계약을 명시한다.
+- KST 문자열을 timezone-aware UTC로 변환하고, 필드 누락·형식 오류·이미 만료된 시각을 스키마 오류로 처리한다. `expires_in` 범위 검사는 유지하되 만료 계산에는 쓰지 않는다.
+- 메모리/DB 재사용, 연결 version fencing, 30초 lease·60초 발급 간격은 유지한다. KIS의 6시간 정책은 기존 토큰을 재반환하는 공급자 규칙이며, PIA에 6시간 주기 발급 작업을 추가한다는 뜻이 아니다.
+- 테스트는 KST→UTC, 누락/오류, 같은 토큰 재반환, 잘못 연장된 기존 메타데이터와 더 이른 정상 응답, 재시작 후 DB 재사용을 확인한다. 모든 운영 Token row를 삭제하거나 강제로 재발급하는 조치는 이 수정에 포함하지 않는다. 새 발급 함수 배포만으로 기존 DB 값이 일괄 교정되는 것도 아니다.
+
+**2. [P2] 미확정 단위·정렬·시장 구분을 Bot에 노출하기 전 확인하는 순서를 정한다** (본문 134~152행).
+
+현재 순서는 Harness 릴리스·PIA 배포 다음에 실호출로 금액 단위와 하락률/PER/공매도 정렬, 시장 코드를 확인하고 문구를 수정한다. 이대로면 확인 전 사용자 질문에 잘못된 금액 단위나 잘못 고른 순위를 답할 수 있다. 실제값 확인을 추가 승인 대상으로 남기는 것은 맞지만, 사용자에게 노출되는 기준까지 추정 상태로 두어서는 안 된다.
+
+- 가장 단순한 순서는 Broker 구현·검토 → 승인된 Broker/IAM 배포 → 별도로 승인된 읽기 실호출 확인 → 단위·정렬·시장 매핑 및 테스트 확정 → Harness 릴리스·PIA Bot 배포다. 별도 feature flag나 검증 프레임워크를 만들 필요는 없다.
+- 확인되지 않은 필드에 원/백만 원/억 원을 임의로 붙이지 않는다. 확인되지 않은 하락률 정렬을 상승률 응답 일부의 역순으로 대신하지 않는다. 공매도도 금액순/비중순을 추측해 이름 붙이지 않는다.
+- 실호출이 아직 승인되지 않았으면 해당 의미를 확정한 것처럼 릴리스하지 않고 확인 필요 상태로 보고한다. 별도 릴리스 버전은 사용자에게 물어 확정한다.
+
+### 공식 예제 대조와 정정·구체화할 내용
+
+17개 by가 쓰는 9개 API와 investors의 2개 API는 경로·TR ID가 모두 공식 예제와 일치한다. 아래는 코드표를 구현할 때 빠지면 안 되는 차이이며, KIS 원본 코드를 공통값 하나로 덮어쓰지 않는다.
+
+| 대상 | 공식 예제에서 확인한 요청·응답 계약 |
+|---|---|
+| `market_cap` | `FHPST01740000`, 화면 `20174`, `J`, 시장 `0000/0001/1001`. 응답 `output`, 코드 `mksc_shrn_iscd`. |
+| `gainers/losers` | `FHPST01700000`, 화면 `20170`, `J`, 응답 `output`, 코드 `stck_shrn_iscd`. 정렬 docstring의 `0000`과 실행 예제의 `0`도 다르므로 하락 방향을 공식 설명만으로 확정하지 않는다. |
+| `volume/trading_value` | `FHPST01710000`, 화면 `20171`, `J`, `FID_BLNG_CLS_CODE=0/3`. 공식 설명의 0은 **평균 거래량**이다. `acml_vol` 표시와 정렬 기준을 혼동하지 않도록 이 기준을 문구·검증에 포함한다. |
+| `near_high/near_low` | `FHPST01870000`, 화면 `20187`, `J`, `FID_PRC_CLS_CODE=0/1`. `FID_INPUT_CNT_1/2`는 개수가 아니라 괴리율 최소/최대다. |
+| `short_selling` | `FHPST04820000`, 화면 `20482`, `J`. 기간 매핑은 D의 `0/1/2/3/4/9/14`가 `1d/2d/3d/4d/1w/2w/3w`, M의 `1/2/3`이 `1m/2m/3m`. 응답의 `stnd_date1/2`도 기준으로 보존한다. |
+| `most_viewed` | `HHMCM000100C0`, 요청 쿼리 없음. **`output1`**을 읽으며 `output` 공통 파서로 처리하지 않는다. 공식 COLUMN_MAPPING은 `mrkt_div_cls_code`, `mksc_shrn_iscd`를 제공한다. 이름은 기존 종목 목록에서 보충하고 별도 현재가 20회 조회는 추가하지 않는다. |
+| `most_watched` | `FHPST01800000`, 화면 `20180`, `J`, `FID_INPUT_ISCD_2=000000`, `FID_INPUT_CNT_1=1`은 첫 순위의 시작 위치다. |
+| `per/pbr/eps` | `FHPST01790000`, 화면 `20179`, `J`, 정렬 `23/24/27`, 결산 `FID_INPUT_OPTION_2=3`, 회계연도 `FID_INPUT_OPTION_1`. 요청 연도는 사용자 결정대로 KST 조회일의 4월 경계에서 계산한다. `stac_month`는 결산 월이고 회계연도 자체가 아니다. |
+| 외국인·기관 순위 4개 | `FHPTJ04400000`, **`FID_COND_MRKT_DIV_CODE=V`**, 화면 `16449`, 금액 구분 `FID_DIV_CLS_CODE=1`, 순매수/순매도 정렬 `0/1`, 외국인/기관계 `FID_ETC_CLS_CODE=1/2`. 결과 지표도 선택한 투자자의 `frgn_*`/`orgn_*` 필드를 사용한다. |
+| 종목 investors | `FHKST01010900`, `J`와 종목코드. 응답 날짜는 `stck_bsop_date`, 가격은 **`stck_clpr`**이며 순매수 값은 개인/외국인/기관계 `*_ntby_qty`, `*_ntby_tr_pbmn`이다. 최근 count는 달력 일수가 아니라 반환된 거래일 행 수다. |
+| 시장 investors | `FHPTJ04030000`, 인자는 **`FID_INPUT_ISCD`·`FID_INPUT_ISCD_2`**이고 `J` 인자는 없다. 공식 예제의 `999/S001`은 확인되지만 코스닥 등 전체 매핑은 이 예제만으로 확정할 수 없다. 기금은 `fund_ntby_qty`, `fund_ntby_tr_pbmn`이다. |
+
+- 본문 36행의 `KRX(J)만`은 상품 범위 정책으로 유지하되, 모든 API 요청의 시장 분류 값을 무조건 J로 쓰는 지시로 해석되지 않게 고친다. 외국인·기관 가집계의 V 등 API별 고정 코드와 거래소 정책은 구분한다. HTS 조회 상위에는 거래소 선택 인자도 없으므로 J로 필터했다는 문구를 쓰지 않는다.
+- 본문 137·158행의 "등락률 예제에 출력 필드 목록이 없음"은 정정할 수 있다. `chk_fluctuation.py`의 COLUMN_MAPPING에 `data_rank`, `stck_shrn_iscd`, `prdy_ctrt`, `prdy_vrss_sign` 등이 있다. 실호출까지 미룰 것은 필드 이름 자체가 아니라 정렬 동작·필드 의미의 미확정 부분이다.
+- 순매수 수량·금액은 원래 값의 부호를 보존한다. `prdy_vrss_sign`은 가격 전일 대비와 등락률에 적용하며 순매수 값 전체의 부호를 그 코드로 바꾸지 않는다. 가격 상승+외국인 순매도, 가격 하락+기관 순매수 사례를 테스트한다.
+
+근거: [공식 domestic_stock 예제](https://github.com/koreainvestment/open-trading-api/tree/277ec0eb7a9b7f63b6807829286c80f36649dad2/examples_llm/domestic_stock), [외국인·기관 요청 코드](https://github.com/koreainvestment/open-trading-api/blob/277ec0eb7a9b7f63b6807829286c80f36649dad2/examples_llm/domestic_stock/foreign_institution_total/foreign_institution_total.py), [등락률 출력 필드](https://github.com/koreainvestment/open-trading-api/blob/277ec0eb7a9b7f63b6807829286c80f36649dad2/examples_llm/domestic_stock/fluctuation/chk_fluctuation.py), [토큰 재반환·절대 만료 저장 예제](https://github.com/koreainvestment/open-trading-api/blob/277ec0eb7a9b7f63b6807829286c80f36649dad2/examples_llm/kis_auth.py).
+
+### 열린 질문 1~3에 대한 답
+
+1. **경로 두 개를 유지한다.** ranking과 investors는 요청·응답 의미가 다르다. IAM ARN 하나를 줄이려고 기존 경로에 action 분기를 더할 필요는 없다. 기존 Bot role 검사와 verified 연결 검사를 재사용하고, `$default/GET/internal/members/*/ranking` 및 `.../investors`의 정확한 ARN 두 개만 추가한다. 삭제·주문 권한이나 경로 전체 wildcard로 넓히지 않는다. 변경은 계획에 기록하는 것이며 이번 검토에서 실행하지 않았다.
+2. **`get_ranking(by, market, period)` 하나로 묶어도 기존 Broker 포트와 맞는다.** 데이터 종류는 반환값과 선택자로 구분할 수 있으며 17개 공개 메서드가 필요하지 않다. 내부에서 API별 요청·파서를 작은 함수와 고정 표로 분리하면 충분하다. investors는 종목 일별과 시장 현재값이 다르므로 제안한 두 메서드를 유지한다. 기존 fake connector·공통 포트 테스트에 새 메서드 계약을 함께 반영한다.
+3. **확인 가능한 필드·요청 매핑·파서·오프라인 테스트까지 구현한다.** `chk_*.py`도 근거로 읽고, 공통 코드 필드 차이와 `output/output1` 차이를 명시적으로 처리한다. 핵심 값(종목 코드·해당 순위 지표·투자자 순매수 값 등)이 없으면 성공 응답처럼 생략하지 않고 기존 해석 실패로 처리한다. 없는 가격·거래량 같은 보조 필드만 생략한다. 의미가 미확정인 단위/정렬/시장 코드는 위의 사용자 노출 전 검증 순서를 따른다.
+
+### 인자·결과 계약과 덜어낼 부분
+
+- `required=[action]`, 선택 인자 하나의 스키마, `oneOf` 없음은 현재 도구와 맞는다. `by` 누락은 요청하지 않고 결과 문장으로 설명한다. `market/count/period`가 null 또는 누락이면 기본값을 쓰고, 관련 action에서 잘못된 enum·0/음수/소수/bool count는 기존 인자 오류 방식으로 알려 준다. 관계없는 인자는 검사·전송하지 않는다.
+- `count`는 Harness에서 양의 정수로 검사하고 자르며 KIS 연속조회는 추가하지 않는다. `most_viewed`만 문서로 확인된 20개 상한을 쓰고, 나머지는 실제 반환 수가 적다는 이유로 "API 최대 N개"라고 단정하지 않는다. 최대가 미확정이면 "이번 응답에서 N개 반환"이라고 적는다. `investors(name 있음)`은 최근 거래일 행, 시장 investors는 count를 쓰지 않는다고 설명한다.
+- 종목 investors에서 market은 무시하고 종목코드를 사용한다. 시장 all은 코스피·코스닥 각각의 결과를 구분해 반환하며 임의로 합산하지 않는다. 두 시장 호출이 필요하면 한 도구 호출의 실제 KIS 요청 수는 2개다. 20회 도구 한도가 곧 KIS 20회 호출 한도라는 문구는 쓰지 않는다.
+- Broker가 계산한 회계연도, 실제 선택 시장·기간, 원본 기준일과 관측 시각은 응답에 함께 넣어 Harness가 그 기준으로 문구를 만든다. Harness에서 회계연도·KIS 기간 코드를 다시 계산하지 않는다. 관측 시각을 통계 기준일로 쓰지 않고, 가집계와 당일 데이터 확인 여부를 구분한다.
+- 새 client, 별도 캐시·재시도·도구·MCP 연결·정렬 후처리·페이지 순회는 필요 없다. 기존 `_send`, 서명 client, 종목 목록, 실패 결과 문장을 재사용한다. 금액·수량은 Broker 내부의 Decimal을 유지하고 기존 JSON 직렬화 경계만 쓴다. 임의 계산이나 새로운 공통 프레임워크는 추가하지 않는다.
+
+**검증 범위:** 공식 예제 정적 대조와 현재 코드 검토, 네트워크 차단 컨테이너에서 기존 TokenManager의 만료 되돌림 사례를 가짜 객체로 재현했다. 계획서만 변경했으며 새 제품 코드·테스트 파일은 작성하지 않았다. 코드 수정·병합·AWS 변경·배포·KIS 실호출·토큰 발급은 하지 않았다. 계획 문서 변경이므로 전체 suite·이미지 빌드는 반복하지 않았다.
