@@ -240,3 +240,26 @@ Codex 계획 검토의 두 사항과 정정을 모두 받았다.
 - 정정: 요청 시장 코드는 API별 공식 값(외국인·기관 `V`, 일부는 인자 없음), HTS 조회 상위 `output1`·코드만, 등락률 출력 필드는 공식 예제에 있음, 순매수 부호는 KIS 원래 값(가격 부호 코드를 적용하지 않음), 거래량 소속 구분 `0`의 뜻을 실호출 확인 항목에 추가, `count` 상한 문구.
 - 핵심 값(종목코드, 해당 순위 지표, 투자자 순매수 값)이 없으면 해석 실패로 처리하고, 보조 필드만 생략한다. 시장 투자자 동향의 `all`은 코스피·코스닥을 나눠 돌려주고 합산하지 않는다.
 - 열린 질문 1~3은 Codex 답과 같다: 경로 두 개, `get_ranking` 하나와 investors 메서드 두 개, 확인 가능한 필드·파서·오프라인 테스트까지 구현.
+
+## 구현 (Claude, 2026-10-02)
+
+**pia-broker** `claude/broker-ranking` `f922bd2` (main `9c39182` 기준)
+- `models.py`: `RankingKind`(17), `MarketScope`, `ShortSellingPeriod`, `RankingQuery`, `RankingRow`(공통 값 + `figures`), `Ranking`(`basis_dates`), `InvestorRow`, `Investors`.
+- `connectors/kis.py`: `get_ranking` 하나와 `_RANKINGS` 표(API별 경로·TR ID·요청 함수·코드 필드·핵심 필드·`figures`). `get_stock_investors`, `get_market_investors`(all이면 코스피·코스닥 각 1회, 더하지 않음). 기존 `_send`(만료 시 한 번 재시도)를 쓴다.
+  - 핵심 필드(순위 지표)나 종목코드가 없으면 스키마 오류, 나머지는 `None`. 투자자 순매수 수량·금액은 모두 필수.
+  - 전일 대비·등락률만 `prdy_vrss_sign`을 따르고, 순매수는 KIS 부호 그대로.
+  - 가격·거래량·괴리율 같은 필터 인자는 비워 둔다(공식 예제의 필터 값을 그대로 쓰지 않음). 신고가 근접의 괴리율 범위도 비운다.
+  - 실호출 전 미확정 값은 코드 주석으로 표시했다: 하락률 정렬 `0001`, 시장 투자자 코드 `KSP`/`KSQ`와 `0001`/`1001`(일별 API를 따름).
+- `orders.py`: 포트에 세 메서드, `TradingService.ranking`(HTS 조회 상위는 시장을 all로, PER·PBR·EPS는 `settled_fiscal_year`로 회계연도를 채움), `stock_investors`, `market_investors`.
+- `credential_api.py`: `GET …/ranking?by=&market=&period=`, `GET …/investors?code=|market=`. 허용 값 밖이면 400, 연결이 없으면 409. HTS 조회 상위의 이름은 종목 목록(`InstrumentCatalog.name_of`)으로 채운다.
+- 토큰: `live_kis.py`는 `access_token_token_expired`(KST→UTC)와 `issued_at + expires_in` 중 **이른 쪽**을 만료로 쓴다. 기존 테스트가 터무니없이 먼 절대 시각(2099년)을 믿지 않는 것을 확인하고 있어서, 두 값을 함께 쓰면 그 보호도 남는다. 필드가 없거나 형식이 틀리거나 이미 지난 시각이면 스키마 오류. `token_lifecycle.py`는 "이른 만료면 저장된 토큰 재사용" 분기와 쓰지 않게 된 `_deferred`를 지웠다.
+- 템플릿 `GetRanking`·`GetInvestors`, 인프라 테스트, README 0·7절과 토큰 문장.
+- 확인: ruff format·check, mypy, pytest 212(새 테스트 38), `python -m build`.
+
+**pia-harness** (이 브랜치)
+- `broker_read.py`: action `ranking`·`investors`, 인자 `by`·`market`·`count`·`period`(모두 선택, `required`는 `action`뿐). action이 쓰는 인자만 검사한다(`_argument_problem`): `by` 누락·허용 밖, `market`·`period` 허용 밖, `count`가 1 미만·소수·bool·문자열이면 Broker를 부르지 않고 결과 문장.
+  - 결과 첫 줄에 기준: 시장, 공매도 기간과 KIS 기준일, 회계연도, 외국인·기관은 장중 가집계, HTS 조회 상위는 시장 선택 없음. `count`보다 응답이 적으면 실제 개수를 적는다.
+  - 순위 값과 투자자 금액은 단위 없이 숫자만 적는다(실호출 확인 뒤 붙임). 시가총액 억 원 주석은 2026-10-01 실호출로 확인됨으로 고쳤다.
+- 테스트 4개 추가(184 통과), README 6.2.3.
+
+**다음**: Codex 구현 검토 → Broker 병합·dev 배포·IAM(Codex, 승인) → 실호출 확인(승인) → 단위·정렬·시장 코드 확정 → harness 릴리스·Bot.
