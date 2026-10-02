@@ -480,3 +480,18 @@ KIS 근거: 고정 커밋 `277ec0eb7a9b7f63b6807829286c80f36649dad2`의 [시장 
 - Broker `claude/broker-ranking-fluctuation` `8e62cf0`(main `1066fc5` 기준): 가격 구분 `1`, 신고가·신저가 순위 삭제. ruff·mypy·pytest 204.
 - harness(이 커밋): 신고가·신저가 삭제와 문구. 테스트 184 통과.
 - 다시 확인할 것(Broker 재배포 뒤 2회): `gainers`·`losers`가 전일 대비 등락률 순인지.
+
+## Codex Postman 기준 수정 검토 (2026-10-02)
+
+대상: Broker `claude/broker-ranking-fluctuation` `8e62cf0a85371d711689b42e8c6c9f927f2d7168`(main `1066fc5` 대비), Harness `claude/broker-ranking` `ad0bd4a1e93855b3de7bb6ccf8b78b7d9fc143d8`(이전 `f9f4bb5` 대비). 본문 재확인·재확인 뒤 사용자 결정과 각 README·코드·테스트를 대조했다.
+
+**판정: blocker 없음.** 사용자 승인 범위대로 검토 기록을 push한 뒤 Broker만 main 병합·CI 확인·broker-credential dev 재배포를 진행할 수 있다.
+
+- **공식 근거 확인:** 앞선 공식 KIS 저장소 고정 커밋 `277ec0e`의 `legacy/postman/실전계좌_POSTMAN_샘플코드_v2.6.json`에서 등락률 요청의 설명을 직접 읽었다. 정렬 0은 상승율순, 1은 하락율순이며 가격 구분은 상승 정렬에서 0=저가 대비/1=종가 대비, 하락 정렬에서 0=고가 대비/1=종가 대비다. Postman 요청 예의 기본 value는 0이지만 그 값을 그대로 복사하는 것이 아니라, 원하는 종가 대비 기준에 해당하는 설명의 1을 선택한 구현이 맞다. 가짜 요청 테스트가 gainers/losers 모두 가격 구분 1과 정렬 0/1을 확인한다. 변경한 실제 순서가 전일 대비인지에 대한 운영 확인은 아직 별개다.
+- **삭제 계약:** Broker enum·순위 표·근접 요청 함수·전용 필드·테스트에서 near_high/near_low를 제거했다. Harness enum·설명·근접 formatter와 README도 함께 정리됐다. 양쪽 순위 값은 동일한 11개이며, 두 삭제값은 Harness에서 안내 문장으로 끝나고 HTTP 요청을 보내지 않는다. Broker의 기존 enum 경계도 삭제값을 거부한다. 기존 quote의 52주 고가·저가 필드는 다른 데이터이므로 삭제하지 않았다.
+- **불변 조건:** 시장 선택, period의 공매도 전용 사용, 부호·단위 표시, most_viewed의 market=all 전송, 핵심 지표 검사, Bot role·verified 연결 검사, 토큰 만료·lease 정책은 변경하지 않았다. API 경로·IAM을 바꾸거나 PIA/Bot을 배포할 필요가 없다.
+- **Simple-first:** 가격 구분 상수 한 개를 바꾸고 목적에 맞지 않은 순위를 제거하는 최소 수정이다. 이미 알려진 기준을 맞추기 위해 결과를 다시 정렬하거나 저가·고가 기준을 보정하는 별도 계산·재시도·fallback을 추가하지 않았다. 삭제한 기능의 전용 테스트도 함께 줄였고 남은 회귀 검증은 필요하다. 추가 설계 과잉이나 덜어내야 할 예외 경로는 발견하지 못했다.
+
+**Codex 검증:** 네트워크 차단·read-only source mount에서 Broker `test_kis_connector`·`test_trading_api` 52개와 Harness `test_broker_read` 14개 통과. 별도 AST 비교로 두 저장소의 by 11개 일치를 확인하고, 가짜 Broker로 near_high/near_low의 HTTP 요청 0을 확인했다. 전체 Broker 204개·ruff·mypy와 Harness 전체 184개는 Claude 보고를 근거로 하며 전체 검증·빌드는 반복하지 않았다. git diff --check 통과.
+
+검토 중 제품 코드·테스트 파일을 수정하지 않았고 회원·KIS·토큰 실조회도 하지 않았다. 이후 승인된 Broker 배포만 진행하며 Harness 병합·릴리스, PIA·IAM 변경, Bot 배포, KIS 호출은 하지 않는다. 재배포 뒤 gainers/losers 두 건의 실호출 확인은 사용자 지시대로 Claude가 수행할 다음 단계다. 이 절은 검토 시점 기록이고 실제 CI·배포 결과는 이후 별도로 확인한다.
