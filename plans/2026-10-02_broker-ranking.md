@@ -360,3 +360,39 @@ KIS 근거: 고정 커밋 `277ec0eb7a9b7f63b6807829286c80f36649dad2`의 [시장 
 - 나머지는 Codex 판단대로 유지한다.
 - 확인: Broker ruff format·check, mypy, pytest 212 통과.
 - 현재: Broker `claude/broker-ranking` `236544a`, harness `claude/broker-ranking`(이 커밋). 병합·배포·IAM·실호출·릴리스는 사용자 승인 뒤 계획 순서대로 한다.
+
+## Claude 진행 검토 (2026-10-02)
+
+대조: Broker main `236544a`, PIA main `6bb9a37`, harness `claude/broker-ranking` `e4251bb`(미병합), 운영 Bot 컨테이너. 코드·AWS·KIS 호출은 하지 않았다.
+
+**1. "그럼 해"의 승인 범위: 실호출까지로 본 것은 넓게 해석한 것이다. 멈춘 것은 맞다.**
+- 직전 Codex 답 자체가 "IAM 병합·CI, 그리고 **별도 승인 후** KIS 검증"이었다. 그 답에 대한 "그럼 해"는 별도 승인 단계를 남긴 것으로 읽는 게 맞다. 실호출은 승인할 호출 목록을 보여 주고 받기로 했다(계획 "실호출로 확인할 것").
+- 사전 조회(ACTIVE 회원 인덱스의 PK·SK, Broker status GET)는 KIS를 부르지 않았고 원문을 출력하지 않아 피해는 없다. 다만 실호출 준비라서 같은 승인 범위에 들어간다. 다음부터는 대상 회원도 사용자에게 확인받는다(사용자 본인 계정).
+
+**2. 설계 과잉: 코드에는 없다. 문서 두 곳만 줄일 수 있다(비차단).**
+- `ops/dev_deployment_rollout.md` 98~106행 "Broker ranking/investors IAM preparation" 문단은 이미 끝난 1회성 절차다. 같은 파일 4단계(24~42행)에 두 ARN이 이미 들어가 있으므로 지워도 된다.
+- PIA `README.md` 191~193행의 "GET 권한만 준비하며 Harness 릴리스·Bot 연동은 별도 작업" 문장은 진행 상태라서 연동 때 낡는다. 연동 커밋에서 지우면 된다.
+- `tests/test_dev_deployment.py`의 AllowedPattern 전체 일치 검사는 범위를 좁히는 쪽이라 유지한다.
+
+**3. 실호출 검증의 최소 범위와 중단 기준**
+- 대상: 사용자 본인 회원 하나(사용자가 확인). 방법: EC2에서 Bot role로 서명한 GET을 Broker에 순서대로 보낸다. 주문·토큰 강제 갱신 경로는 부르지 않는다.
+- 호출(13회, 미확정 항목 하나에 한 번):
+  1. `ranking?by=market_cap` — `stck_avls` 단위(삼성전자 시가총액을 `quote`의 억 원 값과 비교)
+  2. `by=losers` — 정렬 `0001`이 하락률순인지
+  3. `by=volume` — 소속 구분 `0`이 누적인지 평균인지(`acml_vol` 순서로 판단), 필터 `0`이 전체인지
+  4. `by=trading_value` — `acml_tr_pbmn` 단위
+  5. `by=near_high` — 근접 비율의 뜻(현재가·신고가로 판단)
+  6. `by=short_selling&period=1w` — 정렬 기준, 기준일 범위
+  7. `by=most_viewed` — `output1` 형태
+  8. `by=most_watched` — 응답 형태
+  9. `by=per` — 정렬 방향, 음수 PER 위치, 회계연도 2025 응답 여부
+  10. `by=foreign_selling` — `V` 코드, 금액 단위, 부호
+  11. `by=institution_buying` — 기관 구분 코드
+  12. `investors?code=005930` — 당일 행 여부, 금액 단위
+  13. `investors?market=all` — 시장 코드 `KSP`/`KSQ`·`0001`/`1001`, 응답 형태
+- 중단: Broker가 400·403·409·5xx를 주거나, 해석 실패(502 `SCHEMA_INVALID` 포함), KIS 호출 한도 응답이 나오면 그 자리에서 멈추고 보고한다. 같은 요청을 다시 보내지 않는다.
+- 기록: 성공 여부, 확인한 뜻·단위·정렬, 공개 시세 예시 숫자. 회원 식별자·계좌·토큰은 쓰지 않는다. 토큰이 만료돼 새로 발급되면 KIS 알림톡이 한 번 갈 수 있다.
+
+**4. Bot 노출: 막혀 있다.**
+- 운영 Bot은 `pia-bot:dev-b9a2aa99…`(harness 0.7.0)로, `broker` 도구에 `ranking`·`investors`가 없다. harness 브랜치는 미병합·미릴리스다. Bot role의 새 GET 권한을 쓰는 코드가 Bot에 없다.
+- 단위·정렬·시장 코드를 확정하고 harness를 고친 뒤에 릴리스·PIA 연동·Bot 배포를 한다(계획 순서 4~5).
