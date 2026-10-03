@@ -182,3 +182,52 @@
 - 테스트: 영문 코드 master 행·소문자 검색·`InstrumentId`, 크기 상한(압축 해제 포함), 첫 조회 때만 받기·24시간, 한 시장 실패·과소 시 전체 유지·1시간 재시도, 시세·주문 요청에 영문 코드 그대로. ruff·mypy·pytest 209·build 통과.
 
 **다음**: Codex 구현 검토 → Broker 병합·dev 배포(승인) → 실호출 확인(Claude, 승인: `quote` `0016X0`·덕양에너젠, `most_viewed` 이름) → harness 릴리스(버전은 사용자) → PIA 연동(`tests/test_conversation.py`, README·rollout 숫자)·Bot 배포 → Telegram 확인(사용자).
+
+## Codex 구현 검토
+
+2026-10-03. 대상 Broker `claude/broker-followups` `fe83dd0`, Harness 구현 `9c13924`·기록 `bbcafc4`. 기준 Broker main `8e62cf0`, Harness main `1d6f65b`, 계획 검토 `228c27b`와 반영 `779a175` 및 위 구현 절을 대조했다. 세 저장소 지침·README와 관련 코드·테스트를 읽었으며 제품 코드·테스트 파일은 수정하지 않았다.
+
+**판정: Broker blocker 1건. Harness 실행 코드에는 이번 검토 범위에서 blocker를 발견하지 못했다.** 아래 검색 회귀를 고친 뒤 재검토해야 한다. README 숫자 누락은 비차단 문서 정리다.
+
+### Blocker
+
+**[P2] 6자리 영문·숫자 종목명을 코드로 오인해 기존 이름 검색이 실패한다** — Broker `src/pia_broker/instruments.py:103~115`.
+
+새 `_CODE`는 `[0-9A-Z]{6}`이고 검색은 공백을 없앤 key에 이 규칙을 먼저 적용한다. 그래서 이름 자체가 6자리 영문·숫자인 경우 코드 검색만 하고, 코드가 없어도 이름 검색으로 가지 않는다. 실제 패키지로 `search("SIMPAC")`·`search("simpac")`를 실행하니 main `8e62cf0`은 FOUND였지만 `fe83dd0`는 NOT_FOUND였다. 같은 패키지의 다음 8개 이름도 모두 NOT_FOUND를 반환했다.
+
+| 공개 종목명 | 종목코드 |
+|---|---|
+| SIMPAC | 009160 |
+| INVENI | 015360 |
+| WISCOM | 024070 |
+| YG PLUS | 037270 |
+| ACE 200 | 105190 |
+| WON 200 | 448100 |
+| IBK 200 | 472840 |
+| NHN KCP | 060250 |
+
+이것은 다운로드 실패가 아니라 검색 분기 문제라 정상 갱신 목록·패키지 fallback 양쪽에 적용된다. Harness 조회·주문 도구는 공식 이름을 Broker로 보내므로 위 종목의 이름 기반 시세·매수 가능·투자자 동향·주문 준비가 모두 막힌다. 종목코드 `009160`으로 검색하면 FOUND이며 `0016x0`의 새 영문 코드 검색도 FOUND이므로, 새 코드를 지원하는 것 자체는 정상이다.
+
+- 가장 작은 수정은 **해당 코드가 실제로 있으면 코드 결과를 쓰고, 없으면 기존 이름 정확 일치·포함 검색으로 이어가는 것**이다. `[0-9A-Z]{6}`을 다시 숫자로 좁히거나 영문 이름별 예외·prefix 추정·새 검색 계층을 만들 필요는 없다.
+- 기존 숫자 코드, 영문 코드의 대소문자 처리, 없는 코드 처리는 유지하고 `SIMPAC`/`simpac`, 공백 제거 뒤 코드 모양이 되는 `NHN KCP` 또는 `ACE 200`의 이름 검색 회귀를 추가한다. 현재 `test_codes_with_capital_letters_are_found_in_any_case`는 새 코드와 한글 이름만 확인하므로 이 실패를 잡지 못한다.
+
+### 확인한 정상 동작
+
+- **거래일 문구:** `_NO_SESSION_DATE`는 `quote`, 공매도 외 ranking, 시장 investors에 붙는다(`broker_read.py:51,298,341~342,371`). 조회 시각은 `looked up at`이고 "today"와 장중이라는 단정이 제거됐다. 공매도 기준일·종목 투자자의 날짜별 행은 기존대로 보존하고 그 문구를 붙이지 않는다. account/buyable은 기존 조회 시점 문구다. 선택한 설계와 맞으며, 실제 모델이 따르는지는 승인된 Telegram 확인이 남는다.
+- **목록 갱신:** 두 시장을 파싱·시장별 절반 검사한 뒤에만 `_entries`를 전체 교체한다(`instruments.py:147~166`). 두 번째 시장 실패나 빈 목록이면 첫 시장의 새 목록까지 버리고 기존 전체 목록을 유지한다. 성공 24시간·실패 1시간은 `_due` 한 필드로 처리한다. 생성/패키지 load에서는 다운로드하지 않고 `search`·`name_of`에서만 실행하므로 상태 조회·연결 관리가 다운로드를 기다리지 않는다. 공개 다운로드를 Credential용 KIS transport와 공유하지 않는다.
+- **다운로드 경계:** 실제 호출 지점과 수동 스크립트가 `MASTER_URLS`의 고정 HTTPS 두 주소만 전달한다. `_NoRedirect`가 redirect를 거부하며 기본 HTTPS 검증을 끄지 않는다. 응답은 `MAX_MASTER_BYTES+1`만 읽고, ZIP 한 entry도 같은 상한+1만 해제해 압축 전후 10MiB를 넘으면 실패한다(`instruments.py:169~193`). `extractall`·자격 증명 header·원본 로그가 없다. 가짜 opener에서 주소·timeout=5·read 상한을 확인했고, 네트워크 없이 redirect handler의 거부와 TLS 기본 검증도 확인했다. 실제 다운로드 소요 시간·공급자 동작은 검증하지 않았다.
+- **코드·패키지:** 패키지는 실제로 3,944건(KOSPI 2,119·KOSDAQ 1,825)이고 모든 code가 ASCII `[0-9A-Z]{6}`이다. `InstrumentId`와 목록 검증·검색은 선행 0을 보존한다. 가짜 trading API 테스트가 시세와 주문 인자에 영문 코드를 그대로 전달하는 것을 확인한다. HHMMSS·계좌번호·수량의 숫자 검사는 변경하지 않았다. 단, 위 이름 검색 회귀 때문에 "기존 이름 검색 그대로" 계약은 아직 충족되지 않는다.
+- **Compaction:** 기본값은 `(trigger_tokens, tail_chars, summary_chars) = (128_000, 20_000, 10_000)`이고 테스트가 128,000/127,999 경계와 모델 예산보다 큰 trigger를 확인한다. Summary 출력 상한은 기존 규칙으로 20,000토큰이며 최신 Turn 별도 보존·실패 시 기존 기록 유지·답변 후 압축 경로는 바뀌지 않았다. PIA의 status 테스트·문서 기대값 갱신은 위 계획에 후속 연동 작업으로 명시돼 있다.
+
+### Non-blocker / 덜어낼 부분
+
+- **[P3] README 4절의 그림과 마지막 문장에 옛 숫자가 남았다.** Harness `README.md:146`의 최근 Turns "4만 자"는 2만 자, 151·153행의 Summary "2만 자"는 1만 자, 167행의 "최근 Turns는 4만 자"는 2만 자로 맞춘다. 161행의 새 기본값 본문과 코드·테스트는 맞다. 제품 코드 변경 없이 문서만 정리하면 된다.
+- `RefreshingInstrumentCatalog`의 상속, 작은 fetch/clock 주입, 다음 시도 시각 하나, 한 곳의 실패 유지·오류 종류 로그로 현재 요구를 처리한다. 실패를 종류별로 더 나누거나 추가 재시도·전역 캐시·S3·백그라운드 task·lock을 더할 근거는 이번 검토에서 발견하지 못했다. 코드/이름 충돌도 기존 검색 흐름으로 해결할 수 있다.
+- TLS·redirect의 실제 네트워크 검증이나 실모델 휴장일 답변은 오프라인 단위 테스트의 통과와 별개다. 이번 검토를 그 확인·배포 승인으로 해석하지 않는다.
+
+### Codex 검증
+
+- 기존 Linux 검증 이미지에서 source read-only mount·network none·bytecode/cache 쓰기 비활성화로 Broker `test_instruments`, `test_models`, `test_trading_api` **42개 통과**, Harness `test_broker_read`, `test_compaction`, `test_broker_order` **31개 통과**.
+- 추가로 공개 패키지와 main의 이전 parser/catalog 코드를 메모리에서만 사용해 SIMPAC 검색의 FOUND→NOT_FOUND를 재현하고, 위 8개 이름의 실패·정상 숫자/영문 코드 검색을 확인했다. 가짜 opener·합성 ZIP과 redirect handler로 다운로드 인자를 확인했다. 제품·테스트 파일에 재현 코드를 추가하지 않았다.
+- 전체 Broker 209개·ruff·mypy·build와 Harness 184개·ruff는 Claude의 앞선 보고이며 이번에는 변경 영역을 확인했다. 기록에 `git diff --check`와 변경 파일 범위를 확인한다.
+- 실제 master 다운로드·KIS·모델 호출, Token·회원·계좌 데이터 조회, AWS 변경·배포·병합은 하지 않았다. 검토 기록만 이 Harness 브랜치에 commit·push한다.
