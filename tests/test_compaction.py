@@ -69,7 +69,7 @@ class TokenCompactionTest(unittest.TestCase):
     def test_policy_triggers_at_its_size_on_matching_provider_usage(self) -> None:
         policy = CompactionPolicy()
         self.assertEqual(
-            (256_000, 40_000, 20_000),
+            (128_000, 20_000, 10_000),
             (policy.trigger_tokens, policy.tail_chars, policy.summary_chars),
         )
         # The budget is the model's own window, far above the trigger.
@@ -83,8 +83,8 @@ class TokenCompactionTest(unittest.TestCase):
                 usage=usage,
             )
 
-        self.assertTrue(compacts(ContextUsage("luna", 256_000)))
-        self.assertFalse(compacts(ContextUsage("luna", 255_999)))
+        self.assertTrue(compacts(ContextUsage("luna", 128_000)))
+        self.assertFalse(compacts(ContextUsage("luna", 127_999)))
         self.assertFalse(compacts(ContextUsage("another-model", 999_999)))
 
     def test_policy_sizes_are_checked(self) -> None:
@@ -98,7 +98,7 @@ class TokenCompactionTest(unittest.TestCase):
         # A trigger the model's input budget never reaches is a setup error.
         with self.assertRaisesRegex(ValueError, "below the input budget"):
             CompactionPolicy().should_compact(
-                token_budget=ModelTokenBudget(200_000),
+                token_budget=ModelTokenBudget(100_000),
                 model_id="luna",
                 estimated_context_tokens=1,
             )

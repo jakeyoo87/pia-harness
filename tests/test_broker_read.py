@@ -194,10 +194,13 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
     async def test_quote_keeps_a_fall_negative(self) -> None:
         text = await self.lookup("quote", "삼성전자")
         self.assertEqual(
-            "Quote for 삼성전자(005930) at 2026-09-28 09:31 KST: price 68,500 KRW; "
-            "change from the previous close -1,500 KRW (-2.14%); volume 9,876,543 shares; "
-            "trading value 676,543,210,000 KRW; market cap 4,089,300 hundred million KRW "
-            "(억 원); PER 12.92; 52-week high 88,800 KRW; 52-week low 49,900 KRW.",
+            "Quote for 삼성전자(005930), looked up at 2026-09-28 09:31 KST: price "
+            "68,500 KRW; change from the previous close -1,500 KRW (-2.14%); volume "
+            "9,876,543 shares; trading value 676,543,210,000 KRW; market cap 4,089,300 "
+            "hundred million KRW (억 원); PER 12.92; 52-week high 88,800 KRW; 52-week "
+            "low 49,900 KRW. These are the latest session's figures as of the lookup; "
+            "the reply does not say which trading day. Do not call them today's figures "
+            "or name a date unless the user or another result gives it.",
             text,
         )
         quote = self.broker.requests[-1]
@@ -305,16 +308,18 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         text = await self.lookup("ranking", by="losers", market="kosdaq")
         lines = text.splitlines()
         self.assertEqual(
-            "Ranking: top losers by change rate, market kosdaq, at 2026-09-28 09:31 KST, "
+            "Ranking: top losers by change rate, market kosdaq, looked up at 2026-09-28 "
+            "09:31 KST, "
             "in the broker's order.",
             lines[0],
         )
         self.assertEqual(
             "1. 종목000001(000001): price 70,000 KRW; change -1,500 KRW (-2.10%); "
             "volume 1,000 shares",
-            lines[1],
+            lines[2],
         )
-        self.assertEqual(11, len(lines))  # the default 10 rows
+        self.assertIn("does not say which trading day", lines[1])
+        self.assertEqual(12, len(lines))  # the default 10 rows
         request = self.broker.requests[-1]
         self.assertEqual({"by": "losers", "market": "kosdaq"}, dict(request.url.params))
         text = await self.lookup("ranking", by="losers", count=20)
@@ -340,6 +345,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             "period 1w, KIS dates 2026-09-24–2026-10-01, volume over the period", text
         )
         self.assertIn("short-sold value 8,400,000,000 KRW", text)
+        self.assertNotIn("does not say which trading day", text)
         self.assertNotIn("short share of value", text)
         self.assertEqual("1w", self.broker.requests[-1].url.params["period"])
         self.broker.ranking = {
@@ -373,7 +379,9 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             ],
         }
         text = await self.lookup("ranking", by="foreign_selling")
-        self.assertIn("provisional intraday tally", text)
+        self.assertIn(
+            "provisional tally, which can differ from the final per-stock", text
+        )
         self.assertIn(
             "net buying value -10,500 million KRW (백만 원); net buying volume "
             "-150,000 shares",
@@ -396,6 +404,9 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("005930", self.broker.requests[-1].url.params["code"])
         text = await self.lookup("investors", market="kosdaq")
         self.assertIn("- kospi: pension funds value +30 million KRW", text)
+        self.assertIn("latest session as of the lookup", text)
+        self.assertIn("does not say which trading day", text)
+        self.assertNotIn("investor group today", text)
         self.assertEqual(
             {"market": "kosdaq"}, dict(self.broker.requests[-1].url.params)
         )

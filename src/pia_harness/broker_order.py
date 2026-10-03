@@ -35,7 +35,7 @@ ORDER_ARGUMENTS_SCHEMA: dict[str, Any] = {
         "name": {
             "type": ["string", "null"],
             "description": "Official listed stock name. Convert nicknames and "
-            "abbreviations (삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use the 6-digit code "
+            "abbreviations (삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use the 6-character code "
             "only if the user gave a code. Null only if no stock was named.",
         },
         "side": {"type": ["string", "null"], "enum": ["BUY", "SELL", None]},

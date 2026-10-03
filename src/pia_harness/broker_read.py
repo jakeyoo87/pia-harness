@@ -46,6 +46,13 @@ _RANKINGS = {
 _MARKETS = ("all", "kospi", "kosdaq")
 _PERIODS = ("1d", "2d", "3d", "4d", "1w", "2w", "3w", "1m", "2m", "3m")
 _DEFAULT_COUNT = 10
+# For figures whose reply carries no trading day: outside trading hours or on a
+# holiday they are the last session's, and only KIS knows which day that was.
+_NO_SESSION_DATE = (
+    "These are the latest session's figures as of the lookup; the reply does not "
+    "say which trading day. Do not call them today's figures or name a date unless "
+    "the user or another result gives it."
+)
 _GROUPS = (
     ("individual", "individuals"),
     ("foreign", "foreigners"),
@@ -65,13 +72,14 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
             "buyable: how much of one stock the user can buy now, as the broker "
             "calculates it. ranking: a market-wide stock ranking (see by). "
             "investors: net buying by individuals, foreigners and institutions, for "
-            "one stock by day (with name) or for the whole market today (without).",
+            "one stock by day (with name) or for the whole market in the latest "
+            "session (without).",
         },
         "name": {
             "type": ["string", "null"],
             "description": "For quote and buyable, and investors for one stock: the "
             "official listed stock or ETF name. Convert nicknames and abbreviations "
-            "(삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use the 6-digit code only if the "
+            "(삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use the 6-character code only if the "
             "user gave a code. Leave it out for status, account, ranking and market-wide "
             "investors.",
         },
@@ -274,7 +282,7 @@ class BrokerReadTool:
                 f"/internal/members/{user_key}/quote", {"code": found.code}
             )
             return (
-                f"Quote for {label} at {_kst(quote['observed_at'])}: "
+                f"Quote for {label}, looked up at {_kst(quote['observed_at'])}: "
                 + _join(
                     ("price", _krw(quote["price"])),
                     ("change from the previous close", _change(quote)),
@@ -286,7 +294,8 @@ class BrokerReadTool:
                     ("52-week high", _krw(quote.get("high_52w"))),
                     ("52-week low", _krw(quote.get("low_52w"))),
                 )
-                + "."
+                + ". "
+                + _NO_SESSION_DATE
             )
         reply = await self._get(
             f"/internal/members/{user_key}/account", {"code": found.code}
@@ -319,13 +328,18 @@ class BrokerReadTool:
                 + ", volume over the period"
             )
         if by.startswith(("foreign_", "institution_")):
-            basis.append("a provisional intraday tally while the market is open")
+            basis.append(
+                "KIS's provisional tally, which can differ from the final per-stock "
+                "figures that action investors gives"
+            )
         lines = [
             (
-                f"Ranking: {_RANKINGS[by]}, {'; '.join(basis)}, at "
+                f"Ranking: {_RANKINGS[by]}, {'; '.join(basis)}, looked up at "
                 f"{_kst(reply['observed_at'])}, in the broker's order."
             )
         ]
+        if by != "short_selling":  # short selling carries its KIS dates
+            lines.append(_NO_SESSION_DATE)
         rows = reply["rows"]
         if not rows:
             lines.append("The broker returned no stocks.")
@@ -352,8 +366,9 @@ class BrokerReadTool:
             )
             lines = [
                 (
-                    f"Net buying by investor group today, at {_kst(reply['observed_at'])} "
-                    "(positive = net buying, negative = net selling):"
+                    "Net buying by investor group, latest session as of the lookup at "
+                    f"{_kst(reply['observed_at'])} (positive = net buying, negative = "
+                    "net selling). " + _NO_SESSION_DATE
                 )
             ]
             lines.extend(
@@ -370,7 +385,7 @@ class BrokerReadTool:
         lines = [
             (
                 f"Net buying in {found.name}({found.code}) by investor group, by trading "
-                f"day, newest first, at {_kst(reply['observed_at'])} (positive = net "
+                f"day, newest first, looked up at {_kst(reply['observed_at'])} (positive = net "
                 "buying, negative = net selling):"
             )
         ]
