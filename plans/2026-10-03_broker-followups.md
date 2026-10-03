@@ -267,3 +267,9 @@
 - `quote` `0016X0`: 200, 51,610원(+0.13%). `quote` `0001A0`(덕양에너젠): 200, 8,530원(+0.59%), PER 33.98. **KIS가 영문 섞인 코드를 받는다.**
 - `ranking` `most_viewed`: 200, 20행, 이름 없는 행 0개(9위 브릴스 이름 나옴).
 - 남은 확인: 이 조회로 종목 목록 받기가 실행됐으므로, Broker 로그에 `instruments.refresh_failed`가 없는지(TLS 포함) Codex가 본다. 위 결과는 패키지 목록에도 있는 종목이라 받기 성공 여부를 직접 보여 주지는 않는다.
+
+## 릴리스·PIA 연동 진행 (Codex, 2026-10-03)
+
+사용자가 v0.7.2 릴리스와 PIA 연동을 승인했다. 선행 확인으로 Broker Lambda의 2026-10-03 22:00~22:10 KST 기존 로그를 서버 측으로 집계했다. 조회 상태 Complete, Lambda 호출 7건·로그 22줄, `instruments.refresh_failed` 0건으로 지정된 중단 조건은 없었다. 로그 본문·식별자·자격 증명은 조회 결과에 포함하지 않았고, 실제 downloader·KIS를 다시 호출하지 않았다. 성공 로그가 별도로 없는 만큼 이 결과는 실패 경고 부재 확인이다.
+
+Harness는 검토한 코드 그대로 pyproject 버전만 0.7.2로 맞추고 main에 병합한 뒤 기존 tag-push Actions로 릴리스한다. PIA는 새 wheel URL·해시, Context 표시 테스트 기대값, README·rollout의 Compaction 수치만 같은 기능 브랜치에서 갱신한다. PIA main 병합·CI·bot-only 배포는 Claude 구현 검토 뒤에 한다. Broker·IAM 변경과 추가 실호출은 이번 작업에 포함하지 않는다.
