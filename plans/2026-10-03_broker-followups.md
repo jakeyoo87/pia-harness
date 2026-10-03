@@ -167,3 +167,18 @@
 - 2: 시장별 절반 검사, 두 시장 모두 성공했을 때만 전체 교체, 받은 크기와 압축 해제 크기 모두 상한, 다운로드는 종목 찾기 때만, 실행 환경마다라는 범위를 적었다.
 - 3: PIA 변경 목록에 `tests/test_conversation.py`와 `/status` 예시를 넣었다.
 - 비차단: 순위 행 표현 정정, 주문 도구 설명 포함, 공식 예제 다운로드 코드를 쓰지 않음. Compaction은 "압축 간격을 넓힌다"를 지우고 목적(비용)과 근거를 적었다. 사용자에게 압축이 더 잦아질 수 있음을 알렸고, 사용자는 비용 목적으로 결정을 유지했다.
+
+## 구현 (Claude, 2026-10-03)
+
+**pia-harness** `claude/broker-followups` `9c13924`(main `1d6f65b` 기준)
+- `broker_read.py`: `quote`·`ranking`·`investors`의 시각을 "looked up at"으로. 거래일이 없는 결과(`quote`, 공매도 외 순위, 시장 투자자 동향)에 `_NO_SESSION_DATE` 한 줄("최근 세션 값이고 응답에 거래일이 없다. 오늘 값이라 하거나 날짜를 지어내지 말라")을 붙인다. 공매도(KIS 기준일)와 종목 투자자 동향(날짜별 행)에는 붙이지 않는다. 시장 투자자 동향의 "today"와 도구 설명의 "whole market today"를 고치고, 가집계 문구는 "확정치와 다를 수 있다"로 바꿨다. 조회·주문 도구 설명의 "6-digit code"를 "6-character code"로.
+- `compaction.py`: 기본값 128,000 / 20,000 / 10,000. `test_compaction`의 기대값과 "입력 예산보다 큰 기준" 검사의 예산(200,000 → 100,000)을 고쳤다.
+- README 4절·6.2.3. 테스트 184 통과, 바꾼 파일 ruff 통과.
+
+**pia-broker** `claude/broker-followups` `fe83dd0`(main `8e62cf0` 기준)
+- `instruments.py`: 코드 규칙 `[0-9A-Z]{6}`, 검색은 코드를 대문자로 비교. `RefreshingInstrumentCatalog`(패키지 목록으로 시작, `search`·`name_of` 때 받을 때가 되면 두 master를 받아 시장별 절반 검사 뒤 전체 교체, 실패 시 유지·경고·1시간 뒤 재시도, 성공 뒤 24시간). `download_master`(고정 주소, TLS 검증, redirect 거부, 5초)와 `unzip_master`(받은 크기·압축 해제 크기 10MB 상한, 메모리).
+- `models.py` `InstrumentId` 규칙 `[0-9A-Z]{6}`, `testing.py` 검사. `credential_api.py`는 `RefreshingInstrumentCatalog.load()`. 수동 스크립트는 같은 받기 함수를 쓴다.
+- 패키지 목록을 다시 만들었다: 3,545 → 3,944(코스피 2,119·코스닥 1,825). `0016X0`, 덕양에너젠(`0001A0`), 브릴스(`468670`) 포함.
+- 테스트: 영문 코드 master 행·소문자 검색·`InstrumentId`, 크기 상한(압축 해제 포함), 첫 조회 때만 받기·24시간, 한 시장 실패·과소 시 전체 유지·1시간 재시도, 시세·주문 요청에 영문 코드 그대로. ruff·mypy·pytest 209·build 통과.
+
+**다음**: Codex 구현 검토 → Broker 병합·dev 배포(승인) → 실호출 확인(Claude, 승인: `quote` `0016X0`·덕양에너젠, `most_viewed` 이름) → harness 릴리스(버전은 사용자) → PIA 연동(`tests/test_conversation.py`, README·rollout 숫자)·Bot 배포 → Telegram 확인(사용자).
