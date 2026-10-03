@@ -64,7 +64,7 @@
 ### 4. Compaction 기준 128K (harness)
 
 - `compaction.py` `CompactionPolicy.trigger_tokens` 기본값 256,000 → 128,000. 테스트와 README 4절(141·142·161·163행)의 256K 문장을 고친다.
-- 영향: 압축이 더 자주 일어난다. 압축 직후 Context(시스템 지침·도구 약 6천 자 + Memory 2천 자 + Summary 2만 자 + 최근 Turns 4만 자)는 128K의 약 20~40%다. Summary 호출이 더 자주 생기므로 `compaction_failed`(40초 제한) 관찰은 그대로 한다.
+- 영향: 압축이 더 자주 일어난다. 압축 직후 Context(시스템 지침·도구 약 6천 자 + Memory 2천 자 + Summary 2만 자 + 최근 Turns 4만 자)는 약 3만 5천~6만 5천 토큰(한국어 답변과 영어 도구 결과가 섞여 글자당 약 0.5~1토큰으로 추정), 즉 128K의 약 30~50%다. 대화가 6만~9만 토큰 더 쌓이면 다시 압축된다. 너무 잦으면 tail을 줄이는 것은 실측 뒤 정한다. Summary 호출이 더 자주 생기므로 `compaction_failed`(40초 제한) 관찰은 그대로 한다.
 - PIA는 기본 `CompactionPolicy()`를 쓰므로 코드는 그대로이고, README(46·93행)와 rollout 문서(106행)의 256K만 Codex가 고친다. `/status`는 정책 값을 읽어 128K로 보인다.
 
 ## 구현 위치
