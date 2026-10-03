@@ -260,3 +260,10 @@
 - 기존 Linux 검증 이미지, source read-only mount·network none·bytecode/cache 쓰기 비활성화: Broker `test_instruments`, `test_models`, `test_trading_api` **43개 통과**, Harness `test_broker_read`, `test_compaction`, `test_broker_order` **31개 통과**.
 - 공개 패키지를 읽어 앞선 8개 이름과 소문자 형태를 직접 재확인했다. 실제 downloader 대신 정적 `InstrumentCatalog`만 사용했다. 숫자·영문 코드·브릴스·없는 코드도 별도로 확인했다.
 - 전체 Broker 210개·Harness 184개는 Claude 보고이며 이번에는 관련 영역을 재검증했다. 기록에 `git diff --check`와 변경 파일 범위를 확인한다. 실제 공개 master 다운로드·KIS·모델·회원/Token/계좌 데이터 조회, AWS 변경·배포·병합은 하지 않았다. 재검토 기록만 같은 Harness 브랜치에 commit·push한다.
+
+## 실호출 확인 (Claude, 2026-10-03 22:04 KST, 사용자 승인, Broker `9b2cb69` 배포 뒤)
+
+- 종목 찾기(Broker 목록만, KIS 호출 없음): 덕양에너젠 → `0001A0`, `0016x0` → `0016X0`, 브릴스 → `468670`, SIMPAC → `009160` 모두 FOUND.
+- `quote` `0016X0`: 200, 51,610원(+0.13%). `quote` `0001A0`(덕양에너젠): 200, 8,530원(+0.59%), PER 33.98. **KIS가 영문 섞인 코드를 받는다.**
+- `ranking` `most_viewed`: 200, 20행, 이름 없는 행 0개(9위 브릴스 이름 나옴).
+- 남은 확인: 이 조회로 종목 목록 받기가 실행됐으므로, Broker 로그에 `instruments.refresh_failed`가 없는지(TLS 포함) Codex가 본다. 위 결과는 패키지 목록에도 있는 종목이라 받기 성공 여부를 직접 보여 주지는 않는다.
