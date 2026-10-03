@@ -1,4 +1,4 @@
-# Broker 2단계 후속: 거래일 표기·종목 목록·영문 종목코드·Compaction 128K
+# Broker 2단계 후속: 거래일 표기·종목 목록·영문 종목코드·Compaction 크기
 
 날짜: 2026-10-03 (Asia/Seoul)
 브랜치: pia-harness `claude/broker-followups`(계획서와 harness 구현), pia-broker `claude/broker-followups`(Broker 구현)
@@ -13,7 +13,7 @@
    - 거래일이 결과에 있는 경우(공매도 기준일, 종목 투자자 동향의 날짜별 행)는 모델이 기준일을 바르게 말했다.
 2. **종목 목록이 오래됨.** HTS 조회 상위 9위가 "종목코드 468670"으로 나왔다. 468670(브릴스)은 목록(2026-09-26 수동 생성) 뒤에 상장한 코스닥 종목이다. 목록 갱신은 수동이다.
 3. **영문이 섞인 종목코드를 지원하지 않음(주문 1단계부터 있던 문제).** 최근 상장 종목은 `0016X0`, `0001A0`처럼 숫자·영문 6자리 코드를 쓴다. 종목 목록(`instruments.py` `_CODE`)과 `InstrumentId`(`models.py` `_SYMBOL`)가 6자리 숫자만 받아서 이 종목들을 모두 뺀다. 2026-10-03 KIS 공개 종목 파일 기준 **400개**(코스피 341개, 대부분 신규 ETF / 코스닥 59개, 예: 덕양에너젠)가 빠져 있다. 이 종목은 시세·매수 가능·주문·투자자 동향을 할 수 없다.
-4. **Compaction 기준 128K.** 지금 `CompactionPolicy.trigger_tokens` 기본값은 256,000이다(`/status`의 `Context: …/256K`).
+4. **Compaction 크기.** 지금 `CompactionPolicy` 기본값은 기준 256,000토큰(`/status`의 `Context: …/256K`), Summary 20,000자, 최근 Turns 40,000자다.
 
 함께 확인한 것(고치지 않음):
 - 배당 질문은 웹 검색으로 답했다(정상). 그 Turn에서 모델이 배당주로 아는 종목 5개의 시세를 미리 불렀다가 쓰지 않았다. 앞선 대화의 영향으로 보이고, 프롬프트로 막으면 필요한 조회까지 줄일 수 있어 두기로 했다.
@@ -24,7 +24,7 @@
 - 네 가지를 한 계획으로 묶는다.
 - 종목 목록은 **Broker가 KIS 공개 종목 파일을 하루 한 번 직접 받는다.** 받기에 실패하면 패키지 목록을 쓰고 경고 로그를 남긴다. 다른 방법(매일 자동 커밋, 예약 작업 + S3)은 배포나 인프라가 늘어 택하지 않았다.
 - 종목 파일 출처는 지금처럼 KIS 공개 파일(`new.real.download.dws.co.kr`, KIS 공식 예제 `stocks_info/kis_kospi_code_mst.py`와 같은 경로)이다. KRX Open API·공공데이터포털은 키가 필요하고, KIS 코드 체계와 어긋날 수 있어 쓰지 않는다.
-- Compaction 기준은 128,000토큰으로 낮춘다. tail(4만 자)·Summary(2만 자)는 그대로다.
+- Compaction은 기준 128,000토큰, Summary 최대 10,000자, 최근 Turns 최대 20,000자로 줄인다(2026-09-30에 정한 2만·4만 자에서 다시 줄임). 압축 직후 크기를 줄여 압축 간격을 넓히고 매 호출을 가볍게 하려는 것이다.
 
 ## 설계
 
@@ -61,11 +61,11 @@
 - harness는 바꿀 것이 없다(Broker가 준 코드를 그대로 쓴다). 도구 설명의 "6-digit code"는 "6-character code"로 고친다.
 - 배포 뒤 실호출로 확인: `quote`에 `0016X0`(SOL 중단기회사채액티브)와 덕양에너젠. KIS가 이 코드를 받는지 아직 확인하지 않았다(순위 응답에는 이 코드가 나왔다). 주문은 실호출로 확인하지 않는다.
 
-### 4. Compaction 기준 128K (harness)
+### 4. Compaction 크기 (harness)
 
-- `compaction.py` `CompactionPolicy.trigger_tokens` 기본값 256,000 → 128,000. 테스트와 README 4절(141·142·161·163행)의 256K 문장을 고친다.
-- 영향: 압축이 더 자주 일어난다. 압축 직후 Context(시스템 지침·도구 약 6천 자 + Memory 2천 자 + Summary 2만 자 + 최근 Turns 4만 자)는 약 3만 5천~6만 5천 토큰(한국어 답변과 영어 도구 결과가 섞여 글자당 약 0.5~1토큰으로 추정), 즉 128K의 약 30~50%다. 대화가 6만~9만 토큰 더 쌓이면 다시 압축된다. 너무 잦으면 tail을 줄이는 것은 실측 뒤 정한다. Summary 호출이 더 자주 생기므로 `compaction_failed`(40초 제한) 관찰은 그대로 한다.
-- PIA는 기본 `CompactionPolicy()`를 쓰므로 코드는 그대로이고, README(46·93행)와 rollout 문서(106행)의 256K만 Codex가 고친다. `/status`는 정책 값을 읽어 128K로 보인다.
+- `compaction.py` `CompactionPolicy` 기본값: `trigger_tokens` 256,000 → 128,000, `summary_chars` 20,000 → 10,000, `tail_chars` 40,000 → 20,000. Summary 출력 상한(글자 한도의 두 배)은 그 규칙대로 따라 줄어든다. 테스트와 README 4절(141·142·161·163행)의 숫자를 고친다.
+- 영향: 압축 직후 Context(시스템 지침·도구 약 6천 자 + Memory 2천 자 + Summary 1만 자 + 최근 Turns 2만 자)는 약 1만 7천~3만 4천 토큰(한국어 답변과 영어 도구 결과가 섞여 글자당 약 0.5~1토큰으로 추정), 즉 128K의 약 13~27%다. 웹 조사 Turn 하나가 도구 기록 포함 1만~2만 자쯤이라, 가장 최근 Turn 앞으로는 1~2개만 원문으로 남고 그 앞은 Summary에 의존한다. Summary 호출이 짧아져 40초 제한 초과 위험은 줄어든다.
+- PIA는 기본 `CompactionPolicy()`를 쓰므로 코드는 그대로이고, README(46·93행)와 rollout 문서(106행)의 256K·4만 자·2만 자 문장만 Codex가 고친다. `/status`는 정책 값을 읽어 128K로 보인다.
 
 ## 구현 위치
 
@@ -73,7 +73,7 @@
 
 **pia-broker**: `instruments.py`(2·3), `models.py`(3), `testing.py`(3), `credential_api.py`(목록 생성 방식), `scripts/update_instruments.py`(받기 함수 공유), `data/instruments.json`(1회 갱신), 테스트, README(종목 목록 절, 외부 주소).
 
-**PIA(Codex)**: harness 버전 고정, README·rollout의 256K 문장.
+**PIA(Codex)**: harness 버전 고정, README·rollout의 Compaction 숫자.
 
 ## 개인정보·보안
 
