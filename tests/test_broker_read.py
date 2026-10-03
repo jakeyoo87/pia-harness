@@ -198,9 +198,11 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             "68,500 KRW; change from the previous close -1,500 KRW (-2.14%); volume "
             "9,876,543 shares; trading value 676,543,210,000 KRW; market cap 4,089,300 "
             "hundred million KRW (억 원); PER 12.92; 52-week high 88,800 KRW; 52-week "
-            "low 49,900 KRW. These are the latest session's figures as of the lookup; "
-            "the reply does not say which trading day. Do not call them today's figures "
-            "or name a date unless the user or another result gives it.",
+            "low 49,900 KRW. These are the latest session's figures as of the lookup "
+            "time; the reply does not say which trading day. Say they are as of the "
+            "lookup time. Do not call them today's figures or name a trading day, even "
+            "if the question says today; take a date only from another result that "
+            "carries one.",
             text,
         )
         quote = self.broker.requests[-1]

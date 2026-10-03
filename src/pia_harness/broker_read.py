@@ -49,9 +49,10 @@ _DEFAULT_COUNT = 10
 # For figures whose reply carries no trading day: outside trading hours or on a
 # holiday they are the last session's, and only KIS knows which day that was.
 _NO_SESSION_DATE = (
-    "These are the latest session's figures as of the lookup; the reply does not "
-    "say which trading day. Do not call them today's figures or name a date unless "
-    "the user or another result gives it."
+    "These are the latest session's figures as of the lookup time; the reply does "
+    "not say which trading day. Say they are as of the lookup time. Do not call "
+    "them today's figures or name a trading day, even if the question says today; "
+    "take a date only from another result that carries one."
 )
 _GROUPS = (
     ("individual", "individuals"),

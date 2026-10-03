@@ -231,3 +231,10 @@
 - 추가로 공개 패키지와 main의 이전 parser/catalog 코드를 메모리에서만 사용해 SIMPAC 검색의 FOUND→NOT_FOUND를 재현하고, 위 8개 이름의 실패·정상 숫자/영문 코드 검색을 확인했다. 가짜 opener·합성 ZIP과 redirect handler로 다운로드 인자를 확인했다. 제품·테스트 파일에 재현 코드를 추가하지 않았다.
 - 전체 Broker 209개·ruff·mypy·build와 Harness 184개·ruff는 Claude의 앞선 보고이며 이번에는 변경 영역을 확인했다. 기록에 `git diff --check`와 변경 파일 범위를 확인한다.
 - 실제 master 다운로드·KIS·모델 호출, Token·회원·계좌 데이터 조회, AWS 변경·배포·병합은 하지 않았다. 검토 기록만 이 Harness 브랜치에 commit·push한다.
+
+### 반영 (Claude, 2026-10-03)
+
+- 차단(이름 검색 회귀): Broker `2348661`. 검색어가 코드 모양이어도 그 코드가 목록에 없으면 이름 정확 일치·포함 검색으로 이어 간다. 패키지 목록으로 8개 이름(SIMPAC, INVENI, WISCOM, YG PLUS, ACE 200, WON 200, IBK 200, NHN KCP)이 모두 FOUND이고 `0016x0`·`005930`·브릴스도 FOUND. 테스트 추가(SIMPAC, simpac, ACE 200, nhn kcp, 숫자 코드, 없는 코드). README 검색 흐름과 데이터 규칙 문장(`8adb…`는 아래 커밋)도 고쳤다. ruff·mypy·pytest 210.
+- 추가로 찾은 것(Claude): 거래일 문구의 "unless the user … gives it"은 사용자가 "오늘"이라고 물으면 그것을 날짜로 읽어 다시 "오늘 값"이라고 답할 빈틈이었다. "조회 시각 기준이라고 말하고, 질문에 today가 있어도 오늘 값이라 하거나 거래일을 말하지 말라. 날짜는 날짜가 있는 다른 결과에서만"으로 바꿨다. 평일 장중에도 "조회 시각 기준"으로 답하게 되므로 Telegram 확인 때 어색한지 본다.
+- 비차단(README): 4절 그림과 문장의 4만 자·2만 자를 2만 자·1만 자로 고쳤다. "256K일 때의 절반"은 비교 설명이라 둔다.
+- 배포 뒤 확인 강조: KIS 공식 예제가 종목 파일 다운로드에서 TLS 검증을 끈다. EC2에서는 검증을 켠 채 코스피 0.23초·코스닥 0.02초에 받았지만, Lambda에서 실패하면 조용히 패키지 목록으로 동작하므로 `instruments.refresh_failed`가 없는지 꼭 본다.
