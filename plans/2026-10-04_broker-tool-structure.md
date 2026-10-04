@@ -158,7 +158,7 @@ broker
 - `count`: "ranking: how many stocks. Default 10; set it when the user asks for a number."
 - `BROKER_DESCRIPTION`: "Look up through the user's connected brokerage account: their account (cash, holdings, what one stock they can buy or sell), a stock's live price, price or investor history for a stock or the KOSPI/KOSDAQ market, and market rankings. Read-only; orders go through the order tool. Figures are live at the time shown, so call again for a later question instead of reusing an earlier result. Never work out a buyable quantity from cash and price; use account with name."
 
-## 3. 단위 (권고: 합의한 "금액은 억 원"을 조금 좁힘)
+## 3. 단위 (사용자 확인: 계좌 금액은 원, 시장 금액은 억 원)
 
 | 값 | 결과 단위 | 이유 |
 |---|---|---|
@@ -169,7 +169,7 @@ broker
 | 지수 | `points`, KIS 소수 그대로 | |
 | 비율 | `%` | |
 
-- 사용자와 합의한 문장은 "금액은 모두 억 원(가격은 원)"이었다. 계좌 금액까지 억 원이면 소액이 0.0x억 원이 되어 원으로 둔다. 시장 금액은 한 단위(억 원)라 합의 목적(모델이 단위를 바꿔 적지 않게)은 그대로다. **사용자 확인 필요 항목**으로 올린다.
+- 처음 합의한 문장은 "금액은 모두 억 원(가격은 원)"이었다. 계좌 금액까지 억 원이면 소액이 0.0x억 원이 되어 원으로 둔다. 시장 금액은 한 단위(억 원)라 합의 목적(모델이 단위를 바꿔 적지 않게)은 그대로다. **사용자 확인(2026-10-04): 계좌 금액은 원, 시장 금액은 억 원.**
 - 변환은 harness 한 곳의 표(필드 → KIS 단위)로 한다. Broker는 지금처럼 KIS 값을 그대로 준다(배포된 v0.7.2 호환, §0). Decimal로 바꾸고 둘째 자리 반올림(ROUND_HALF_UP), 끝 0은 지운다.
 - KIS 단위(실호출로 확인된 것): 시가총액 `hts_avls`·`stck_avls` 억 원, 거래대금·공매도 금액 원, 순위 순매수 금액 백만 원, 시장 투자자(오늘) 수량 천 주(2026-10-01·02 확인). 새 API(기간 시세 거래대금, 일별 투자자 두 개)의 단위는 §6에서 확인하고 표를 채운다. **확인 전에는 harness를 릴리스하지 않는다.**
 - 결과 첫 줄에 그 결과의 단위를 적는다(예: "amounts in 억 원 (KRW 100 million), volumes in shares").
@@ -337,7 +337,7 @@ broker
 
 1. §1 경로: `/history` 새 경로 + `/investors` 나중 제거 vs 다른 방식. 배포된 v0.7.2 호환을 지키는지.
 2. §4.2 이어 부르기 규칙 하나로 바꾼 것(옛 "짧은 묶음" 규칙 대체)의 타당성, 상한 3번이 네 API에 맞는지.
-3. §3 단위: 계좌 금액은 원, 시장 금액은 억 원으로 좁힌 것. 변환을 harness 한 곳에 둔 것.
+3. §3 단위 변환을 harness 한 곳(필드별 KIS 단위 표)에 둔 것. 단위 자체(계좌 원, 시장 억 원)는 사용자가 정했다.
 4. §2.1 기본값 규칙(목록의 첫 값)과 history 기본 `1m`.
 5. §6 실호출 목록·예산(30번)이 확인할 것을 빠짐없이 덮는지, 줄일 것이 있는지.
 6. §7 시나리오 세트가 헷갈리기 쉬운 경우(account+name vs order, quote vs history, history vs ranking, 시장 vs 종목)를 덮는지.
