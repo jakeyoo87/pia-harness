@@ -401,7 +401,7 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
             and all(_filled(name, arguments).get(k) == v for k, v in wanted)
             for name, arguments in record.first_calls
         )
-    if expect not in _EXECUTION_TOOLS:  # a read question must not start an order
+    if expect == "broker":  # a broker lookup must not start an order
         used = {name for step in record.steps for name in step.split("+")}
         ok = ok and not _EXECUTION_TOOLS & used
     if "expect_memory" in scenario:
