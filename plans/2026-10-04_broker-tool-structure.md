@@ -411,11 +411,9 @@ broker
 
 ### 1. 옛 경로 제거 조건과 구버전 호환 (P2)
 
-- **제거 조건:** `ops/deploy_dev_bot.py`는 건강 검사 실패 시 직전 release(`previous_image`)로 되돌린다. 그래서 `/investors` route·코드와 `BrokerInvestorsApiArn`은 **현재 release와 그 직전 release가 모두 0.8.0 이상 harness를 쓸 때**만 제거한다. 실제로는 0.8.0 연동 배포 뒤 PIA 배포가 한 번 더 있어야 한다. 그 전까지는 옛 route·응답·IAM을 그대로 둔다. 조건을 맞추려고 release record나 이미지를 정리하지 않는다. 롤백을 포기하고 먼저 지우려면 사용자에게 따로 묻는다. 제거는 따로 승인받는 AWS 변경이다.
-- **Broker 선배포 호환 검사:**
-  - Broker 테스트가 옛 응답 필드(이름·타입)를 고정한다: `/account`, `/account?code=`의 `buyable`, `/investors` 종목·시장, `/quote`, `/ranking`, `/broker-status`.
-  - 구현 중 한 번: harness v0.7.2의 `BrokerReadTool`(태그 `v0.7.2` 설치)에 새 Broker JSON 생성 함수로 만든 응답을 가짜 transport로 넣어 `status`·`account`·`buyable`·`investors`(종목·시장)·`quote`·`ranking`이 모두 정상 글을 내는지 본다. 저장소를 잇는 영구 테스트는 만들지 않고, 결과를 구현 기록에 남긴다.
-  - `/account?code=`가 잔고까지 부르므로 **잔고 실패(중간 page 오류 포함) 시 매수 가능 조회 전체가 실패**한다(부분 결과 없음, 오류 계약 409·503·502 그대로). v0.7.2의 `buyable`도 이 경우 실패 문구가 된다. 이 경로를 가짜 응답으로 검사하고, 지연 변화는 실호출에서 잰다.
+- **제거 시점 (사용자, 2026-10-04: 롤백 대비 규칙은 과하다):** `/investors`와 `BrokerInvestorsApiArn` 제거는 이 작업에서 하지 않고 다음 "harness·Broker 정리" 작업에 넣는다. 그때쯤이면 PIA 배포가 여러 번 지나 롤백 대상도 새 harness다. 따로 조건·확인 절차를 두지 않는다.
+- **Broker 선배포 호환:** Broker는 필드 추가와 새 경로만 하므로, Broker 테스트가 옛 응답 필드(이름·타입)를 고정하는 것으로 충분하다(`/account`, `/account?code=`의 `buyable`, `/investors`, `/quote`, `/ranking`, `/broker-status`). v0.7.2 도구를 따로 돌려 보는 일회성 확인은 하지 않는다.
+- `/account?code=`가 잔고까지 부르므로 잔고 실패 시 매수 가능 조회 전체가 실패한다(부분 결과 없음, 오류 계약 그대로). 이 경로는 가짜 응답으로 검사한다.
 
 ### 2. 이어 부르기 (§4.2)
 
