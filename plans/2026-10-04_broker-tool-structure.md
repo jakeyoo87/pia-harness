@@ -439,3 +439,54 @@ broker
 - **harness:** 인자 해석은 `_resolve` 하나(생략만 기본값, 쓰지 않는 인자 무시, history는 name이 있으면 market 무시). 단위는 출처별 배율(`_WON`·`_MILLION`·`_EOK`)과 `_eok` 하나, 시장 금액만 둘째 자리. 일별 투자자 단위(`_INVESTOR_DAY_UNITS`: 종목 주·백만 원, 시장 천 주·백만 원)는 **가정**이며 §6 실호출로 확인한다. 테스트 185개 통과. ruff·mypy 오류 수는 base와 같다(로컬 도구 버전 차이로 base에도 있는 것).
 - **시나리오:** `_check`가 broker 인자를 도구와 같은 `_resolve`로 기본값을 채운 뒤 비교하므로, 모델이 기본값을 생략해도 맞으면 PASS다. 조회 질문의 첫 응답에 order·confirm이 끼면 CHECK. 16개 `expect_args`가 모두 유효하고 가짜 Broker가 모든 액션에 정상 결과를 내는 것을 일회성으로 확인했다(유료 실행은 하지 않음).
 - **남은 단계(승인 필요):** Broker 병합·배포와 PIA bootstrap IAM(`/history` 추가, `/investors` 제거) → 실호출(§6, KIS GET 26번) → 단위 가정 확인·수정 → `broker` 시나리오 실행(유료) → harness 0.8.0 릴리스(버전 확인) → PIA 핀·`BROKER_READ_PROMPT`.
+
+## Codex 구현 검토 (2026-10-05, Asia/Seoul)
+
+### 대상·판정
+
+- Broker: `e7b8780`·`c5535db`·`d01db6a`(검토 HEAD `d01db6a12d807c6375a26bfcd1583f340c97a8d3`).
+- harness: 구현 `1f43bcf`, 계획 최신 `c831dc12ed6bd5e5a788accfc61ce7ad8b34475f`.
+- PIA: `240060ecf`·`762c9a00a`(검토 HEAD `762c9a00a340ce2f567ccf9c160c0adff9e80c2a`).
+- 사용자 결정(호환성 고려 안 함, 네 구성 요소 함께 전환, 계좌·가격 원 / 시장 금액 억 원 / 수량 주, investors history 1m)을 그대로 적용했다. 이전 검토의 호환성·Decimal·추가 실호출 조합·새 테스트 체계 권고를 다시 요구하지 않는다.
+- **최종 판정: 수정할 P2 세 건.** Broker와 PIA IAM 변경 자체에는 blocker가 없지만, 아래 harness 인자 처리 두 건과 시나리오 판정 한 건을 고친 뒤 전체 최종 검토를 마친다. 실제 응답 단위와 투자자 API 이어 받기는 아직 확인하지 않았으며, 계획대로 실호출 확인 전 harness를 릴리스하지 않는다.
+
+### 수정할 것
+
+1. **[P2] action도 다른 활성 enum과 같은 문자열 검사 규칙을 적용한다.**
+   - 파일·행: `src/pia_harness/broker_read.py:530–532`, 오류 전달 경로 `:225–228`; 수동 시나리오 `tests/manual/smoke_flow.py:382–385`도 같은 해석기를 쓴다.
+   - 재현: `{"action":["account"]}`는 요청을 보내지 않았지만 `TypeError: unhashable type: 'list'`를 냈다. `_ACTIONS`가 dict라 문자열 검사 전 membership 검사에서 터진다. Orchestrator는 JSON 객체와 required 인자의 존재만 확인하므로 이 비어 있지 않은 배열이 도구까지 들어온다. `_ArgumentProblem`으로 바뀌지 않아 결과 문장으로 수정 기회를 주지 못하고 Turn을 실패시킨다. 시나리오 `_filled`도 이 입력에서 예외가 난다.
+   - 최소 수정: 활성 enum은 **문자열 여부와 허용 값**을 함께 검사한다. action만 새 예외 경로나 포괄적 예외 catch를 만들 필요가 없다. 기존 인자 검사 테스트의 입력 한 항목으로 확인하면 된다.
+
+2. **[P2] 잘못 준 name을 '생략'으로 바꾸면 조회 대상이 달라진다.**
+   - 파일·행: `src/pia_harness/broker_read.py:533–535`, 대상 선택 `:253–256`·`:549–556`.
+   - 재현: `{"action":"account","name":""}`는 `/account`로 계좌 전체를 조회했다. `{"action":"history","name":" ","market":"kospi"}`와 `name:["삼성전자"]`는 `/history?data=prices&period=1m&market=kospi`로 시장을 조회했다. 가짜 Broker로 실제 도구 요청 경로까지 확인했다. '생략만 기본값'과 'name이 있으면 market은 무시'라는 계약 대신, 잘못된 종목 인자가 다른 대상의 조회로 바뀐다.
+   - 최소 수정: **name을 쓰는 액션에서는 None만 생략, 준 값은 비어 있지 않은 문자열**이라는 규칙으로 검사한 뒤 대상 하나를 고른다. 틀린 name이면 결과 문장을 돌려주고 요청하지 않는다. ranking은 name을 쓰지 않으므로 그 값도 계속 무시한다. 새 복구·대체 조회를 넣지 않는다.
+
+3. **[P2] 조회 뒤 단계에 주문 도구가 끼어도 시나리오가 PASS다.**
+   - 파일·행: `tests/manual/smoke_flow.py:388–405`, 설명 `tests/manual/README.md`의 첫 응답 한정 문장.
+   - 재현: 기대 `broker`, 인자 `{"action":"account"}`일 때 `Record.steps=["broker+order","answer"]`는 CHECK지만, `["broker","order","answer"]`와 `["broker","confirm","answer"]`는 PASS였다. 조회 결과를 받은 다음 모델이 주문 준비를 고른 경우를 놓친다. 뒤 단계 confirm은 Harness가 실행을 막더라도 모델의 잘못된 도구 선택은 같다. 이 지적은 실제 주문이 전송됐다는 뜻이 아니다.
+   - 최소 수정: 기대 도구·인자는 지금처럼 첫 단계에서 비교하되, **조회 질문의 order·confirm 비혼입은 해당 Record의 모든 steps**로 판정한다. 이미 기록된 steps를 쓰면 되고, 새 주문 상태·시나리오 틀은 필요 없다. `expect` 없는 b10-1·b15의 관찰 방식과 execution 세트는 유지한다.
+
+### 확인된 부분
+
+- **이어 받기:** Broker `src/pia_broker/connectors/kis.py:452–501`의 `_dated_rows`가 네 API의 공통 규칙을 구현한다. 전부 빈 문자열인 padding만 버리고, 필수 날짜·필드는 파서로 검사하며, oldest를 묶음 사이에도 유지해 날짜가 엄격히 감소하도록 한다. 빈 묶음 / 시작일 이하에서 종료, 가장 오래된 날짜 전날로 재요청, 최초 포함 총 3회, 완료 뒤 시작일 이전 행 제거가 계획과 같다. 상한·깨진 행·중간 호출 오류에는 부분 응답을 만들지 않는다. '짧은 묶음' 규칙이나 끝 날짜 범위 검사 등 사용자가 받지 않은 조건을 추가할 필요는 없다. `_send`의 기존 인증 재조회가 있으면 실제 KIS GET 횟수는 논리적 세 묶음보다 많을 수 있으므로 §6 예산은 실제 발행 횟수 기준을 유지한다.
+- **API·필드:** 기간 시세 종목/지수의 TR·시장 코드·output2·OHLC 필드, 종목 투자자 output2와 시장 투자자 output, 세 집단 순매수 필드가 공개 공식 예제와 맞는다. 시장 투자자 날짜 둘은 같은 until이다. 공식 예제로 투자자 API의 날짜를 옮긴 이어 받기 성공이나 단위를 확정할 수는 없으므로 계획대로 실호출에서 판정한다. 근거: [종목 기간 시세](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_daily_itemchartprice/inquire_daily_itemchartprice.py), [지수 필드](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_daily_indexchartprice/chk_inquire_daily_indexchartprice.py), [종목 투자자](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/investor_trade_by_stock_daily/investor_trade_by_stock_daily.py), [시장 투자자](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_investor_daily_by_market/inquire_investor_daily_by_market.py), [시장 투자자 필드](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_investor_daily_by_market/chk_inquire_investor_daily_by_market.py).
+- **계좌:** cash_d2는 마지막 잔고 합계의 `prvs_rcdl_excc_amt`를 선택한다. stock_account는 현재가·매수 가능·모든 잔고 page를 읽어 code가 같은 position을 반환하고, 없으면 null이다. 잔고 실패 시 전체 실패이며 별도 매도 가능 조회나 합계 계산을 더하지 않는다. 날짜 계산은 KST 오늘 한 번을 기준으로 개월을 빼고 말일을 보정한다.
+- **인자:** data/by/period/count는 None일 때만 기본값을 쓰고 빈 값·0 등은 거절한다. 해당 data에 없는 by/period는 검사·전달하지 않는다. 유효한 history name이 있으면 market(잘못된 문자열이나 객체 포함)을 검사·전달하지 않는다. history 시장에는 기본값이 없고 all은 거절한다. most_viewed는 계획 표대로 ranking market을 받되 Broker에는 all을 보내며 결과에도 전체 시장임을 밝힌다.
+- **단위:** `_eok`의 출처별 divisor는 원 100,000,000 / 백만 원 100 / 억 원 1이다. quote·ranking의 확인된 필드에 알맞게 적용하고 계좌·가격·수량에는 억 변환을 적용하지 않는다. 음수·0·None을 유지하며 시장 금액만 둘째 자리로 반올림한다. 일별 투자자의 stock=(주, 백만 원), market=(천 주, 백만 원) 및 기간 시세 거래대금의 원 가정은 실호출 전 확정으로 취급하지 않는다. 지수 거래량이 있으면 그 raw 수량 단위도 같은 확인에서 대조한다. 반올림 구현을 Decimal로 다시 바꾸라는 요구는 없다.
+- **시나리오 기본값:** `_filled`가 도구의 `_resolve`를 재사용하므로 생략한 data/by/period/count도 실제 실행값으로 비교한다. short_volume→short_selling 경로 변환과 가짜 Broker 응답을 쓰며, 실제 KIS나 주문은 하지 않는다. 기대 인자의 일부만 비교하는 기존 방식은 유지한다.
+- **인증·IAM:** Broker GetInvestors→GetHistory route 교체는 GET·AWS_IAM과 기존 Bot role 검사를 유지한다. PIA bootstrap은 해당 정확한 GET ARN parameter·Resource 하나만 교체하고 기존 status/instruments/quote/account/ranking/orders grant는 그대로다. wildcard나 role 범위를 넓히지 않았다. 옛 investors 코드·route·grant 제거는 최신 사용자 결정에 맞으며 호환성 문제로 다시 지적하지 않는다.
+
+### Simple-first·덜어낼 것
+
+- `_ACTIONS` + `_resolve`, 네 API 공통 `_dated_rows`, 출처별 변환 함수는 현재 요구에 필요한 작은 구조다. 새 공통 계층·응답 추상화·API별 예외·재시도·자동 대체 조회는 제안하지 않는다. 필수 가격·투자자 값 검사와 날짜 감소·상한 검사는 불완전한 조회를 정상 결과로 내보내지 않는 보호라 유지한다.
+- **비차단 후보 하나:** Broker `src/pia_broker/connectors/kis.py:889–905`의 `_flows(row, groups)`는 현재 호출이 `:445` 하나이고 groups도 언제나 `_INVESTOR_GROUPS`다. 이제 종목·시장 모두 같은 세 집단이므로 groups 인자를 없애고 함수 안에서 그 상수를 쓰면 된다. 새로운 추상화를 만드는 정리는 아니며 이번 검토에서는 수정하지 않았다.
+- 테스트는 현재 가짜 응답으로 조회 계약을 확인하는 범위가 적절하다. 위 입력·판정 재현을 기존 검사에 반영하면 충분하고 별도 수동 스크립트 테스트 체계나 유료 실행을 추가하지 않는다.
+
+### 이번 검증·작업 범위
+
+- Broker pytest **227개 통과**, Ruff 통과, mypy **41 source files 오류 없음**. 공개 GitHub 예제만 읽었고 KIS API를 부르지 않았다.
+- harness 전체 unittest **185개 통과**, 건너뜀 0. 기존 PIA 이미지에서 소스를 읽기 전용으로 mount하고 `--network none`으로 실행했다.
+- PIA 변경 관련 `tests.test_dev_deployment` **18개 통과**, 건너뜀 0, 외부 네트워크 없음. PIA 전체 439개·패키지/이미지 build는 구현 기록의 결과이며 이번 검토에서 반복하지 않았다.
+- 위 세 문제는 가짜 응답/Record로 재현했다. 소스·테스트 파일은 수정하지 않았고 검토 기록만 이 계획서 끝에 추가했다. 세 저장소 diff 공백 검사와 harness 추적 파일 전체의 trailing whitespace·EOF 공백 검사를 통과했다.
+- 병합·태그·릴리스·배포·AWS 조회/변경·KIS 실호출·유료 시나리오 실행은 하지 않았다. 검토 기록을 harness `claude/broker-unify`에만 커밋·push한다.
