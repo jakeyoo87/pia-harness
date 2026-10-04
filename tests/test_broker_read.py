@@ -6,7 +6,7 @@ import unittest
 import httpx
 
 from pia_harness import BrokerReadTool, ToolCall
-from pia_harness.broker_read import _EOK, _MILLION, _WON, _eok
+from pia_harness.broker_read import _EOK, _MILLION, _WON, _market_amount
 
 MEMBER = "member-1"
 SAMSUNG = {"status": "FOUND", "code": "005930", "name": "삼성전자", "market": "KOSPI"}
@@ -216,12 +216,12 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("use account with name", definition.description)
 
-    async def test_quote_gives_market_amounts_in_eok(self) -> None:
+    async def test_quote_gives_market_amounts_in_market_amount(self) -> None:
         text = await self.lookup("quote", "삼성전자")
         self.assertEqual(
             "Quote for 삼성전자(005930), looked up at 2026-09-28 09:31 KST: price "
             "68,500 KRW; change from the previous close -1,500 KRW (-2.14%); volume "
-            "9,876,543 shares; trading value 6,765.43억 원; market cap 4,089,300억 원; "
+            "9,876,543 shares; trading value 6,765.43억 원; market cap 408.93조 원; "
             "PER 12.92; 52-week high 88,800 KRW; 52-week low 49,900 KRW. These are the "
             "latest session's figures as of the lookup time; the reply does not say "
             "which trading day. Say they are as of the lookup time. Do not call them "
@@ -346,7 +346,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             "Prices of 삼성전자(005930) over the last 6 months, weekly bars dated as KIS "
             "dates them; the first and last may cover part of a week, oldest first, 2 "
             "rows, looked up at 2026-09-28 09:31 KST. Split-adjusted prices in KRW; "
-            "volume in shares; trading value in 억 원. The newest row may cover a "
+            "volume in shares; trading value in 억 원 (조 원 from 1조). The newest row may cover a "
             "session, week or month still in progress. If the user asked for daily rows "
             "and these are not daily, say so.",
             lines[0],
@@ -399,7 +399,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         lines = text.splitlines()
         self.assertEqual(
             "Ranking: top losers by change rate, market kosdaq, looked up at 2026-09-28 "
-            "09:31 KST, in the broker's order. Amounts in 억 원.",
+            "09:31 KST, in the broker's order. Amounts in 억 원 (조 원 from 1조).",
             lines[0],
         )
         self.assertIn("does not say which trading day", lines[1])
@@ -448,7 +448,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"by": "foreign_buying", "market": "all"}, self.params())
         self.assertIn("provisional tally; history investors gives daily figures", text)
         self.assertIn(
-            "market cap 16,135,729억 원; trading value 6,765.43억 원; net buying value "
+            "market cap 1,613.57조 원; trading value 6,765.43억 원; net buying value "
             "-105억 원; net buying volume -150,000 shares",
             text,
         )
@@ -540,18 +540,23 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
 
 
 class UnitTest(unittest.TestCase):
-    def test_market_amounts_reach_eok_from_any_kis_unit(self) -> None:
+    def test_market_amounts_reach_market_amount_from_any_kis_unit(self) -> None:
         for value, divisor in (
             (123_456_789_012, _WON),
             (123_456.789, _MILLION),
             (1234.57, _EOK),
         ):
             with self.subTest(divisor=divisor):
-                self.assertEqual("1,234.57억 원", _eok(value, divisor))
-        self.assertEqual("-0.5억 원", _eok(-50_000_000, _WON))
-        self.assertEqual("+12억 원", _eok(1200, _MILLION, signed=True))
-        self.assertEqual("0억 원", _eok(-1, _WON))
-        self.assertIsNone(_eok(None, _WON))
+                self.assertEqual("1,234.57억 원", _market_amount(value, divisor))
+        self.assertEqual("-0.5억 원", _market_amount(-50_000_000, _WON))
+        self.assertEqual("+12억 원", _market_amount(1200, _MILLION, signed=True))
+        self.assertEqual("0억 원", _market_amount(-1, _WON))
+        # From 1조 the amount reads in 조 원.
+        self.assertEqual("1,613.57조 원", _market_amount(16135729, _EOK))
+        self.assertEqual("1조 원", _market_amount(9_999.996, _EOK))
+        self.assertEqual("-1.2조 원", _market_amount(-1_200_000, _MILLION))
+        self.assertEqual("9,999.99억 원", _market_amount(9_999.99, _EOK))
+        self.assertIsNone(_market_amount(None, _WON))
 
 
 if __name__ == "__main__":
