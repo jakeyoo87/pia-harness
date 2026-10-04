@@ -468,7 +468,14 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
                 "action must be one of account, quote, history, ranking",
             ),
             ({"action": "quote"}, "quote needs the stock name"),
-            ({"action": "quote", "name": " "}, "quote needs the stock name"),
+            ({"action": ["account"]}, "action must be one of"),
+            ({"action": "quote", "name": " "}, "name must be the stock name"),
+            ({"action": "account", "name": ""}, "name must be the stock name"),
+            ({"action": "history", "name": " ", "market": "kospi"}, "name must be"),
+            (
+                {"action": "history", "name": ["삼성전자"]},
+                "name must be the stock name",
+            ),
             (
                 {"action": "quote", "name": "삼성전자", "data": "investors"},
                 "data for quote must be one of prices",

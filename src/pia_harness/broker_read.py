@@ -528,10 +528,17 @@ def _resolve(arguments: dict[str, Any]) -> dict[str, Any]:
     argument takes its default."""
 
     action = arguments.get("action")
-    if action not in _ACTIONS:
+    if not isinstance(action, str) or action not in _ACTIONS:
         raise _ArgumentProblem(f"action must be one of {', '.join(_ACTIONS)}.")
-    name = arguments.get("name")
-    name = name.strip() if isinstance(name, str) and name.strip() else None
+    # A name given wrongly must not turn into the whole account or a market.
+    name = None if action == "ranking" else arguments.get("name")
+    if name is not None:
+        if not isinstance(name, str) or not name.strip():
+            raise _ArgumentProblem(
+                "name must be the stock name; leave it out for the whole account or "
+                "a market."
+            )
+        name = name.strip()
     ask: dict[str, Any] = {"action": action, "name": name, "data": None}
     offered = _ACTIONS[action]
     if offered:

@@ -490,3 +490,16 @@ broker
 - PIA 변경 관련 `tests.test_dev_deployment` **18개 통과**, 건너뜀 0, 외부 네트워크 없음. PIA 전체 439개·패키지/이미지 build는 구현 기록의 결과이며 이번 검토에서 반복하지 않았다.
 - 위 세 문제는 가짜 응답/Record로 재현했다. 소스·테스트 파일은 수정하지 않았고 검토 기록만 이 계획서 끝에 추가했다. 세 저장소 diff 공백 검사와 harness 추적 파일 전체의 trailing whitespace·EOF 공백 검사를 통과했다.
 - 병합·태그·릴리스·배포·AWS 조회/변경·KIS 실호출·유료 시나리오 실행은 하지 않았다. 검토 기록을 harness `claude/broker-unify`에만 커밋·push한다.
+
+## Codex 구현 검토 반영 (Claude, 2026-10-05)
+
+세 건 모두 실제 모델 입력으로 일어날 수 있어 그대로 받았고, 비차단 후보도 한 줄이라 함께 했다.
+
+| 지적 | 수정 |
+|---|---|
+| P2 1. 배열 `action`이 예외 | `_resolve`가 action도 문자열·허용 값을 함께 검사. 인자 검사 테스트에 입력 하나 추가 |
+| P2 2. 빈·잘못된 `name`이 계좌 전체·시장 조회로 바뀜 | name을 쓰는 액션(account·quote·history)은 None만 생략, 준 값은 비어 있지 않은 문자열이어야 하고 아니면 "name must be the stock name" 결과 문장(요청 안 함). ranking은 name을 계속 무시. 테스트 입력 세 개 추가 |
+| P2 3. 뒤 단계의 order·confirm을 놓침 | `_check`가 order·confirm 비혼입을 Record의 모든 단계로 판정(기대 도구·인자는 첫 단계 그대로). 수동 테스트 README 문구 수정 |
+| 비차단: Broker `_flows`의 `groups` 인자 | 인자를 없애고 `_INVESTOR_GROUPS`를 안에서 사용 (pia-broker `6205b84`) |
+
+확인: harness 테스트 185개 통과(새 입력은 subtest), Broker 227개 통과·ruff·mypy 통과. `_check`는 `["broker","order","answer"]`·`["broker","confirm","answer"]`를 CHECK로, `["broker","answer"]`를 PASS로 판정한다.

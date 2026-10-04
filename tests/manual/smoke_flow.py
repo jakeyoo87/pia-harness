@@ -402,7 +402,8 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
             for name, arguments in record.first_calls
         )
     if expect not in _EXECUTION_TOOLS:  # a read question must not start an order
-        ok = ok and not _EXECUTION_TOOLS & set(first)
+        used = {name for step in record.steps for name in step.split("+")}
+        ok = ok and not _EXECUTION_TOOLS & used
     if "expect_memory" in scenario:
         ok = ok and record.memory == scenario["expect_memory"]
     if "then" in scenario:
