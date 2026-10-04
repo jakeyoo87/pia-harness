@@ -503,3 +503,24 @@ broker
 | 비차단: Broker `_flows`의 `groups` 인자 | 인자를 없애고 `_INVESTOR_GROUPS`를 안에서 사용 (pia-broker `6205b84`) |
 
 확인: harness 테스트 185개 통과(새 입력은 subtest), Broker 227개 통과·ruff·mypy 통과. `_check`는 `["broker","order","answer"]`·`["broker","confirm","answer"]`를 CHECK로, `["broker","answer"]`를 PASS로 판정한다.
+
+## Codex 최종 구현 검토 (2026-10-05, Asia/Seoul)
+
+- 대상: harness `47882a76eb7060b67f6d6a32b50f7e0cf519411e`, Broker `6205b849cfbf02c8ed219cdb98cbfac465b6f7ad`, PIA 변경 없음(`762c9a00a340ce2f567ccf9c160c0adff9e80c2a`). 직전 검토 `1cb46d3` 이후의 수정 전체와 반영 기록을 대조했다.
+- **판정: 기존 P2 세 건과 비차단 후보 한 건 모두 해결. 추가 blocker 없음.** 직전 검토의 이어 받기·계좌·단위 변환·인증/IAM 판정은 유지한다. 이번 수정에 새 추상화·재시도·대체 조회·과도한 예외 처리가 추가되지 않았다.
+
+### 반영 확인
+
+1. **action 검사** (`src/pia_harness/broker_read.py:530–532`): 문자열 검사 뒤 허용 값을 확인하므로 배열·객체도 `_ArgumentProblem` 결과 문장으로 돌아온다. 실제 도구와 `_filled` 양쪽에서 예외가 밖으로 나오지 않는 것을 확인했다.
+2. **name 검사** (`src/pia_harness/broker_read.py:533–541`): account·quote·history는 None만 생략으로 취급하고, 제공한 name은 비어 있지 않은 문자열이어야 한다. 빈 문자열·공백·배열은 조회하지 않는다. 유효한 이름은 trim한 뒤 종목을 고르며 history의 market은 계속 무시한다. ranking은 name을 처음부터 쓰지 않아 잘못된 name도 무시한다. 하나의 규칙으로 대상이 바뀌는 문제를 해결했다.
+3. **전체 단계 판정** (`tests/manual/smoke_flow.py:404–406`): Record의 모든 steps에서 도구 이름을 모아 order·confirm 비혼입을 확인한다. 첫 단계의 기대 도구·인자 비교와 `_filled` 기본값 해석은 그대로다. 정상 조회는 PASS, 첫 단계 또는 뒤 단계의 주문 도구 혼입은 CHECK였다. expect=order·confirm의 정상 판정과 expect 없는 OBSERVE도 확인했다. 수동 테스트 README가 이 범위와 일치한다.
+4. **_flows 단순화** (`src/pia_broker/connectors/kis.py:445`, `:889`): 유일한 호출에서 groups 인자를 없애고 함수 안의 `_INVESTOR_GROUPS`를 사용한다. 종목·시장 공통 세 집단, 필수 순매수 값 검사·부호·반환 형식은 그대로다. 불필요한 가변 인자만 줄였다.
+
+### 검증·남은 확인
+
+- harness 전체 unittest **185개 통과, 건너뜀 0**. 기존 PIA 이미지에 소스를 읽기 전용으로 mount하고 `--network none`으로 실행했다.
+- 가짜 Broker 추가 대조: 잘못된 입력 6개(action 배열·객체, account 빈 name, history 공백·배열 name, quote bool name) 모두 결과 문장·요청 0회. 정상 입력 4개(계좌 name 생략·null, ranking의 쓰지 않는 배열 name, history의 공백을 trim한 유효 name+쓰지 않는 market 객체)는 정상 조회했다. 마지막 history 요청은 code·기본 data/period만 포함했다.
+- 가짜 Record 대조: 정상 조회 PASS, 첫/뒤 단계 order·confirm CHECK, ranking 기본값을 생략한 expect_args PASS, execution의 order·confirm PASS, expect 없는 OBSERVE. 수동 스크립트의 helper만 호출했으며 모델·검색 시나리오를 실행하지 않았다.
+- Broker pytest **227개 통과**, Ruff 통과, mypy **41 source files 오류 없음**. PIA는 변경이 없어서 직전 관련 검사 결과를 유지하고 반복 실행하지 않았다.
+- 실제 KIS 단위·투자자 API 이어 받기·기간 시세 응답은 아직 미확인이다. 기존 계획대로 승인받은 실호출로 확인한 뒤 harness 릴리스 여부를 정한다. 이번 'blocker 없음'은 실제 응답을 검증했다는 뜻이나 병합·배포 승인으로 확대한 판정이 아니다.
+- 검토 기록만 이 파일 끝에 추가하고 harness의 같은 브랜치에 커밋·push한다. 코드 수정·병합·태그·릴리스·배포·AWS 호출/변경·KIS 실호출·유료 시나리오 실행은 하지 않았다.
