@@ -307,7 +307,7 @@ broker
 
 ## 9. PIA 연동
 
-- harness 핀 0.8.0(권고: 도구 인자 구조가 바뀌므로 중간 자리. 릴리스 때 사용자 확인).
+- harness 핀 **0.7.3**(사용자, 2026-10-05: 릴리스는 아직 0.7대에서).
 - `BROKER_READ_PROMPT`(`app/core.py:40`): "PIA can use the broker tool to look up the user's account (cash, holdings, and what one stock they can buy or sell), live quotes, price and investor history for a stock or the KOSPI/KOSDAQ market, and market rankings." `tests/test_core.py`·`test_main.py`는 상수를 import해서 비교하므로 문구만 바뀐다.
 - PIA bootstrap IAM(§1)은 PIA 저장소 변경이다. Broker 배포 뒤, 실호출 확인 전에 적용해야 Bot role로 `/history`를 부를 수 있다.
 - README: harness(도구 표·결과·단위), Broker(§6 계좌·매수 가능, §7 순위·투자자 → history), PIA(broker 도구 한 줄).
@@ -324,7 +324,7 @@ broker
 2. Broker 구현(pia-broker `claude/broker-unify`) → harness 구현(이 브랜치, 시나리오 스크립트·세트 포함) → Codex 구현 검토.
 3. Broker 병합·배포(Codex, 사용자 승인) → PIA bootstrap IAM `/history` 추가(Codex, 사용자 승인) → 실호출 확인(§6, 사용자 승인, 26번 예산) → 결과로 단위 표 확정, 필요하면 수정·재검토.
 4. `broker` 시나리오 실행(유료, 사용자 승인) → 기록 → 필요하면 도구 설명 수정.
-5. harness 릴리스 0.8.0(버전 사용자 확인) → PIA 핀·프롬프트·README(pia `claude/broker-unify`) → PIA 검토·병합·배포(승인) → Telegram 확인.
+5. harness 릴리스 0.7.3(사용자 결정) → PIA 핀·프롬프트·README(pia `claude/broker-unify`) → PIA 검토·병합·배포(승인) → Telegram 확인.
 6. `claude/broker-prices` 브랜치(두 저장소)는 이 계획으로 대체되므로 병합하지 않고 닫는다(Codex).
 
 ## 12. Codex 검토에서 특히 볼 것
@@ -438,7 +438,7 @@ broker
 - **Broker:** 이어 받기는 `KisReadConnector._dated_rows` 하나(네 API 공통). 기간 날짜 계산은 `TradingService.history`(KST 오늘, `_months_before`). 테스트 227개 통과, ruff·mypy 통과, 패키지 build 성공.
 - **harness:** 인자 해석은 `_resolve` 하나(생략만 기본값, 쓰지 않는 인자 무시, history는 name이 있으면 market 무시). 단위는 출처별 배율(`_WON`·`_MILLION`·`_EOK`)과 `_eok` 하나, 시장 금액만 둘째 자리. 일별 투자자 단위(`_INVESTOR_DAY_UNITS`: 종목 주·백만 원, 시장 천 주·백만 원)는 **가정**이며 §6 실호출로 확인한다. 테스트 185개 통과. ruff·mypy 오류 수는 base와 같다(로컬 도구 버전 차이로 base에도 있는 것).
 - **시나리오:** `_check`가 broker 인자를 도구와 같은 `_resolve`로 기본값을 채운 뒤 비교하므로, 모델이 기본값을 생략해도 맞으면 PASS다. 조회 질문의 첫 응답에 order·confirm이 끼면 CHECK. 16개 `expect_args`가 모두 유효하고 가짜 Broker가 모든 액션에 정상 결과를 내는 것을 일회성으로 확인했다(유료 실행은 하지 않음).
-- **남은 단계(승인 필요):** Broker 병합·배포와 PIA bootstrap IAM(`/history` 추가, `/investors` 제거) → 실호출(§6, KIS GET 26번) → 단위 가정 확인·수정 → `broker` 시나리오 실행(유료) → harness 0.8.0 릴리스(버전 확인) → PIA 핀·`BROKER_READ_PROMPT`.
+- **남은 단계(승인 필요):** Broker 병합·배포와 PIA bootstrap IAM(`/history` 추가, `/investors` 제거) → 실호출(§6, KIS GET 26번) → 단위 가정 확인·수정 → harness 0.7.3 릴리스 → PIA 핀·`BROKER_READ_PROMPT`.
 
 ## Codex 구현 검토 (2026-10-05, Asia/Seoul)
 
@@ -530,3 +530,5 @@ broker
 - **사용자 결정(2026-10-05):** 시장 금액은 1조 이상이면 조 원으로 보여 준다(예: 시가총액 16,135,729억 → 1,613.57조 원). 시나리오 b11에서 모델이 억 원 값에 조 원을 직접 계산해 덧붙였기 때문에, 그 변환도 도구가 한다. 규칙 하나: 억 원으로 바꾼 값이 1만(억) 이상이면 조 원, 소수 둘째 자리. 계좌 금액·가격은 원 그대로.
 - 구현: `_eok` → `_market_amount`(억 원/조 원), 결과 첫 줄의 단위 문구 "억 원 (조 원 from 1조)". 테스트 185개 통과.
 - 시나리오: 1차 16개 PASS 14·CHECK 2(직전 결과 재사용, 고치지 않음)·주문 0, 조 원 변경 뒤 b11·b12 재실행 PASS(`tests/manual/records/2026-10-05_broker.md`). 도구 설명 수정 없음.
+
+- **릴리스 버전(사용자, 2026-10-05):** 0.8.0 대신 **0.7.3**. 아직 0.7대에서 간다.
