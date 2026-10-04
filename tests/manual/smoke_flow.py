@@ -3,12 +3,12 @@
 Manual only: it calls paid APIs and model decisions vary, so it is not part of pytest
 or CI. Scenarios run in order in one conversation, so later ones can refer to earlier
 answers. Keys come from the environment and are never printed; Jina is called
-without a key. The execution set uses a fake pia-broker with fixed replies; no
-real order is ever sent.
+without a key. The execution and broker sets use a fake pia-broker with fixed
+replies; no real order or account lookup is ever sent.
 
     OPENROUTER_API_KEY=... EXA_API_KEY=... NAVER_API_HUB_CLIENT_ID=... \\
     NAVER_API_HUB_CLIENT_SECRET=... python -m tests.manual.smoke_flow \\
-        [--set read|execution] [--only 1,2]
+        [--set read|execution|broker] [--only 1,2]
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import httpx
 
 from pia_harness import (
     BrokerOrderTool,
+    BrokerReadTool,
     ConversationOrchestrator,
     ExaWebSearch,
     JinaPageExtractor,
@@ -36,13 +37,14 @@ from pia_harness import (
     OpenRouterModelAdapter,
     ReadToolDefinition,
 )
+from pia_harness.broker_read import _ArgumentProblem, _resolve
 from pia_harness.compaction import TokenCompactor
 from pia_harness.context import PromptContextAssembler
 from pia_harness.memory import MemoryReviewer
 from pia_harness.testing import InMemoryConversationStore
 
 SCENARIOS = Path(__file__).with_name("scenarios")
-SCENARIO_SETS = ("read", "execution")
+SCENARIO_SETS = ("read", "execution", "broker")
 # name: (code, market, current price). The fake order reply is UNKNOWN for 005935
 # so one scenario sees the "check the broker app" result.
 FAKE_INSTRUMENTS = {
@@ -60,7 +62,17 @@ MEMORY_INSTRUCTION = (
     "investment style, risk tolerance, holdings or interests the user states. "
     "Do not keep news content or one-off questions."
 )
+# The broker set adds what PIA adds when Broker tools are registered (pia-agent
+# app/core.py BROKER_READ_PROMPT and ORDER_PROMPT, broker unification plan §9).
+BROKER_PROMPT = (
+    " PIA can use the broker tool to look up the user's account (cash, holdings, and "
+    "what one stock they can buy or sell), live quotes, price and investor history "
+    "for a stock or the KOSPI/KOSDAQ market, and market rankings. PIA can place "
+    "Korean stock buy and sell orders, but only after the user agrees to the "
+    "confirmation question in the very next message."
+)
 _MEMORY_ACTIONS = {"update": "UPDATE", "forget": "FORGET"}
+_EXECUTION_TOOLS = frozenset({"order", "confirm"})
 
 
 @dataclass
@@ -69,6 +81,8 @@ class Record:
 
     # Each model step: the tools it called, or "answer".
     steps: list[str] = field(default_factory=list)
+    # The first step's tool calls with their arguments, for expect_args.
+    first_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     memory: str = "NONE"
     current_user: str = ""
     tokens: list[int] = field(default_factory=list)
@@ -109,6 +123,9 @@ def _instrument(model: OpenRouterModelAdapter):
             names = []
             for call in result.tool_calls:
                 names.append(call.name)
+                if not record.steps:
+                    arguments = json.loads(call.arguments_json or "{}")
+                    record.first_calls.append((call.name, arguments))
                 _log(state["started"], "CALL", f"{call.name} {call.arguments_json}")
                 if call.name == "memory":
                     action = json.loads(call.arguments_json or "{}").get("action")
@@ -188,7 +205,7 @@ def _instrument_extract(state: dict[str, Any], extractor: JinaPageExtractor) -> 
 
 
 def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
-    """pia-broker's internal routes with fixed data (README 4·5 of pia-broker)."""
+    """pia-broker's internal routes with fixed data (README 4~8 of pia-broker)."""
 
     def item(name: str) -> dict[str, str]:
         code, market, _ = FAKE_INSTRUMENTS[name]
@@ -220,6 +237,8 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
             return httpx.Response(
                 200, json={"code": code, "price": price, "observed_at": now}
             )
+        if path.endswith(("/account", "/history", "/ranking", "/broker-status")):
+            return httpx.Response(200, json=_fake_read(path, request.url.params))
         if path.endswith("/orders"):
             body = json.loads(request.content)
             orders.append(body)
@@ -244,6 +263,128 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
     )
 
 
+def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
+    """Fixed replies in the shapes of pia-broker's read routes."""
+
+    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    position = {
+        "code": "005930",
+        "name": "삼성전자",
+        "quantity": 10,
+        "sellable_quantity": 10,
+        "average_price": 270000,
+        "current_price": 285500,
+        "valuation": 2855000,
+        "profit": 155000,
+        "profit_rate": 5.74,
+    }
+    if path.endswith("/broker-status"):
+        connection = {
+            "broker": "KIS",
+            "lifecycle_status": "PENDING",
+            "verification_status": "VERIFIED",
+            "verification_reason": None,
+        }
+        return {"connection": connection}
+    if path.endswith("/account"):
+        if "code" in params:
+            buyable = {
+                "code": params["code"],
+                "amount": 2855000,
+                "quantity": 10,
+                "unit_price": 285500,
+                "observed_at": now,
+            }
+            held = position if params["code"] == "005930" else None
+            return {"buyable": buyable, "position": held}
+        return {
+            "positions": [position],
+            "cash": 3000000,
+            "cash_d2": 2500000,
+            "total_valuation": 5855000,
+            "total_profit": 155000,
+            "observed_at": now,
+        }
+    if path.endswith("/history"):
+        stock = "code" in params
+        if params["data"] == "investors":
+            flows = {
+                "individual_net_volume": -120000,
+                "individual_net_value": -34260,
+                "foreign_net_volume": 100000,
+                "foreign_net_value": 28550,
+                "institution_net_volume": 20000,
+                "institution_net_value": 5710,
+            }
+            rows = [
+                {
+                    "date": f"2026-09-{day:02d}",
+                    "close": 285500 if stock else 812.34,
+                    "change": 1500 if stock else 3.21,
+                    "flows": flows,
+                }
+                for day in range(25, 21, -1)
+            ]
+        else:
+            close = 285500 if stock else 2621.07
+            rows = [
+                {
+                    "date": f"2026-09-{day:02d}",
+                    "open": close,
+                    "high": close,
+                    "low": close,
+                    "close": close,
+                    "volume": 1000000 if stock else None,
+                    "trading_value": 285500000000,
+                }
+                for day in range(25, 21, -1)
+            ]
+        unit = {"6m": "week", "1y": "week", "3y": "month", "5y": "month"}
+        return {
+            "data": params["data"],
+            "code": params.get("code"),
+            "market": params.get("market"),
+            "period": params["period"],
+            "unit": unit.get(params["period"], "day"),
+            "observed_at": now,
+            "rows": rows,
+        }
+    figures = {
+        "market_cap": {"market_cap": 16135729, "market_cap_share": 23.84},
+        "foreign_buying": {"net_buy_value": 72542, "net_buy_volume": 254000},
+        "short_selling": {"short_volume": 1200000, "short_value": 342600000000},
+    }.get(params["by"], {})
+    row = {
+        "code": "005930",
+        "name": "삼성전자",
+        "price": 285500,
+        "change": 1500,
+        "change_rate": 0.53,
+        "volume": 1000000,
+        "figures": figures,
+    }
+    reply = {
+        "by": params["by"],
+        "market": params["market"],
+        "observed_at": now,
+        "rows": [row],
+    }
+    if params["by"] == "short_selling":
+        reply |= {"period": params["period"], "basis_dates": ["20260922", "20260926"]}
+    return reply
+
+
+def _filled(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Broker arguments as the tool runs them, defaults included; {} if it would not run."""
+
+    if name != "broker":
+        return arguments
+    try:
+        return _resolve(arguments)
+    except _ArgumentProblem:
+        return {}
+
+
 def _check(scenario: dict[str, Any], record: Record) -> str:
     expect = scenario.get("expect")
     if not expect or not record.steps:
@@ -253,6 +394,15 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
         name for name in record.steps[0].split("+") if name != "memory"
     ] or record.steps[0].split("+")
     ok = expect in first or (expect == "answer" and first == ["memory"])
+    if "expect_args" in scenario:
+        wanted = scenario["expect_args"].items()
+        ok = ok and any(
+            name == expect
+            and all(_filled(name, arguments).get(k) == v for k, v in wanted)
+            for name, arguments in record.first_calls
+        )
+    if expect not in _EXECUTION_TOOLS:  # a read question must not start an order
+        ok = ok and not _EXECUTION_TOOLS & set(first)
     if "expect_memory" in scenario:
         ok = ok and record.memory == scenario["expect_memory"]
     if "then" in scenario:
@@ -281,19 +431,44 @@ async def run(
         client_secret=environ["NAVER_API_HUB_CLIENT_SECRET"],
     )
     state, logged = _instrument(model)
+
+    def logged_result(tool: ReadToolDefinition) -> ReadToolDefinition:
+        execute = tool.execute
+
+        async def logged_execute(user_key, call, inputs):
+            result = await execute(user_key, call, inputs)
+            _log(state["started"], "RESULT " + tool.name, result.observation_text)
+            return result
+
+        return ReadToolDefinition(
+            name=tool.name,
+            description=tool.description,
+            execute=logged_execute,
+            arguments_schema=tool.arguments_schema,
+        )
+
     extractor = JinaPageExtractor(model.read_json)
     _instrument_extract(state, extractor)
     search_tools = (logged(news.tool()), logged(search.tool()))
     store = InMemoryConversationStore()
     orders: list[dict[str, Any]] = []
     execution_tools = ()
+    broker_tools = ()
     broker_client = None
-    if scenario_set == "execution":
+    if scenario_set in ("execution", "broker"):
         broker_client = _fake_broker(state, orders)
         execution_tools = (
             BrokerOrderTool(
                 base_url="https://broker.invalid", client=broker_client
             ).tool(),
+        )
+    if scenario_set == "broker":
+        broker_tools = (
+            logged_result(
+                BrokerReadTool(
+                    base_url="https://broker.invalid", client=broker_client
+                ).tool()
+            ),
         )
 
     async def deliver(user_key: str, text: str) -> None:
@@ -308,11 +483,12 @@ async def run(
         compactor=TokenCompactor(store, model.summarize),
         generate_reply=model.generate_reply,
         deliver=deliver,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT
+        + (BROKER_PROMPT if scenario_set == "broker" else ""),
         token_budget=budget,
         model_id=model_id,
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
-        read_tools=(*search_tools, extractor.tool()),
+        read_tools=(*search_tools, extractor.tool(), *broker_tools),
         execution_tools=execution_tools,
     )
     rows = []
@@ -355,7 +531,7 @@ async def run(
                 )
             if any(result.compaction_failed for result in results):
                 _log(state["started"], "COMPACTION", "failed")
-            if scenario_set == "execution":
+            if scenario_set in ("execution", "broker"):
                 _log(state["started"], "ORDERS SENT", str(len(orders)))
             rows.append(
                 (

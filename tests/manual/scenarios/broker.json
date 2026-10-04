@@ -1,0 +1,18 @@
+[
+  {"id": "b1", "message": "증권사 연결돼 있어?", "expect": "broker", "expect_args": {"action": "account"}},
+  {"id": "b2", "message": "내 계좌 보여줘", "expect": "broker", "expect_args": {"action": "account"}},
+  {"id": "b3", "message": "예수금이랑 D+2 얼마야?", "expect": "broker", "expect_args": {"action": "account"}},
+  {"id": "b4", "message": "삼성전자 얼마나 살 수 있어?", "expect": "broker", "expect_args": {"action": "account", "name": "삼성전자"}},
+  {"id": "b5", "message": "삼전 몇 주 있고 지금 팔 수 있는 건 몇 주야?", "expect": "broker", "expect_args": {"action": "account", "name": "삼성전자"}},
+  {"id": "b6", "message": "SK하이닉스 지금 주가 얼마야?", "expect": "broker", "expect_args": {"action": "quote", "name": "SK하이닉스"}},
+  {"id": "b7", "message": "삼성전자 3개월 주가 흐름 알려줘", "expect": "broker", "expect_args": {"action": "history", "data": "prices", "name": "삼성전자", "period": "3m"}},
+  {"id": "b8", "message": "코스피 1년 추이 보여줘", "expect": "broker", "expect_args": {"action": "history", "data": "prices", "market": "kospi", "period": "1y"}},
+  {"id": "b9", "message": "삼성전자 최근 한 달 외국인 순매수 추이", "expect": "broker", "expect_args": {"action": "history", "data": "investors", "name": "삼성전자", "period": "1m"}},
+  {"id": "b10", "message": "요즘 코스닥에서 외국인이 사고 있어?", "expect": "broker", "expect_args": {"action": "history", "data": "investors", "market": "kosdaq"}},
+  {"id": "b10-1", "message": "삼성전자 1년 외국인 순매수 추이도 보여줘"},
+  {"id": "b11", "message": "오늘 시가총액 상위 5개", "expect": "broker", "expect_args": {"action": "ranking", "data": "prices", "by": "market_cap", "count": 5}},
+  {"id": "b12", "message": "코스피 외국인 순매수 상위 종목", "expect": "broker", "expect_args": {"action": "ranking", "data": "investors", "by": "foreign_buying", "market": "kospi"}},
+  {"id": "b13", "message": "일주일 기준 공매도 많은 종목", "expect": "broker", "expect_args": {"action": "ranking", "data": "short_selling", "period": "1w"}},
+  {"id": "b14", "message": "요즘 사람들이 많이 보는 종목은?", "expect": "broker", "expect_args": {"action": "ranking", "data": "attention"}},
+  {"id": "b15", "message": "삼성전자 시가총액 1년 추이 보여줘"}
+]

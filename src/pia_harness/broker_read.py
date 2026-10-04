@@ -1,10 +1,11 @@
-"""Read-only broker tool: connection status, quotes, holdings, buyable amounts,
-market rankings and investor net buying.
+"""Read-only broker tool: the user's account, live quotes, history over a period
+and market rankings.
 
 It calls pia-broker's internal routes with the signed client PIA also gives the
 order tool; Harness knows no AWS. Every failure becomes a sentence for the model
 rather than an exception, so one broker problem does not end the Turn. Figures
-come from the broker as they are; nothing is computed here.
+come from the broker as they are; only their units are converted here, so every
+market amount reaches the model in 억 원 and every volume in shares.
 """
 
 from __future__ import annotations
@@ -28,24 +29,63 @@ from .orchestrator import (
 BROKER_TOOL_NAME = "broker"
 _MEMBER_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _KST = timezone(timedelta(hours=9))
-_ACTIONS = ("status", "quote", "account", "buyable", "ranking", "investors")
-_NEEDS_NAME = frozenset({"quote", "buyable"})
+_HISTORY_PERIODS = ("1m", "3m", "6m", "1y", "3y", "5y")
+_SHORT_SELLING_PERIODS = ("1d", "2d", "3d", "4d", "1w", "2w", "3w", "1m", "2m", "3m")
+_MARKETS = ("all", "kospi", "kosdaq")
+_INDEX_MARKETS = ("kospi", "kosdaq")
+# What each action offers: data -> (ranking bases, periods). The first value of
+# each list is the default, and the schema, description and checks all use this.
+_ACTIONS: dict[str, dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
+    "account": {},
+    "quote": {"prices": ((), ())},
+    "history": {
+        "prices": ((), _HISTORY_PERIODS),
+        # KIS has investor flows by day only; one month keeps the rows readable.
+        "investors": ((), ("1m",)),
+    },
+    "ranking": {
+        "prices": (("market_cap", "gainers", "losers", "volume", "trading_value"), ()),
+        "investors": (
+            (
+                "foreign_buying",
+                "foreign_selling",
+                "institution_buying",
+                "institution_selling",
+            ),
+            (),
+        ),
+        "short_selling": (("short_volume",), _SHORT_SELLING_PERIODS),
+        "attention": (("most_viewed",), ()),
+    },
+}
 _RANKINGS = {
     "market_cap": "market cap",
     "gainers": "top gainers by change rate",
     "losers": "top losers by change rate",
     "volume": "trading volume",
     "trading_value": "trading value",
-    "short_selling": "short selling",
+    "short_volume": "short selling volume",
     "most_viewed": "most viewed on the KIS trading app",
     "foreign_buying": "foreign net buying by amount",
     "foreign_selling": "foreign net selling by amount",
     "institution_buying": "institutional net buying by amount",
     "institution_selling": "institutional net selling by amount",
 }
-_MARKETS = ("all", "kospi", "kosdaq")
-_PERIODS = ("1d", "2d", "3d", "4d", "1w", "2w", "3w", "1m", "2m", "3m")
+_BROKER_RANKINGS = {"short_volume": "short_selling"}
 _DEFAULT_COUNT = 10
+_PERIOD_WORDS = {
+    "1m": "1 month",
+    "3m": "3 months",
+    "6m": "6 months",
+    "1y": "1 year",
+    "3y": "3 years",
+    "5y": "5 years",
+}
+_UNIT_WORDS = {
+    "day": "daily rows (one per trading day)",
+    "week": "weekly bars dated as KIS dates them; the first and last may cover part of a week",
+    "month": "monthly bars dated as KIS dates them; the first and last may cover part of a month",
+}
 # For figures whose reply carries no trading day: outside trading hours or on a
 # holiday they are the last session's, and only KIS knows which day that was.
 _NO_SESSION_DATE = (
@@ -58,7 +98,6 @@ _GROUPS = (
     ("individual", "individuals"),
     ("foreign", "foreigners"),
     ("institution", "institutions"),
-    ("pension", "pension funds"),
 )
 
 BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
@@ -67,47 +106,66 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
         "action": {
             "type": "string",
             "enum": list(_ACTIONS),
-            "description": "status: whether the user's brokerage account is connected. "
-            "quote: one stock's current price, change, volume and market figures. "
-            "account: the user's holdings (with sellable quantities) and cash. "
-            "buyable: how much of one stock the user can buy now, as the broker "
-            "calculates it. ranking: a market-wide stock ranking (see by). "
-            "investors: net buying by individuals, foreigners and institutions, for "
-            "one stock by day (with name) or for the whole market in the latest "
-            "session (without).",
+            "description": "account: the user's own account: connection, cash "
+            "(deposit and D+2 deposit), holdings and totals. With name, that one "
+            "stock in the account: quantity held, sellable now, average price, and "
+            "how much can be bought now as the broker calculates it. quote: one "
+            "stock's live price and market figures. history: figures over a period "
+            "for one stock (name) or for the KOSPI or KOSDAQ market itself (market). "
+            "ranking: a market-wide ranking of stocks.",
+        },
+        "data": {
+            "type": ["string", "null"],
+            "enum": [
+                *dict.fromkeys(d for data in _ACTIONS.values() for d in data),
+                None,
+            ],
+            "description": "What figures. quote: prices. history: prices (stock price "
+            "or index level) or investors (net buying by individuals, foreigners and "
+            "institutions). ranking: prices, investors, short_selling or attention. "
+            "Left out, the first one listed.",
         },
         "name": {
             "type": ["string", "null"],
-            "description": "For quote and buyable, and investors for one stock: the "
-            "official listed stock or ETF name. Convert nicknames and abbreviations "
-            "(삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use the 6-character code only if the "
-            "user gave a code. Leave it out for status, account, ranking and market-wide "
-            "investors.",
-        },
-        "by": {
-            "type": ["string", "null"],
-            "enum": [*_RANKINGS, None],
-            "description": "For ranking: "
-            + "; ".join(f"{key} = {label}" for key, label in _RANKINGS.items())
-            + ". There is no dividend, PER, PBR, watchlist or new-high ranking.",
+            "description": "The one stock the question is about: the official listed "
+            "stock or ETF name. Convert nicknames and abbreviations (삼전 -> 삼성전자, "
+            "하닉 -> SK하이닉스). Use the 6-character code only if the user gave a code. "
+            "account: narrows the account to that stock. quote: required. history: "
+            "used instead of market.",
         },
         "market": {
             "type": ["string", "null"],
             "enum": [*_MARKETS, None],
-            "description": "For ranking and market-wide investors: kospi, kosdaq, or "
-            "all (the default).",
-        },
-        "count": {
-            "type": ["integer", "null"],
-            "description": "For ranking: how many stocks; for investors of one stock: "
-            "how many recent trading days. Default 10; set it when the user asks for a "
-            "number.",
+            "description": "The market the question is about. history without name: "
+            "kospi or kosdaq (the index, or net buying in the whole market). ranking: "
+            "all (default), kospi or kosdaq (stocks in that market).",
         },
         "period": {
             "type": ["string", "null"],
-            "enum": [*_PERIODS, None],
-            "description": "For the short_selling ranking only: the period it covers "
-            "(d = days, w = weeks, m = months). Default 1d.",
+            "enum": [
+                *dict.fromkeys((*_HISTORY_PERIODS, *_SHORT_SELLING_PERIODS)),
+                None,
+            ],
+            "description": "How far back from today. history prices: 1m (default) and "
+            "3m give daily rows, 6m and 1y weekly rows, 3y and 5y monthly rows. "
+            "history investors: 1m only, daily rows (there is no longer investor "
+            "history). ranking short_selling: 1d (default) to 3m, the period the "
+            "ranking covers.",
+        },
+        "by": {
+            "type": ["string", "null"],
+            "enum": [*_RANKINGS, None],
+            "description": "What a ranking is ordered by. prices: market_cap "
+            "(default), gainers, losers, volume, trading_value. investors: "
+            "foreign_buying (default), foreign_selling, institution_buying, "
+            "institution_selling (by amount). short_selling: short_volume. attention: "
+            "most_viewed (on the KIS trading app). There is no dividend, PER, PBR, "
+            "watchlist or new-high ranking.",
+        },
+        "count": {
+            "type": ["integer", "null"],
+            "description": "ranking: how many stocks. Default 10; set it when the user "
+            "asks for a number.",
         },
     },
     # Only action: the Orchestrator skips a read call whose required argument is null.
@@ -115,13 +173,13 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 BROKER_DESCRIPTION = (
-    "Look up the user's own brokerage data through their connected account: the "
-    "connection status, a stock's live price and market figures, the user's holdings "
-    "and cash, how much of a stock they can buy, market rankings, or investor net "
-    "buying. Read-only; orders go through the "
-    "order tool. Figures are live at the time shown, so call again for a later "
-    "question instead of reusing an earlier result. Never work out a buyable "
-    "quantity from cash and price; use action buyable."
+    "Look up through the user's connected brokerage account: their account (cash, "
+    "holdings, and what one stock they can buy or sell), a stock's live price, price "
+    "or investor history for a stock or the KOSPI/KOSDAQ market, and market "
+    "rankings. Read-only; orders go through the order tool. Figures are live at the "
+    "time shown, so call again for a later question instead of reusing an earlier "
+    "result. Never work out a buyable quantity from cash and price; use account "
+    "with name."
 )
 _NOT_CONNECTED = (
     "There is no verified KIS account connection for this lookup (a connection to "
@@ -164,40 +222,13 @@ class BrokerReadTool:
         if _MEMBER_ID.fullmatch(user_key) is None:
             raise ValueError("user_key is not a Broker member id")
         # The Orchestrator already checked that arguments_json is a JSON object.
-        arguments = json.loads(call.arguments_json)
-        action = arguments.get("action")
-        name = arguments.get("name")
-        if action not in _ACTIONS:
-            return ReadToolResult(
-                f"Broker lookup not run: action must be one of {', '.join(_ACTIONS)}."
-            )
-        if action in _NEEDS_NAME and (not isinstance(name, str) or not name.strip()):
-            return ReadToolResult(
-                f"Broker lookup not run: {action} needs the stock name. Ask the user "
-                "which stock if it is not clear."
-            )
-        problem = _argument_problem(action, arguments)
-        if problem is not None:
-            return ReadToolResult(f"Broker lookup not run: {problem}")
-        count = arguments.get("count") or _DEFAULT_COUNT
-        market = arguments.get("market") or "all"
         try:
-            if action == "status":
-                return ReadToolResult(await self._status(user_key))
-            if action == "account":
-                return ReadToolResult(await self._account(user_key))
-            if action == "ranking":
-                by = arguments["by"]
-                period = arguments.get("period") or "1d"
-                return ReadToolResult(
-                    await self._ranking(user_key, by, market, period, count)
-                )
-            if action == "investors":
-                stock = name.strip() if isinstance(name, str) and name.strip() else None
-                return ReadToolResult(
-                    await self._investors(user_key, stock, market, count)
-                )
-            return ReadToolResult(await self._stock(user_key, action, name.strip()))
+            ask = _resolve(json.loads(call.arguments_json))
+        except _ArgumentProblem as problem:
+            return ReadToolResult(f"Broker lookup not run: {problem}")
+        action = ask["action"]
+        try:
+            return ReadToolResult(await self._lookup(user_key, ask))
         except _BrokerFailure as failure:
             return ReadToolResult(f"Broker {action} lookup failed: {failure}")
         except httpx.HTTPStatusError as error:
@@ -214,6 +245,24 @@ class BrokerReadTool:
             return ReadToolResult(
                 f"Broker {action} lookup failed: the broker service reply was invalid."
             )
+
+    async def _lookup(self, user_key: str, ask: dict[str, Any]) -> str:
+        action, name = ask["action"], ask["name"]
+        if action == "ranking":
+            return await self._ranking(user_key, ask)
+        if action == "account" and name is None:
+            return await self._account(user_key)
+        if name is None:  # history of a market
+            return await self._history(user_key, ask, None, None)
+        found = await find_instrument(self._client, name)
+        if found.code is None:
+            raise _BrokerFailure(str(found.problem))
+        label = f"{found.name}({found.code})"
+        if action == "account":
+            return await self._stock_account(user_key, found.code, label)
+        if action == "quote":
+            return await self._quote(user_key, found.code, label)
+        return await self._history(user_key, ask, found.code, label)
 
     async def _status(self, user_key: str) -> str:
         reply = await self._get(f"/internal/members/{user_key}/broker-status")
@@ -241,105 +290,183 @@ class BrokerReadTool:
         )
 
     async def _account(self, user_key: str) -> str:
-        reply = await self._get(f"/internal/members/{user_key}/account")
+        try:
+            reply = await self._get(f"/internal/members/{user_key}/account")
+        except _NotConnected:
+            return await self._status(user_key)
+        cash = _join(
+            ("deposit", _krw(reply.get("cash"))),
+            ("D+2 deposit", _krw(reply.get("cash_d2"))),
+        )
         totals = _join(
-            ("cash (deposit)", _krw(reply.get("cash"))),
             ("total valuation", _krw(reply.get("total_valuation"))),
             ("total profit", _krw(reply.get("total_profit"), signed=True)),
         )
         lines = [
-            f"Account at {_kst(reply['observed_at'])}, as reported by the broker.",
+            (
+                f"Account at {_kst(reply['observed_at'])}, as reported by the broker "
+                "(a verified KIS connection). Amounts in KRW."
+            ),
+            (
+                f"Cash: {cash or 'not reported'}. Cash is not what can be spent on one "
+                "stock; use account with name for that."
+            ),
             f"Totals: {totals or 'not reported'}.",
-            "Cash is not what can be spent on one stock; use action buyable for that.",
         ]
         positions = reply["positions"]
         if not positions:
             lines.append("Holdings: none.")
         else:
             lines.append(f"Holdings ({len(positions)}):")
-            for item in positions:
-                label = f"{item.get('name') or item['code']}({item['code']})"
-                lines.append(
-                    f"- {label}: "
-                    + _join(
-                        ("quantity", _shares(item.get("quantity"))),
-                        ("sellable now", _shares(item.get("sellable_quantity"))),
-                        ("average price", _krw(item.get("average_price"))),
-                        ("current price", _krw(item.get("current_price"))),
-                        ("valuation", _krw(item.get("valuation"))),
-                        ("profit", _krw(item.get("profit"), signed=True)),
-                        ("return", _percent(item.get("profit_rate"))),
-                    )
-                )
+            lines.extend(
+                f"- {item.get('name') or item['code']}({item['code']}): "
+                + _position(item)
+                for item in positions
+            )
         return "\n".join(lines)
 
-    async def _stock(self, user_key: str, action: str, name: str) -> str:
-        found = await find_instrument(self._client, name)
-        if found.code is None:
-            raise _BrokerFailure(str(found.problem))
-        label = f"{found.name}({found.code})"
-        if action == "quote":
-            quote = await self._get(
-                f"/internal/members/{user_key}/quote", {"code": found.code}
+    async def _stock_account(self, user_key: str, code: str, label: str) -> str:
+        try:
+            reply = await self._get(
+                f"/internal/members/{user_key}/account", {"code": code}
             )
-            return (
-                f"Quote for {label}, looked up at {_kst(quote['observed_at'])}: "
-                + _join(
-                    ("price", _krw(quote["price"])),
-                    ("change from the previous close", _change(quote)),
-                    ("volume", _shares(quote.get("volume"))),
-                    ("trading value", _krw(quote.get("trading_value"))),
-                    ("market cap", _hundred_million(quote.get("market_cap"))),
-                    ("PER", _plain(quote.get("per"))),
-                    ("PBR", _plain(quote.get("pbr"))),
-                    ("52-week high", _krw(quote.get("high_52w"))),
-                    ("52-week low", _krw(quote.get("low_52w"))),
-                )
-                + ". "
-                + _NO_SESSION_DATE
-            )
-        reply = await self._get(
-            f"/internal/members/{user_key}/account", {"code": found.code}
-        )
+        except _NotConnected:
+            return await self._status(user_key)
         buyable = reply["buyable"]
+        position = reply["position"]
         unit = _krw(buyable.get("unit_price"))
-        basis = f", unit price used by the broker {unit}" if unit else ""
-        return (
-            f"Buyable for {label} at {_kst(buyable['observed_at'])}, as calculated by "
-            f"the broker without margin on a market-order basis{basis}: up to "
-            f"{_shares(buyable['quantity'])}, amount {_krw(buyable['amount'])}."
+        basis = f" (unit price used by the broker {unit})" if unit else ""
+        return "\n".join(
+            (
+                (
+                    f"{label} in the user's account at {_kst(buyable['observed_at'])}, "
+                    "as reported by the broker. Amounts in KRW."
+                ),
+                f"Held: {_position(position) if position else 'none'}.",
+                (
+                    "Buyable now, as calculated by the broker without margin on a "
+                    f"market-order basis{basis}: up to {_shares(buyable['quantity'])}, "
+                    f"amount {_krw(buyable['amount'])}."
+                ),
+            )
         )
 
-    async def _ranking(
-        self, user_key: str, by: str, market: str, period: str, count: int
+    async def _quote(self, user_key: str, code: str, label: str) -> str:
+        quote = await self._get(f"/internal/members/{user_key}/quote", {"code": code})
+        return (
+            f"Quote for {label}, looked up at {_kst(quote['observed_at'])}: "
+            + _join(
+                ("price", _krw(quote["price"])),
+                ("change from the previous close", _change(quote)),
+                ("volume", _shares(quote.get("volume"))),
+                ("trading value", _eok(quote.get("trading_value"), _WON)),
+                ("market cap", _eok(quote.get("market_cap"), _EOK)),
+                ("PER", _plain(quote.get("per"))),
+                ("PBR", _plain(quote.get("pbr"))),
+                ("52-week high", _krw(quote.get("high_52w"))),
+                ("52-week low", _krw(quote.get("low_52w"))),
+            )
+            + ". "
+            + _NO_SESSION_DATE
+        )
+
+    async def _history(
+        self, user_key: str, ask: dict[str, Any], code: str | None, label: str | None
     ) -> str:
+        data, period = ask["data"], ask["period"]
+        params = {"data": data, "period": period}
+        if code is None:
+            params["market"] = ask["market"]
+        else:
+            params["code"] = code
+        reply = await self._get(f"/internal/members/{user_key}/history", params)
+        rows = list(reversed(reply["rows"]))  # the broker gives the newest first
+        subject = f"the {str(ask['market']).upper()} market" if code is None else label
+        when = (
+            f"over the last {_PERIOD_WORDS[period]}, {_UNIT_WORDS[reply['unit']]}, oldest "
+            f"first, {len(rows)} rows, looked up at {_kst(reply['observed_at'])}."
+        )
+        if data == "prices":
+            units = (
+                "Index levels in points"
+                if code is None
+                else "Split-adjusted prices in KRW"
+            )
+            lines = [
+                (
+                    f"Prices of {subject} {when} {units}; volume in shares; trading "
+                    "value in 억 원. The newest row may cover a session, week or month "
+                    "still in progress. If the user asked for daily rows and these are "
+                    "not daily, say so."
+                )
+            ]
+            for row in rows:
+                lines.append(
+                    f"- {row['date']}: "
+                    + _join(
+                        ("open", _plain(row["open"])),
+                        ("high", _plain(row["high"])),
+                        ("low", _plain(row["low"])),
+                        ("close", _plain(row["close"])),
+                        ("volume", _shares(row.get("volume"))),
+                        ("trading value", _eok(row.get("trading_value"), _WON)),
+                    )
+                )
+        else:
+            close_unit = "the index level in points" if code is None else "in KRW"
+            per_unit, divisor = _INVESTOR_DAY_UNITS[
+                "market" if code is None else "stock"
+            ]
+            lines = [
+                (
+                    f"Net buying by investor group in {subject} {when} Positive = net "
+                    "buying, negative = net selling; amounts in 억 원, volumes in "
+                    f"shares; close is {close_unit}. The newest row may be a session "
+                    "still in progress."
+                )
+            ]
+            for row in rows:
+                close = _plain(row.get("close"))
+                change = _signed(row.get("change"))
+                parts = []
+                if close is not None:
+                    parts.append(f"close {close}" + (f" ({change})" if change else ""))
+                parts.append(_flows(row["flows"], per_unit, divisor))
+                lines.append(f"- {row['date']}: " + "; ".join(parts))
+        if not rows:
+            lines.append("The broker returned no rows for this period.")
+        return "\n".join(lines)
+
+    async def _ranking(self, user_key: str, ask: dict[str, Any]) -> str:
+        by, market, count = ask["by"], ask["market"], ask["count"]
+        broker_by = _BROKER_RANKINGS.get(by, by)
         # The broker answers most_viewed for the whole market; send only what is used.
-        params = {"by": by, "market": "all" if by == "most_viewed" else market}
-        if by == "short_selling":
-            params["period"] = period
+        params = {"by": broker_by, "market": "all" if by == "most_viewed" else market}
+        if ask["data"] == "short_selling":
+            params["period"] = ask["period"]
         reply = await self._get(f"/internal/members/{user_key}/ranking", params)
         basis = [f"market {reply['market']}"]
         if by == "most_viewed":
             basis[0] = "whole market (KIS offers no market choice for this ranking)"
-        if by == "short_selling":
+        if ask["data"] == "short_selling":
             dates = "–".join(_date(value) for value in reply.get("basis_dates") or ())
             basis.append(
                 f"period {reply['period']}"
                 + (f", KIS dates {dates}" if dates else "")
                 + ", volume over the period"
             )
-        if by.startswith(("foreign_", "institution_")):
+        if ask["data"] == "investors":
             basis.append(
-                "KIS's provisional tally, which can differ from the final per-stock "
-                "figures that action investors gives"
+                "KIS's provisional tally; history investors gives daily figures whose "
+                "basis and timing can differ"
             )
         lines = [
             (
                 f"Ranking: {_RANKINGS[by]}, {'; '.join(basis)}, looked up at "
-                f"{_kst(reply['observed_at'])}, in the broker's order."
+                f"{_kst(reply['observed_at'])}, in the broker's order. Amounts in 억 원."
             )
         ]
-        if by != "short_selling":  # short selling carries its KIS dates
+        if ask["data"] != "short_selling":  # short selling carries its KIS dates
             lines.append(_NO_SESSION_DATE)
         rows = reply["rows"]
         if not rows:
@@ -358,57 +485,12 @@ class BrokerReadTool:
             lines.append(f"The broker returned {len(rows)} stocks in this reply.")
         return "\n".join(lines)
 
-    async def _investors(
-        self, user_key: str, name: str | None, market: str, count: int
-    ) -> str:
-        if name is None:
-            reply = await self._get(
-                f"/internal/members/{user_key}/investors", {"market": market}
-            )
-            lines = [
-                (
-                    "Net buying by investor group, latest session as of the lookup at "
-                    f"{_kst(reply['observed_at'])} (positive = net buying, negative = "
-                    "net selling). " + _NO_SESSION_DATE
-                )
-            ]
-            lines.extend(
-                f"- {row['label']}: {_flows(row['flows'], 'thousand shares')}"
-                for row in reply["rows"]
-            )
-            return "\n".join(lines)
-        found = await find_instrument(self._client, name)
-        if found.code is None:
-            raise _BrokerFailure(str(found.problem))
-        reply = await self._get(
-            f"/internal/members/{user_key}/investors", {"code": found.code}
-        )
-        lines = [
-            (
-                f"Net buying in {found.name}({found.code}) by investor group, by trading "
-                f"day, newest first, looked up at {_kst(reply['observed_at'])} (positive = net "
-                "buying, negative = net selling):"
-            )
-        ]
-        rows = reply["rows"]
-        for row in rows[:count]:
-            day = _join(
-                ("close", _krw(row.get("close"))),
-                ("change", _krw(row.get("change"), signed=True)),
-            )
-            lines.append(
-                f"- {_date(row['label'])}: {day}; {_flows(row['flows'], 'shares')}"
-            )
-        if count > len(rows):
-            lines.append(f"The broker returned {len(rows)} trading days.")
-        return "\n".join(lines)
-
     async def _get(
         self, path: str, params: dict[str, str] | None = None
     ) -> dict[str, Any]:
         response = await self._client.get(path, params=params)
         if response.status_code == 409:
-            raise _BrokerFailure(_NOT_CONNECTED)
+            raise _NotConnected(_NOT_CONNECTED)
         if response.status_code == 503:
             raise _BrokerFailure(
                 "the broker is temporarily unavailable. Say so and suggest trying "
@@ -432,6 +514,78 @@ class _BrokerFailure(Exception):
     """A broker answer the model should explain; the message is for the model."""
 
 
+class _NotConnected(_BrokerFailure):
+    """Broker 409: no verified KIS connection."""
+
+
+class _ArgumentProblem(Exception):
+    """Arguments the tool cannot run with; the message is for the model."""
+
+
+def _resolve(arguments: dict[str, Any]) -> dict[str, Any]:
+    """The lookup asked for, with defaults filled in. Only the arguments the action
+    and data use are checked; the others are ignored. Only a left-out (null)
+    argument takes its default."""
+
+    action = arguments.get("action")
+    if action not in _ACTIONS:
+        raise _ArgumentProblem(f"action must be one of {', '.join(_ACTIONS)}.")
+    name = arguments.get("name")
+    name = name.strip() if isinstance(name, str) and name.strip() else None
+    ask: dict[str, Any] = {"action": action, "name": name, "data": None}
+    offered = _ACTIONS[action]
+    if offered:
+        ask["data"] = data = _choice(arguments, "data", tuple(offered), action)
+        bases, periods = offered[data]
+        where = f"{action} {data}"
+        ask["by"] = _choice(arguments, "by", bases, where) if bases else None
+        ask["period"] = (
+            _choice(arguments, "period", periods, where) if periods else None
+        )
+    if action == "quote" and name is None:
+        raise _ArgumentProblem(
+            "quote needs the stock name. Ask the user which stock if it is not clear."
+        )
+    if action == "history" and name is None:
+        market = arguments.get("market")
+        if market not in _INDEX_MARKETS:
+            raise _ArgumentProblem(
+                "history needs the stock name, or market kospi or kosdaq. Ask the "
+                "user which if it is not clear."
+            )
+        ask["market"] = market
+    if action == "ranking":
+        ask["market"] = _choice(arguments, "market", _MARKETS, action)
+        count = arguments.get("count")
+        if count is None:
+            count = _DEFAULT_COUNT
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            raise _ArgumentProblem("count must be a whole number of 1 or more.")
+        ask["count"] = count
+    return ask
+
+
+def _choice(
+    arguments: dict[str, Any], key: str, values: tuple[str, ...], where: str
+) -> str:
+    value = arguments.get(key)
+    if value is None:
+        return values[0]
+    if not isinstance(value, str) or value not in values:
+        raise _ArgumentProblem(f"{key} for {where} must be one of {', '.join(values)}.")
+    return value
+
+
+# KIS units of the amounts in Broker replies, as divisors to 억 원.
+_WON = 100_000_000
+_MILLION = 100
+_EOK = 1
+# Daily investor flows: (volume per unit share, amount unit). Unconfirmed until
+# the live check (plans/2026-10-04_broker-tool-structure.md §6); the stock figures
+# follow the per-stock investor API, the market ones the market investor API.
+_INVESTOR_DAY_UNITS = {"stock": (1, _MILLION), "market": (1000, _MILLION)}
+
+
 def _number(value: object) -> int | float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -448,10 +602,21 @@ def _krw(value: object, *, signed: bool = False) -> str | None:
     number = _number(value)
     if number is None:
         return None
-    text = _format(abs(number)) if signed else _format(number)
-    if signed:
-        text = ("-" if number < 0 else "+" if number > 0 else "") + text
+    text = _signed(number) if signed else _format(number)
     return f"{text} KRW"
+
+
+def _eok(value: object, divisor: int, *, signed: bool = False) -> str | None:
+    """A market amount in 억 원, to two decimals."""
+
+    number = _number(value)
+    if number is None:
+        return None
+    amount = round(number / divisor, 2)
+    text = f"{abs(amount) if signed else amount:,.2f}".rstrip("0").rstrip(".")
+    if signed and amount:
+        text = ("-" if amount < 0 else "+") + text
+    return f"{'0' if text in ('-0', '') else text}억 원"
 
 
 def _percent(value: object) -> str | None:
@@ -461,9 +626,12 @@ def _percent(value: object) -> str | None:
     return f"{number:+.2f}%"
 
 
-def _shares(value: object) -> str | None:
+def _shares(value: object, per_unit: int = 1, *, signed: bool = False) -> str | None:
     number = _number(value)
-    return None if number is None else f"{_format(number)} shares"
+    if number is None:
+        return None
+    number = number * per_unit
+    return f"{_signed(number) if signed else _format(number)} shares"
 
 
 def _plain(value: object) -> str | None:
@@ -471,20 +639,9 @@ def _plain(value: object) -> str | None:
     return None if number is None else _format(number)
 
 
-def _million(value: object) -> str | None:
-    number = _number(value)
-    return None if number is None else f"{_format(number)} million KRW (백만 원)"
-
-
 def _share(value: object) -> str | None:
     number = _number(value)
     return None if number is None else f"{_format(number)}%"
-
-
-def _hundred_million(value: object) -> str | None:
-    # KIS hts_avls is in 100 million KRW (checked live on 2026-10-01).
-    number = _number(value)
-    return None if number is None else f"{_format(number)} hundred million KRW (억 원)"
 
 
 def _change(quote: dict[str, Any]) -> str | None:
@@ -495,35 +652,16 @@ def _change(quote: dict[str, Any]) -> str | None:
     return amount or rate
 
 
-def _argument_problem(action: str, arguments: dict[str, Any]) -> str | None:
-    """Check only the arguments this action uses; the others are ignored."""
-
-    if action == "ranking":
-        by = arguments.get("by")
-        if not isinstance(by, str) or by not in _RANKINGS:
-            return f"ranking needs by, one of {', '.join(_RANKINGS)}."
-        uses = {"count"}
-        if by != "most_viewed":  # KIS has no market choice there
-            uses.add("market")
-        if by == "short_selling":
-            uses.add("period")
-    elif action == "investors":
-        name = arguments.get("name")
-        uses = {"count"} if isinstance(name, str) and name.strip() else {"market"}
-    else:
-        return None
-    if "market" in uses and arguments.get("market") not in (*_MARKETS, None):
-        return f"market must be one of {', '.join(_MARKETS)}."
-    count = arguments.get("count")
-    if (
-        "count" in uses
-        and count is not None
-        and (isinstance(count, bool) or not isinstance(count, int) or count < 1)
-    ):
-        return "count must be a whole number of 1 or more."
-    if "period" in uses and arguments.get("period") not in (*_PERIODS, None):
-        return f"period must be one of {', '.join(_PERIODS)}."
-    return None
+def _position(item: dict[str, Any]) -> str:
+    return _join(
+        ("quantity", _shares(item.get("quantity"))),
+        ("sellable now", _shares(item.get("sellable_quantity"))),
+        ("average price", _krw(item.get("average_price"))),
+        ("current price", _krw(item.get("current_price"))),
+        ("valuation", _krw(item.get("valuation"))),
+        ("profit", _krw(item.get("profit"), signed=True)),
+        ("return", _percent(item.get("profit_rate"))),
+    )
 
 
 def _figure(key: str, value: object) -> tuple[str, str | None]:
@@ -531,17 +669,19 @@ def _figure(key: str, value: object) -> tuple[str, str | None]:
     return label, unit(value)
 
 
-def _flows(flows: dict[str, Any], volume_unit: str) -> str:
+def _flows(flows: dict[str, Any], per_unit: int, divisor: int) -> str:
     parts = []
     for key, label in _GROUPS:
-        volume = _signed(flows.get(f"{key}_net_volume"))
-        value = _signed(flows.get(f"{key}_net_value"))
-        figures = _join(
-            ("volume", None if volume is None else f"{volume} {volume_unit}"),
-            ("value", None if value is None else f"{value} million KRW"),
-        )
+        figures = [
+            figure
+            for figure in (
+                _shares(flows.get(f"{key}_net_volume"), per_unit, signed=True),
+                _eok(flows.get(f"{key}_net_value"), divisor, signed=True),
+            )
+            if figure is not None
+        ]
         if figures:
-            parts.append(f"{label} {figures.replace('; ', ', ')}")
+            parts.append(f"{label} {', '.join(figures)}")
     return "; ".join(parts)
 
 
@@ -565,16 +705,19 @@ def _kst(value: str) -> str:
     return moment.astimezone(_KST).strftime("%Y-%m-%d %H:%M KST")
 
 
-# Figure names from the broker and how to read them out; units as checked live
-# (plans/2026-10-02_broker-ranking.md "실호출 확인").
+# Ranking figures from the broker and how to read them out; KIS units as checked
+# live (plans/2026-10-02_broker-ranking.md "실호출 확인").
 _FIGURES: dict[str, tuple[str, Callable[[object], str | None]]] = {
-    "market_cap": ("market cap", _hundred_million),
+    "market_cap": ("market cap", lambda value: _eok(value, _EOK)),
     "market_cap_share": ("share of the market's total cap", _share),
-    "trading_value": ("trading value", _krw),
+    "trading_value": ("trading value", lambda value: _eok(value, _WON)),
     "short_volume": ("short-sold volume", _shares),
     "short_volume_share": ("short share of volume", _share),
-    "short_value": ("short-sold value", _krw),
+    "short_value": ("short-sold value", lambda value: _eok(value, _WON)),
     "short_value_share": ("short share of value", _share),
-    "net_buy_value": ("net buying value", _million),
-    "net_buy_volume": ("net buying volume", _shares),
+    "net_buy_value": (
+        "net buying value",
+        lambda value: _eok(value, _MILLION, signed=True),
+    ),
+    "net_buy_volume": ("net buying volume", lambda value: _shares(value, signed=True)),
 }
