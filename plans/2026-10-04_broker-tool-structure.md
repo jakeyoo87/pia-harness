@@ -133,7 +133,7 @@ broker
 | `account` | — | — | — | 선택 | — | — |
 | `quote` | `prices` | — | — | 필수 | — | — |
 | `history` | `prices` | — | `1m` `3m` `6m` `1y` `3y` `5y` | name 또는 market | `kospi` `kosdaq` | — |
-| `history` | `investors` | — | `1m` `3m` | name 또는 market | `kospi` `kosdaq` | — |
+| `history` | `investors` | — | `1m` | name 또는 market | `kospi` `kosdaq` | — |
 | `ranking` | `prices` | `market_cap` `gainers` `losers` `volume` `trading_value` | — | — | `all`(기본) `kospi` `kosdaq` | 기본 10 |
 | `ranking` | `investors` | `foreign_buying` `foreign_selling` `institution_buying` `institution_selling` | — | — | 같음 | 같음 |
 | `ranking` | `short_selling` | `short_volume` | `1d` `2d` `3d` `4d` `1w` `2w` `3w` `1m` `2m` `3m` | — | 같음 | 같음 |
@@ -141,7 +141,7 @@ broker
 
 - **기본값 규칙 하나 (권고):** `data`·`by`·`period`는 생략하면 그 칸 목록의 첫 값. 그래서 history 기본 기간은 `1m`이다(옛 계획 `3m`에서 바꿈: 규칙 하나로 두기 위해. 모델은 사용자가 말한 기간을 넣는다). `market`은 ranking에서만 기본 `all`이 있다.
 - **history 대상:** `name`이 있으면 그 종목, 없으면 `market`(`kospi`·`kosdaq`, 그 시장 자체). 둘 다 없거나 `market=all`이면 실행하지 않고 "종목이나 kospi·kosdaq를 정하라"고 돌려준다. 둘 다 있으면 `name`을 쓴다(name이 질문 대상이라는 뜻 그대로).
-- **investors 기간 (권고):** 투자자 동향은 KIS에 일 단위만 있어서 `1m`·`3m`(일)만 연다. 주·월로 묶으면 Broker가 더하기(계산)를 해야 하므로 하지 않는다. `3m`은 실호출(§6)에서 이어 부르기 상한 안에 드는지 보고 열지 정한다.
+- **investors 기간 (사용자, 2026-10-04): `1m`만.** 투자자 동향은 KIS에 일 단위만 있다. 기간이 길면 줄이 그대로 늘고(3개월 약 62줄, 1년 약 250줄), 주·월로 묶으려면 Broker가 더하기(계산)를 해야 하므로 하지 않는다. 더 긴 기간을 물으면 모델이 1개월까지만 된다고 말한다.
 - **ranking `by` → Broker:** `short_volume` → `short_selling`, 나머지는 같은 이름. Broker `/ranking`은 바꾸지 않는다.
 - **검사는 그 액션·데이터가 쓰는 인자만** 본다(지금과 같음). 안 쓰는 인자는 무시한다. 틀리면 "Broker lookup not run: …"과 허용 값 목록을 돌려준다(지금 문구 방식).
 - `count`는 ranking만, 1 이상 정수. 옛 investors 일수는 `period`가 맡는다.
@@ -153,7 +153,7 @@ broker
 - `data` enum `prices` `investors` `short_selling` `attention`: "What figures. quote: prices. history: prices (stock price or index level) or investors (net buying by individuals, foreigners and institutions). ranking: prices, investors, short_selling or attention. Left out, the first one listed."
 - `name`: 지금 설명(정식 종목명, 별칭 변환, 코드는 사용자가 준 경우만) + "The one stock the question is about. account: narrows the account to that stock. quote: required. history: used instead of market."
 - `market` enum `all` `kospi` `kosdaq`: "The market the question is about. history without name: kospi or kosdaq (the index, or net buying in the whole market). ranking: all (default), kospi or kosdaq (stocks in that market)."
-- `period` enum(합집합): "How far back from today. history prices: 1m (default) and 3m give daily rows, 6m and 1y weekly rows, 3y and 5y monthly rows. history investors: 1m (default) or 3m, daily rows. ranking short_selling: 1d (default) to 3m, the period the ranking covers."
+- `period` enum(합집합): "How far back from today. history prices: 1m (default) and 3m give daily rows, 6m and 1y weekly rows, 3y and 5y monthly rows. history investors: 1m only, daily rows (there is no longer investor history). ranking short_selling: 1d (default) to 3m, the period the ranking covers."
 - `by` enum(합집합): "What a ranking is ordered by. prices: market_cap (default), gainers, losers, volume, trading_value. investors: foreign_buying (default), foreign_selling, institution_buying, institution_selling (by amount). short_selling: short_volume. attention: most_viewed (on the KIS trading app). There is no dividend, PER, PBR, watchlist or new-high ranking."
 - `count`: "ranking: how many stocks. Default 10; set it when the user asks for a number."
 - `BROKER_DESCRIPTION`: "Look up through the user's connected brokerage account: their account (cash, holdings, what one stock they can buy or sell), a stock's live price, price or investor history for a stock or the KOSPI/KOSDAQ market, and market rankings. Read-only; orders go through the order tool. Figures are live at the time shown, so call again for a later question instead of reusing an earlier result. Never work out a buyable quantity from cash and price; use account with name."
@@ -206,7 +206,7 @@ broker
   6. 멈춘 뒤 시작일보다 앞선 줄을 버린다.
   - 바꾼 이유: 네 API에 규칙 하나. "한 번 한도보다 짧으면 끝"은 한도를 알아야 하는데 투자자 API 둘은 한도를 모른다. 대가는 시작일이 휴장일이거나 주·월 기준일이 시작일 뒤일 때 한 번 더 부르는 것(빈 묶음 또는 시작일 이전 줄로 멈춤)이고, 지금 기간표에서 모두 3번 안이다: 종목 prices 1~2번, 지수 prices 3m·1y·5y 2~3번, 나머지 1~2번.
   - 묶음 2~3번 × transport 8초 + 토큰 갱신: Lambda 30초, harness 35초 안. 실호출에서 지연을 잰다. 시간 설정은 바꾸지 않는다.
-- `orders.py` `TradingService.history(member_id, data, code | None, market | None, period)`: `code`가 있으면 종목, 없으면 `market`(`kospi`·`kosdaq`). `all`·둘 다 없음·investors에 `6m` 이상은 400(`ValueError`, 지금 경로의 입력 오류와 같음).
+- `orders.py` `TradingService.history(member_id, data, code | None, market | None, period)`: `code`가 있으면 종목, 없으면 `market`(`kospi`·`kosdaq`). `all`·둘 다 없음·investors에 `1m` 아닌 기간은 400(`ValueError`, 지금 경로의 입력 오류와 같음).
 - `credential_api.py`: `/history` route. JSON `{data, code, market, period, unit(day|week|month), observed_at, rows[]}`, `rows`는 KIS 순서(최근 먼저). prices 줄 `{date, open, high, low, close, volume, trading_value}`, investors 줄 `{date, close, change, flows{...}}`. 오류 계약은 지금 경로와 같다(409·503·502, 입력 400).
 
 ## 5. harness 결과 글
@@ -244,19 +244,18 @@ broker
 
 | # | 조회 | 예상 KIS 조회 요청 | 확인할 것 |
 |---|---|---|---|
-| 1 | `account` | 잔고 page 수(보통 1) | `cash_d2` 필드와 값이 KIS 앱의 D+2 예수금과 같은지 |
+| 1 | `account` | 잔고 page 수(보통 1, 최대 2로 셈) | `cash_d2` 필드와 값이 KIS 앱의 D+2 예수금과 같은지 |
 | 2 | `account` + `005930` | 3 + 잔고 page | `position`, 매수 가능 그대로 |
-| 3 | history prices `005930` `1m` | 1 | 일봉, 거래대금 단위 |
-| 4 | history prices `005930` `6m` | 1 | 주봉 기준일, 첫·마지막 부분 주 |
+| 3 | history prices `005930` `1m` | 1~2 | 일봉, 거래대금 단위 |
+| 4 | history prices `005930` `6m` | 1~2 | 주봉 기준일, 첫·마지막 부분 주 |
 | 5 | history prices `kospi` `3m` | 2~3 | 지수 50줄 묶음, 이어 부르기 경계 겹침·빠짐, 소수 |
 | 6 | history prices `kosdaq` `5y` | 2~3 | 월봉 기준일, 지수 거래량·거래대금 유무 |
 | 7 | history investors `005930` `1m` | 1~3 | 한 번 줄 수, 끝 날짜 이어 부르기 동작, 수량·금액 단위 |
-| 8 | history investors `005930` `3m` | 1~3 | 3번 안에 끝나는지 → `3m` 열지 결정 |
-| 9 | history investors `kospi` `1m` | 1~3 | 날짜 둘의 의미, 한 번 줄 수, 단위 |
-| 10 | history investors `kosdaq` `3m` | 1~3 | 위와 같음 |
+| 8 | history investors `kospi` `1m` | 1~3 | 날짜 둘의 의미, 한 번 줄 수, 단위 |
+| 9 | history investors `kosdaq` `1m` | 1~3 | 코스닥 코드(`KSQ`·`1001`) |
 
-- **승인 예산: KIS 조회 요청 최대 30번**(위 최댓값 합 약 29). 세면서 진행하고 30번에 닿으면 남은 조회를 멈춘다. 토큰 발급은 따로 센다(유효 토큰이면 0). 추가 호출은 새 승인.
-- 결과에 따라: 단위 표(§3) 채우기, investors `3m` 열기 여부, 시장 일별 API 날짜 인자 확정. 이어 부르기가 문서와 달리 동작하면(끝 날짜를 무시하고 같은 줄을 다시 줌 등) 규칙 3이 schema error로 막으므로 반쪽 결과는 나가지 않는다. 그때는 그 data·기간을 열지 않거나 계획을 고쳐 Codex 검토를 다시 받는다.
+- **승인 예산: KIS 조회 요청 최대 26번**(위 최댓값 합). 세면서 진행하고 26번에 닿으면 남은 조회를 멈춘다. 토큰 발급은 따로 센다(유효 토큰이면 0). 추가 호출은 새 승인.
+- 결과에 따라: 단위 표(§3) 채우기, 시장 일별 API 날짜 인자 확정. 이어 부르기가 문서와 달리 동작하면(끝 날짜를 무시하고 같은 줄을 다시 줌 등) 규칙 3이 schema error로 막으므로 반쪽 결과는 나가지 않는다. 그때는 그 data·기간을 열지 않거나 계획을 고쳐 Codex 검토를 다시 받는다.
 - 결과는 이 계획서에 기록한다(값이 아니라 형식·단위·줄 수·지연만. 계좌 금액·보유는 적지 않는다).
 
 ## 7. 시나리오 테스트 (`broker` 세트)
@@ -289,6 +288,7 @@ broker
 | b8 | 코스피 1년 추이 차트로 보여줘 | broker | `{"action":"history","data":"prices","market":"kospi","period":"1y"}` | 지수, 주봉 안내, 차트 블록 |
 | b9 | 삼성전자 최근 한 달 외국인 순매수 추이 | broker | `{"action":"history","data":"investors","name":"삼성전자","period":"1m"}` | |
 | b10 | 요즘 코스닥에서 외국인이 사고 있어? | broker | `{"action":"history","data":"investors","market":"kosdaq"}` | 시장 전체 |
+| b10-1 | 삼성전자 1년 외국인 순매수 추이도 보여줘 | (관찰) | | 투자자 동향은 1개월까지라고 말하고 지어내지 않는지 |
 | b11 | 오늘 시가총액 상위 5개 | broker | `{"action":"ranking","data":"prices","by":"market_cap","count":5}` | |
 | b12 | 코스피 외국인 순매수 상위 종목 | broker | `{"action":"ranking","data":"investors","by":"foreign_buying","market":"kospi"}` | |
 | b13 | 일주일 기준 공매도 많은 종목 | broker | `{"action":"ranking","data":"short_selling","period":"1w"}` | |
@@ -327,7 +327,7 @@ broker
 
 1. 이 계획 → Codex 계획 검토 → 반영.
 2. Broker 구현(pia-broker `claude/broker-unify`) → harness 구현(이 브랜치, 시나리오 스크립트·세트 포함) → Codex 구현 검토.
-3. Broker 병합·배포(Codex, 사용자 승인) → PIA bootstrap IAM `/history` 추가(Codex, 사용자 승인) → 실호출 확인(§6, 사용자 승인, 30번 예산) → 결과로 단위 표·investors `3m` 확정, 필요하면 수정·재검토.
+3. Broker 병합·배포(Codex, 사용자 승인) → PIA bootstrap IAM `/history` 추가(Codex, 사용자 승인) → 실호출 확인(§6, 사용자 승인, 26번 예산) → 결과로 단위 표 확정, 필요하면 수정·재검토.
 4. `broker` 시나리오 실행(유료, 사용자 승인) → 기록 → 필요하면 도구 설명 수정.
 5. harness 릴리스 0.8.0(버전 사용자 확인) → PIA 핀·프롬프트·README(pia `claude/broker-unify`) → PIA 검토·병합·배포(승인) → Telegram 확인.
 6. 옛 `/investors` 제거(§8, Broker·IAM, 승인).
@@ -339,5 +339,5 @@ broker
 2. §4.2 이어 부르기 규칙 하나로 바꾼 것(옛 "짧은 묶음" 규칙 대체)의 타당성, 상한 3번이 네 API에 맞는지.
 3. §3 단위 변환을 harness 한 곳(필드별 KIS 단위 표)에 둔 것. 단위 자체(계좌 원, 시장 억 원)는 사용자가 정했다.
 4. §2.1 기본값 규칙(목록의 첫 값)과 history 기본 `1m`.
-5. §6 실호출 목록·예산(30번)이 확인할 것을 빠짐없이 덮는지, 줄일 것이 있는지.
+5. §6 실호출 목록·예산(26번)이 확인할 것을 빠짐없이 덮는지, 줄일 것이 있는지.
 6. §7 시나리오 세트가 헷갈리기 쉬운 경우(account+name vs order, quote vs history, history vs ranking, 시장 vs 종목)를 덮는지.
