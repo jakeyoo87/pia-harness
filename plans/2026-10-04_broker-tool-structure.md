@@ -102,7 +102,7 @@ broker
 - **Telegram `/status` 명령:** 모델을 거치지 않고 PIA가 Broker `GET /internal/members/{id}/broker-status`를 직접 부른다(`app/broker_status.py`). 이 경로·응답은 그대로 둔다.
 - **주문 도구:** 확인 문구의 현재가를 Broker `GET /quote`로 받는다(`broker_order.py`). `/quote` 응답은 그대로 둔다(필드 추가만 가능).
 - **탈퇴 작업자:** `DELETE /broker-data`. 그대로.
-- **이미 배포된 harness v0.7.2와의 호환:** Broker를 먼저 배포하므로, PIA가 새 harness로 바뀌기 전까지 지금 경로의 응답 의미를 바꾸지 않는다. Broker 변경은 **필드 추가와 새 경로**만 한다. 옛 경로 제거는 PIA 전환 뒤 마지막 단계(§8)에서 한다.
+- **호환성은 고려하지 않는다(사용자, 2026-10-04: 테스트 운영).** 옛 `/investors` 경로와 그 IAM은 이번에 지우고, Broker·PIA IAM·harness·PIA를 한 번에 배포한다. 그 사이 잠깐 맞지 않는 것은 받아들인다.
 - 숫자는 증권사 값 그대로(계산 없음). 단위 변환만 harness가 한다(§3).
 
 ## 1. Broker 경로 (권고)
@@ -117,9 +117,9 @@ broker
 | `history` | **새** `GET /history?data=prices\|investors&(code=\|market=)&period=` | 새 경로 |
 | `ranking` | `GET /ranking?by=&market=&period=` | 없음(`data`+`by` → Broker `by`는 harness가 바꿈, §2) |
 | (연결 상태, `account`가 409를 받았을 때만) | `GET /broker-status` | 없음 |
-| (없어짐) | `GET /investors` | PIA 전환 뒤 제거(§8) |
+| (없어짐) | `GET /investors` | 이번에 제거 |
 
-- 이유: 기간 시세와 기간 투자자 동향은 둘 다 "기간·날짜별 줄"이라 한 경로·한 응답 틀(`rows`)에 맞고, 도구 `history`와 같아서 한눈에 보인다. `/investors`의 의미(종목 30일·시장 오늘 하루)를 기간으로 바꾸면 배포된 v0.7.2가 깨지므로 고치지 않고 새 경로로 옮긴다.
+- 이유: 기간 시세와 기간 투자자 동향은 둘 다 "기간·날짜별 줄"이라 한 경로·한 응답 틀(`rows`)에 맞고, 도구 `history`와 같아서 한눈에 보인다. `/investors`(종목 30일·시장 오늘 하루)는 기간 기준과 맞지 않아 `/history`로 옮기고 지운다.
 - 대안: `/prices` 새 경로 + `/investors`에 `period` 분기(옛 계획 `claude/broker-prices`). `/investors`에 "period가 있으면 다른 API" 분기가 생기고 옛 동작을 계속 끌고 가서 택하지 않았다. `claude/broker-prices`의 `/prices` 경로 설계는 이 `/history`로 대체한다(KIS 내용은 그대로 쓴다).
 - IAM: Broker 템플릿에 `/history` route(GET, IAM 인증, 기존 route와 같은 방식) 하나. PIA bootstrap에 `BrokerHistoryApiArn`(`GET /internal/members/*/history`) 하나, Bot 역할 정책에 그 ARN. 옛 `BrokerInvestorsApiArn`은 §8에서 뺀다. AWS 변경이라 Codex가 사용자 승인 후 적용한다.
 - `/account?code=` 하나에 매수 가능과 그 종목 보유를 함께 싣는다(새 경로·IAM 없음). 매도 가능 수량은 잔고 행의 `ord_psbl_qty`(지금 `account`가 쓰는 값)를 쓰고 따로 `inquire-psbl-sell`을 부르지 않는다.
@@ -172,7 +172,7 @@ broker
 | 비율 | `%` | |
 
 - 처음 합의한 문장은 "금액은 모두 억 원(가격은 원)"이었다. 계좌 금액까지 억 원이면 소액이 0.0x억 원이 되어 원으로 둔다. 시장 금액은 한 단위(억 원)라 합의 목적(모델이 단위를 바꿔 적지 않게)은 그대로다. **사용자 확인(2026-10-04): 계좌 금액은 원, 시장 금액은 억 원.** 써 본 뒤 다시 본다(사용자).
-- 변환은 harness 한 곳의 표(필드 → KIS 단위)로 한다. Broker는 지금처럼 KIS 값을 그대로 준다(배포된 v0.7.2 호환, §0). Decimal로 바꾸고 둘째 자리 반올림(ROUND_HALF_UP), 끝 0은 지운다.
+- 변환은 harness 한 곳의 표(필드 → KIS 단위)로 한다. Broker는 KIS 값을 그대로 준다. 시장 금액만 둘째 자리로 반올림하고 끝 0은 지운다.
 - KIS 단위(실호출로 확인된 것): 시가총액 `hts_avls`·`stck_avls` 억 원, 거래대금·공매도 금액 원, 순위 순매수 금액 백만 원, 시장 투자자(오늘) 수량 천 주(2026-10-01·02 확인). 새 API(기간 시세 거래대금, 일별 투자자 두 개)의 단위는 §6에서 확인하고 표를 채운다. **확인 전에는 harness를 릴리스하지 않는다.**
 - 결과 첫 줄에 그 결과의 단위를 적는다(예: "amounts in 억 원 (KRW 100 million), volumes in shares").
 
@@ -181,7 +181,7 @@ broker
 ### 4.1 account
 
 - `AccountSummary.cash_d2`: 잔고 `output2`의 D+2 예수금. 필드는 `prvs_rcdl_excc_amt`(가수도정산금액, 흔히 D+2 예수금)로 보고 §6에서 확인. 없거나 읽을 수 없으면 `null`(다른 합계 값과 같은 규칙).
-- `GET /account?code=`: `TradingService.buyable` → `stock_account(member_id, code)`로 바꾸고 현재가 → 매수 가능 → 잔고(모든 page)를 부른다. 응답 `{"buyable": {...지금과 같음}, "position": {...positions[]의 한 행과 같은 필드} | null}`. 보유 행은 잔고 결과에서 코드가 같은 행(수량 0 행은 이미 빠짐). KIS 호출 2 → 2 + 잔고 page 수. 잔고가 실패하면 조회 전체가 실패한다(부분 결과 없음). 배포된 v0.7.2는 `position`을 무시한다.
+- `GET /account?code=`: `TradingService.buyable` → `stock_account(member_id, code)`로 바꾸고 현재가 → 매수 가능 → 잔고(모든 page)를 부른다. 응답 `{"buyable": {...지금과 같음}, "position": {...positions[]의 한 행과 같은 필드} | null}`. 보유 행은 잔고 결과에서 코드가 같은 행(수량 0 행은 이미 빠짐). KIS 호출 2 → 2 + 잔고 page 수. 잔고가 실패하면 조회 전체가 실패한다(부분 결과 없음).
 
 ### 4.2 history
 
@@ -303,7 +303,7 @@ broker
 
 ## 8. 옛 경로 제거
 
-- 옛 `/investors`와 `BrokerInvestorsApiArn` 제거는 이번에 하지 않고 다음 "harness·Broker 정리" 작업에서 한다.
+- 옛 `/investors` route·코드와 PIA의 `BrokerInvestorsApiArn`은 이번에 지운다(호환성 고려 안 함).
 
 ## 9. PIA 연동
 
@@ -329,7 +329,7 @@ broker
 
 ## 12. Codex 검토에서 특히 볼 것
 
-1. §1 경로: `/history` 새 경로 + `/investors` 나중 제거 vs 다른 방식. 배포된 v0.7.2 호환을 지키는지.
+1. §1 경로: `/history` 새 경로 + 옛 `/investors` 제거 vs 다른 방식.
 2. §4.2 이어 부르기 규칙 하나로 바꾼 것(옛 "짧은 묶음" 규칙 대체)의 타당성, 상한 3번이 네 API에 맞는지.
 3. §3 단위 변환을 harness 한 곳(필드별 KIS 단위 표)에 둔 것. 단위 자체(계좌 원, 시장 억 원)는 사용자가 정했다.
 4. §2.1 기본값 규칙(목록의 첫 값)과 history 기본 `1m`.
@@ -403,8 +403,8 @@ broker
 
 | 지적 | 판단 | 어떻게 |
 |---|---|---|
-| 1. 롤백 대비 `/investors` 제거 조건 | 받지 않음(과함) | 제거를 다음 정리 작업으로 미룬다(§8). 조건·절차 없음 |
-| 1. v0.7.2 도구로 새 응답 확인 | 받지 않음 | Broker는 필드 추가·새 경로만. 기존 Broker 테스트가 옛 필드를 지킨다 |
+| 1. 롤백 대비 `/investors` 제거 조건 | 받지 않음 | 호환성을 고려하지 않으므로 이번에 지운다(§8) |
+| 1. v0.7.2 도구로 새 응답 확인 | 받지 않음 | 호환성을 고려하지 않는다 |
 | 1. 잔고 실패 시 매수 가능 전체 실패 | 받음(한 줄) | §4.1. 가짜 응답 테스트 하나 |
 | 2. 투자자 API 이어 받기 미확정 | 받음 | §4.2: 실호출로 확인, 안 맞으면 열지 않음 |
 | 2. 판정 순서·요청 끝 날짜 이하 검사 등 세부 | 일부만 | 묶음 검사는 지금 규칙(필수 값, 전부 빈 줄만 버림, 날짜 엄격히 감소) 그대로. 끝 날짜 범위 검사는 넣지 않는다(감소 검사와 상한 3번으로 충분) |
@@ -431,9 +431,11 @@ broker
 |---|---|---|
 | pia-broker `claude/broker-unify` | `e7b8780` | `/history`(prices·investors, 종목·지수/시장), `/account?code=`에 `position`, `/account`에 `cash_d2`, 템플릿 route `GetHistory`, README §6·§8 |
 | pia-harness `claude/broker-unify` | `1f43bcf` | `broker_read.py` 새 액션 4개·표 하나(`_ACTIONS`)·단위 변환, 테스트, `smoke_flow.py` `broker` 세트·`expect_args`, `scenarios/broker.json`(16개), README |
-| pia `claude/broker-unify` | `240060ecf` | bootstrap IAM `BrokerHistoryApiArn`(Bot 역할에 `/history` 호출 허용), 테스트·rollout 문서. 옛 investors ARN은 다음 정리 때 제거. PIA 전체 suite 439개 통과(건너뜀 0) |
+| pia `claude/broker-unify` | `240060ecf` | bootstrap IAM `BrokerHistoryApiArn`(Bot 역할에 `/history` 호출 허용), 테스트·rollout 문서 |
+| pia-broker | `c5535db` | 옛 `/investors` route·코드·템플릿 route 제거 |
+| pia | `762c9a00a` | `BrokerInvestorsApiArn` 제거. PIA 전체 suite 439개 통과(건너뜀 0) |
 
-- **Broker:** 이어 받기는 `KisReadConnector._dated_rows` 하나(네 API 공통). 기간 날짜 계산은 `TradingService.history`(KST 오늘, `_months_before`). 옛 `/investors`·`buyable` 응답 필드는 그대로라 v0.7.2가 계속 읽는다(테스트가 `buyable` 객체를 고정). 테스트 231개 통과, ruff·mypy 통과, 패키지 build 성공.
+- **Broker:** 이어 받기는 `KisReadConnector._dated_rows` 하나(네 API 공통). 기간 날짜 계산은 `TradingService.history`(KST 오늘, `_months_before`). 테스트 227개 통과, ruff·mypy 통과, 패키지 build 성공.
 - **harness:** 인자 해석은 `_resolve` 하나(생략만 기본값, 쓰지 않는 인자 무시, history는 name이 있으면 market 무시). 단위는 출처별 배율(`_WON`·`_MILLION`·`_EOK`)과 `_eok` 하나, 시장 금액만 둘째 자리. 일별 투자자 단위(`_INVESTOR_DAY_UNITS`: 종목 주·백만 원, 시장 천 주·백만 원)는 **가정**이며 §6 실호출로 확인한다. 테스트 185개 통과. ruff·mypy 오류 수는 base와 같다(로컬 도구 버전 차이로 base에도 있는 것).
 - **시나리오:** `_check`가 broker 인자를 도구와 같은 `_resolve`로 기본값을 채운 뒤 비교하므로, 모델이 기본값을 생략해도 맞으면 PASS다. 조회 질문의 첫 응답에 order·confirm이 끼면 CHECK. 16개 `expect_args`가 모두 유효하고 가짜 Broker가 모든 액션에 정상 결과를 내는 것을 일회성으로 확인했다(유료 실행은 하지 않음).
-- **남은 단계(승인 필요):** Broker 병합·배포 → PIA bootstrap IAM `/history` → 실호출(§6, KIS GET 26번) → 단위 가정 확인·수정 → `broker` 시나리오 실행(유료) → harness 0.8.0 릴리스(버전 확인) → PIA 핀·`BROKER_READ_PROMPT`.
+- **남은 단계(승인 필요):** Broker 병합·배포와 PIA bootstrap IAM(`/history` 추가, `/investors` 제거) → 실호출(§6, KIS GET 26번) → 단위 가정 확인·수정 → `broker` 시나리오 실행(유료) → harness 0.8.0 릴리스(버전 확인) → PIA 핀·`BROKER_READ_PROMPT`.
