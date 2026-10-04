@@ -341,3 +341,64 @@ broker
 4. §2.1 기본값 규칙(목록의 첫 값)과 history 기본 `1m`.
 5. §6 실호출 목록·예산(26번)이 확인할 것을 빠짐없이 덮는지, 줄일 것이 있는지.
 6. §7 시나리오 세트가 헷갈리기 쉬운 경우(account+name vs order, quote vs history, history vs ranking, 시장 vs 종목)를 덮는지.
+
+
+## Codex 계획 검토
+
+검토일: 2026-10-04 (Asia/Seoul). 대상 `2bcfe04336e3977e18e72da22c5d7176c5ebc3c7`, 대조 harness main v0.7.2 `6dffbc4`, Broker main `9b2cb69`, PIA main `7e37ee3ec`, 가격 계획의 `87ddba2`/`2defac9` 반영과 공개 KIS 자료. 실제 KIS·AWS·유료 모델/검색을 호출하지 않았다.
+
+### 판정
+
+합의된 액션 4개·인자 6개와 **계좌 금액/가격 원, 시장 금액 억 원, 수량 주**, **investors history 1m만**은 그대로 따른다. 계획의 새 history 경로·단계적 전환·harness 단위 변환 방향은 타당하다. 아래 호환 종료 조건·대상 검사 모순·미확정 API 동작과 검증 범위를 보완한 뒤 구현한다. 지금은 계획 검토이며 구현 완료·릴리스·실호출 승인 판정이 아니다.
+
+### 1. 경로·구버전 호환·옛 경로 제거 (§1·§8)
+
+- `/history` 새 경로 권고. 기존 `/investors`의 API/응답 의미를 바꾸는 것보다 구버전과 신규 기간 결과를 분리하기 쉽다. 기존 quote/status/orders/broker-data는 유지하고, history의 정확한 GET invoke ARN 하나만 추가한다. account의 cash_d2/position 필드 추가는 v0.7.2 parser가 읽는 기존 필드를 그대로 두면 구조적으로 호환된다. account?code의 buyable 객체 필드·단위·오류 계약은 유지하며 호출 지연 변화는 검증한다.
+- **[P2] 옛 `/investors` 제거 조건에 롤백 호환을 넣는다.** PIA가 새 harness로 정상 응답했다는 확인만으로는 충분하지 않다. `ops/deploy_dev_bot.py`는 현재/previous_image를 보존하고 건강 검사 실패 시 이전 이미지로 되돌린다. 이전 이미지가 v0.7.2이면 옛 경로와 IAM ARN을 다시 필요로 한다.
+- 제거 전 자동 롤백 대상으로 유지하는 이미지가 모두 history를 쓰는 버전인지 확인한다. 구버전 롤백을 유지하는 동안에는 옛 route·응답·IAM을 같이 남긴다. 옛 롤백을 포기한다면 별도 사용자 결정으로 명시한다. 강제로 이미지나 release record를 정리해서 조건을 맞추지 않는다. 역할·route를 바꾸는 AWS 변경은 별도 승인 대상이다.
+- Broker 선배포 호환 테스트에 v0.7.2의 **account 전체·buyable(code)·investors(종목/시장) 파서 실행**도 포함한다. §10의 quote/ranking/status 불변만으로는 새 코드가 건드리는 account와 아직 남겨야 할 investors를 충분히 확인하지 못한다. 필드를 추가했지만 잔고 실패·다중 page 때문에 기존 buyable 전체가 실패하는 경로도 계획한 계약으로 검증한다.
+
+### 2. 네 API의 이어 조회와 총 3회 (§4.2)
+
+- 빈 정상 묶음 또는 시작일에 닿으면 완료, 그 밖에는 날짜를 뒤로 옮기며 총 3회, 중간 오류/진행 불가/예산 소진은 전체 실패라는 **공통 수집 규칙은 적절하다**. 짧은 묶음의 행 수로 완료를 추측하지 않아 새 API 한도를 몰라도 부분 기간을 성공으로 내지 않는다. 요청 생성·output 경로/행 해석은 API별로 두되 수집 loop 하나면 충분하다. 새로운 pagination class/여러 fallback 방식은 필요 없다.
+- [Postman v2.6 고정 커밋](https://github.com/koreainvestment/open-trading-api/blob/277ec0e/legacy/postman/실전계좌_POSTMAN_샘플코드_v2.6.json)의 종목/지수 가격 요청은 각 100/50건 및 최저 날짜 전날 재조회 안내가 있다. 검토에서 해당 공개 파일을 직접 읽어 확인했다. 가격은 이 날짜 방식 하나를 선택하고 최신 지수 예제의 tr_cont를 동시에 붙이지 않는다.
+- **네 API에 모두 3회면 된다는 보장은 아직 없다.** [종목 일별 투자자 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/investor_trade_by_stock_daily/investor_trade_by_stock_daily.py)는 J·날짜 하나·빈 조정/기타 값·FHPTJ04160001/output2와 tr_cont 흐름을 보여 준다. [시장 일별 투자자 예제](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/domestic_stock/inquire_investor_daily_by_market/inquire_investor_daily_by_market.py)는 U·날짜 둘을 같은 날짜·KSP/KSQ·FHPTJ04040000/output로 읽는다. 단일 응답 크기나 날짜 전날 방식의 완료는 이 예제로 확정되지 않는다.
+- 따라서 §4.2의 '지금 기간표에서 모두 3번 안'은 **가격의 문서상 예상과 투자자의 검증 대기**로 분리한다. 두 투자자 API에서 같은 날짜/날짜 전진·종료 동작이 안 맞으면 부분 결과를 내지 않고 해당 기능을 노출하지 않는 §6 gate는 맞다. 그때 사용자가 정한 기간을 조용히 줄이거나 30일 구 API를 자동 fallback하지 않는다. API가 다른 진행 방식을 요구하면 그 사실로 계획을 다시 검토한다.
+- 종료 검사는 3회째 받은 정상 묶음을 처리한 뒤 한다. 유효한 빈 목록만 완료로 보고 missing output/실패 rt_cd는 오류다. 날짜의 유효성·엄격한 감소·요청 끝날짜 범위, 필수 값, 전부 빈 padding과 실제 손상 행 구분을 한 규칙으로 검사한다. 시작일 이전 행은 종료 판정 뒤 거른다.
+- 3×8초는 가격/투자자 GET만의 한도다. 최초 Token 준비·인증 실패 후 재조회·Secrets/Dynamo 읽기까지 합하면 Lambda 30초를 보장하지 않는다. §4.2의 '30/35초 안'은 보장 표현을 빼고 전체 지연 검증 대상으로 적는다. 기존 시간 제한을 확대하거나 새 재시도 계층을 넣지 않는다. 인증 재조회도 실제 GET 횟수/시간 예산에 들어간다.
+
+### 3. 단위 변환 표 (§3)
+
+- harness 한 곳에서 변환하고 Broker의 기존 원시 값·응답 단위를 유지하는 설계에 찬성한다. **단위 표의 key는 단순 정규화 필드명만이 아니라 출처/결과 문맥 + 필드**여야 한다. 예를 들어 같은 net_volume 필드도 기존 종목은 주, 기존 시장 오늘 결과는 천 주이고, 새 시장 일별/지수 volume은 아직 단위가 미확정이다. close도 종목 가격과 시장 지수 points의 문맥이 다르다.
+- API별 실제 raw 단위를 한 표에 기록하고 action/data/종목·시장 문맥으로 고른다. 새 결과 타입/공통 계층을 만들거나 모델에게 TR ID를 노출할 필요는 없다. 새 API는 확인 전 출시하지 않는 계획을 유지한다. 숫자 크기로 단위를 추정하지 않는다.
+- 시장 금액만 Decimal의 ROUND_HALF_UP 두 자리 표기로 정리한다. 원→억 / 백만→억 / 이미 억은 변환 없음, 천 주→주를 정확한 scale로 검증한다. 가격·계좌 값·지수 points·수량에 시장 금액의 소수 두 자리 규칙을 일괄 적용하지 않는다. null은 unknown으로, 음수 순매도/손실 부호와 0은 그대로 남긴다. float에 먼저 산술한 뒤 Decimal로 바꾸지 않는다.
+- 같은 경제적 값의 서로 다른 raw 단위가 같은 결과가 되는 입력, 양/음의 반올림 경계, 이미 억인 시총의 이중 변환 방지를 오프라인 검사한다. 이는 사용자가 정한 단위 자체를 다시 검토하는 것이 아니라 100배/1000배 오류를 막는 유일한 변환 계약이다.
+
+### 4. 기본값·인자 검사 (§2)
+
+- data/by/period의 첫 값 규칙과 history 기본 1m는 적절하다. schema에 목록만 있다고 실행 때 기본값이 주입되지는 않으므로 설명·검사·실행이 같은 표를 쓰고 생략 시 해석 결과를 검사한다. period가 안 쓰이는 ranking prices의 잘못된 period 등은 검사/전송하지 않는다. 기본값은 '생략'이지 모든 falsy 값은 아니다. count=0/False와 active enum의 빈 값·배열·객체를 기본값으로 바꾸지 않는다.
+- **[P2] history 대상 우선순위의 검사 문장을 일치시킨다.** §2.1의 'name 있으면 종목, 둘 다 있으면 name' 및 '쓰는 인자만 검사'에 따르면 name이 있는 요청에서는 market을 쓰지 않는다. 따라서 같은 절의 'market=all이면 실행하지 않음'은 **name 없는 지수/시장 조회에만** 적용한다. 종목 name+market=all 요청을 잘못 거절하거나 all을 Broker에 전달하지 않는다. §4.2 서버도 code가 있으면 종목이고 쓰지 않는 market은 결과에 의미를 주지 않는다.
+- history의 market은 목록 첫 kospi를 자동 기본값으로 삼지 않는다(대상을 묻는 계약). name 없는 경우 명시된 kospi/kosdaq만 허용한다. ranking의 market 기본 all은 계획대로 별도의 대상 기본값이다. enum 검사 전에 문자열 여부를 확인하고 사용 여부→타입/값→기본값/파생 by 처리라는 표 기반 공통 흐름을 쓴다.
+- short_volume→기존 Broker short_selling 매핑은 harness 안에 한 번이면 된다. most_viewed는 실제 전체 시장 기준임을 밝혀 선택 시장으로 필터됐다고 말하지 않는다. user 구조를 바꾸는 새 action·index 인자는 필요 없다.
+
+### 5. 실호출 목록과 26회 상한 (§6)
+
+- **계좌 호출 수를 정정한다.** 현재 구현의 현재가+매수 가능은 2회다. 잔고 p page를 더하면 **2+p**(한 page일 때 총 3회)이며 §4.1/§6의 '3+잔고 page'는 한 번 과다 계산했다. 표에서 p≤2로 가정하면 기존 목록 합은 26이 아니라 25다. 하지만 현재 잔고는 max_pages=20이고 p≤2는 보장되지 않으므로 어느 쪽도 실제 worst-case의 증명은 아니다.
+- 26은 **실행 전체의 단일 hard budget**으로 유지하고, 이를 '모든 확인이 반드시 26회 안에 완료'라는 뜻으로 쓰지 않는다. KIS GET 발행 시점에서 세어 page/인증 재조회도 포함한다. Broker HTTP 요청 1번을 KIS 1번으로 세면 안 된다. Token 발급 POST는 별도로 세며, 추가 GET은 새 승인이다. 현재는 실호출을 승인받지 않은 계획이다.
+- 빠진 중요한 조합은 **종목 월봉(수정주가·거래대금/거래량)**과 **지수 주봉(50행 경계·주 기준일)**이다. 기존 목록에는 stock D/W, index D/M만 있다. 1m/3m, 6m/1y, 3y/5y는 코드가 같은 D/W/M로 묶이므로 모든 period를 따로 호출할 필요는 없지만 API×단위 조합은 확인 목록에 넣는다. 기간 시작일 계산 자체는 가짜 날짜로 검증한다.
+- 목록을 먼저 탐색 조회(투자자 요청 날짜/행 수/단위)와 경계 조회(이어 받기·주·월 날짜)로 정렬하고 26회 안에서 우선순위를 정한다. 한 응답에서 행 수·raw 단위·날짜·진행 중 여부를 같이 확인해 단위별 중복 호출을 줄인다. 예산이 부족하면 미확인 항목을 명시하고 멈춘다. 표에 검증 조합을 더한다는 이유로 자동으로 승인 예산을 늘리지 않는다.
+- D+2 후보 필드를 예수금/매수 가능과 혼동하지 않고 앱의 같은 기준 값과 비교하는 것은 적절하다. position 없음/수량 0·미확인 연결·input 400·중간 page 오류는 가짜 응답으로 확인해 실제 계좌/주문/인증 실패를 만들지 않는다. 기록은 형식·단위·page 수·지연만이며 실제 금액/보유/credential은 남기지 않는다.
+
+### 6. broker 시나리오 (§7)
+
+- 기존 read/execution 세트를 유지하고 broker 전용 세트를 두는 것은 타당하다. 계좌·주문 가능·quote/history·시장/종목·ranking의 혼동과 b10-1/b15의 지원하지 않는 요청을 포함한다. 기본값을 첫 실제 tool call의 raw JSON 인자에서 확인하는 것과 실행된 기본값에서 확인하는 것은 구분한다. by/period를 생략해도 valid인 b13/b14가 명시적 기본값을 꼭 출력해야만 통과하게 만들지 않는다.
+- **추가로 필요한 최소 검증:** 가짜 account 409→broker-status의 없음/NH/미확인 상태(오프라인이면 충분), history name+market 불필요 값, 모호한 종목/찾지 못함, 읽기 질문에서 order/confirm로 잘못 가지 않는지, b16-1 이후 가짜 `/orders` 발행 수가 0인지. '첫 call 중 하나에 기대 인자 포함'만으로는 broker와 잘못된 order를 같이 고른 경우를 PASS로 만들 수 있다. 같은 Record의 tool 목록·가짜 주문 목록을 사용해 확인하며 새 scenario framework는 만들지 않는다.
+- 현재 smoke_flow.py의 SYSTEM_PROMPT는 짧은 일반 지침이고 MEMORY_INSTRUCTION은 holdings를 기억 대상으로 둔다. 실제 PIA는 보유/계좌/주문을 장기 Memory에서 제외하고 chart JSON 형식을 SYSTEM_PROMPT로 알려 준다. Broker/ORDER 문장만 복사하면 **b8 차트 블록 확인과 금융 Memory 동작이 실제 PIA와 다르다**. 해당 지시도 PIA와 같은 뜻으로 맞추거나 차트 검증은 PIA 전송 테스트로 분리한다. 두 저장소를 잇는 새 prompt package는 만들지 않는다.
+- 단위의 실제 변환·409 fallback·기본값·요청 경로는 비용 없는 deterministic 테스트가 맡고, 유료 세트는 모델이 질문의 대상을/데이터를 고르는지와 unsupported 설명을 관찰한다. 지금은 세트를 실행하지 않는다. 합의한 investors 1m 지원을 늘리거나 월별 합계를 계산해 b10-1을 맞추지 않는다.
+- 신규 history를 날짜가 있다고 무조건 '확정 값'으로 말하지 않는다. §5의 ranking과 history의 차이는 집계 기준 차이이고 newest row는 진행 중일 수 있다. 공식 집계 확정 시점을 확인하지 않았다면 기존 'history 확정 값' 문구를 옮기기보다 두 조회의 집계 기준이 달라질 수 있음을 밝힌다.
+
+### 문서·릴리스·범위
+
+- 앞부분의 '짧은 묶음 종료', 옛 prices 기본 3m/9회, 옛 모두 억 원 합의 인용은 §계획의 새 규칙/최신 사용자 결정으로 대체되는 참고 이력임을 명확히 한다. 같은 문서의 두 규칙을 구현하지 않는다. release 0.8.0은 아직 권고이며 실제 태그/핀은 사용자에게 버전을 확인한 뒤 정한다.
+- `claude/broker-prices`의 계획 브랜치를 닫는 단계는 전환 작업의 마지막 정리로 유지하되 이번 계획 검토에서 삭제하지 않는다. 새 경로 IAM·Broker 배포·실호출·harness 릴리스·PIA 배포·옛 route 제거는 각각 계획한 사용자 승인 뒤 수행한다. AWS 검증 권한을 확보한 주체가 실제 change set 조건을 확인하며 EC2 권한을 자동 확대하지 않는다.
+- 이번 변경은 계획서 끝의 검토 기록뿐이다. 코드·테스트·branch 구조·AWS·실제 KIS·유료 시나리오는 변경/실행하지 않았다. 현재 코드와 공개 공식 예제/고정 Postman을 대조했고 문서 공백 검사 후 같은 브랜치에 커밋·push한다.
