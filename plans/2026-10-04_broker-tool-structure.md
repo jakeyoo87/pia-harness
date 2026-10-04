@@ -431,7 +431,6 @@ broker
 |---|---|---|
 | pia-broker `claude/broker-unify` | `e7b8780` | `/history`(prices·investors, 종목·지수/시장), `/account?code=`에 `position`, `/account`에 `cash_d2`, 템플릿 route `GetHistory`, README §6·§8 |
 | pia-harness `claude/broker-unify` | `1f43bcf` | `broker_read.py` 새 액션 4개·표 하나(`_ACTIONS`)·단위 변환, 테스트, `smoke_flow.py` `broker` 세트·`expect_args`, `scenarios/broker.json`(16개), README |
-
 | pia `claude/broker-unify` | `240060ecf` | bootstrap IAM `BrokerHistoryApiArn`(Bot 역할에 `/history` 호출 허용), 테스트·rollout 문서. 옛 investors ARN은 다음 정리 때 제거. PIA 전체 suite 439개 통과(건너뜀 0) |
 
 - **Broker:** 이어 받기는 `KisReadConnector._dated_rows` 하나(네 API 공통). 기간 날짜 계산은 `TradingService.history`(KST 오늘, `_months_before`). 옛 `/investors`·`buyable` 응답 필드는 그대로라 v0.7.2가 계속 읽는다(테스트가 `buyable` 객체를 고정). 테스트 231개 통과, ruff·mypy 통과, 패키지 build 성공.
