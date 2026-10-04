@@ -430,7 +430,9 @@ broker
 | 저장소·브랜치 | 커밋 | 내용 |
 |---|---|---|
 | pia-broker `claude/broker-unify` | `e7b8780` | `/history`(prices·investors, 종목·지수/시장), `/account?code=`에 `position`, `/account`에 `cash_d2`, 템플릿 route `GetHistory`, README §6·§8 |
-| pia-harness `claude/broker-unify` | 이 커밋 | `broker_read.py` 새 액션 4개·표 하나(`_ACTIONS`)·단위 변환, 테스트, `smoke_flow.py` `broker` 세트·`expect_args`, `scenarios/broker.json`(16개), README |
+| pia-harness `claude/broker-unify` | `1f43bcf` | `broker_read.py` 새 액션 4개·표 하나(`_ACTIONS`)·단위 변환, 테스트, `smoke_flow.py` `broker` 세트·`expect_args`, `scenarios/broker.json`(16개), README |
+
+| pia `claude/broker-unify` | `240060ecf` | bootstrap IAM `BrokerHistoryApiArn`(Bot 역할에 `/history` 호출 허용), 테스트·rollout 문서. 옛 investors ARN은 다음 정리 때 제거. PIA 전체 suite 439개 통과(건너뜀 0) |
 
 - **Broker:** 이어 받기는 `KisReadConnector._dated_rows` 하나(네 API 공통). 기간 날짜 계산은 `TradingService.history`(KST 오늘, `_months_before`). 옛 `/investors`·`buyable` 응답 필드는 그대로라 v0.7.2가 계속 읽는다(테스트가 `buyable` 객체를 고정). 테스트 231개 통과, ruff·mypy 통과, 패키지 build 성공.
 - **harness:** 인자 해석은 `_resolve` 하나(생략만 기본값, 쓰지 않는 인자 무시, history는 name이 있으면 market 무시). 단위는 출처별 배율(`_WON`·`_MILLION`·`_EOK`)과 `_eok` 하나, 시장 금액만 둘째 자리. 일별 투자자 단위(`_INVESTOR_DAY_UNITS`: 종목 주·백만 원, 시장 천 주·백만 원)는 **가정**이며 §6 실호출로 확인한다. 테스트 185개 통과. ruff·mypy 오류 수는 base와 같다(로컬 도구 버전 차이로 base에도 있는 것).
