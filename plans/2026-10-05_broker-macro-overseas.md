@@ -283,3 +283,25 @@ Codex 구현 검토: P2 세 건(모두 harness), 대상 우선순위·Broker 단
 
 - 오프라인으로 시나리오 채점을 기대 인자로 재현: `expect_args`가 있는 22개 모두 PASS. fake WTI 1년은 `USD per barrel`·`week`.
 - harness 테스트 189개 통과, ruff·mypy 오류 수는 main과 같음.
+
+## 실호출 결과와 후보 시험 (Claude·사용자, 2026-10-05)
+
+Broker `c067a85` dev 배포 후 31개 키 quote + 기간 시세 3가지를 운영 Broker로 불렀다(요청 사이 1.5초).
+
+| 분류 | 결과 |
+|---|---|
+| 해외 지수·지수선물(N) | dow 빼고 11개 정상(예: spx 7,722.72, nikkei 69,946.86, 나스닥100 선물 31,022.25) |
+| 금리(I) | 8개 정상. 한국 금리도 I(마스터 분류 R이어도) |
+| 환율(X)·VIX(N) | 6개 정상. 원/엔은 **1엔 기준**(8.51 = 1,344 ÷ 157.82) → 단위 "KRW per JPY" |
+| dow(`.DJI`, 공식 예제 코드) | 200인데 값 0. 마스터에도 다우 지수 없음 |
+| 상품 5개(S) | 모두 200인데 값 0, gold 3y history는 502 SCHEMA_INVALID. 공식 문서의 S는 "금선물"뿐이고 심볼 예시 없음 |
+| usdkrw 1m | 일봉 20줄, 1번 호출 |
+| spx 1y | 주봉 52줄, 1번 호출, 날짜는 주 첫 거래일(월) |
+
+- KIS는 없는 심볼에 오류 대신 0을 준다. 0을 오류로 보는 규칙은 넣지 않는다(금리는 실제로 0일 수 있음). 안 되는 키는 표에서 뺀다.
+- **후보 시험(사용자):** Broker는 표에 있는 키만 받으므로, Broker 표에 임시 키 6개를 넣어 배포하고 부른다. harness에는 넣지 않아 PIA가 부르지 않는다.
+  - `probe_gold_n`·`probe_gold_x`·`probe_gold_i`: `NYGOLD`를 시장 구분 N·X·I로
+  - `probe_dow_dji`·`probe_dow_djia`·`probe_dow_indu`: 시장 구분 N에 `DJI`·`DJIA`·`INDU`
+  - 금이 되는 코드가 나오면 나머지 상품 4개를 그 코드로 확인(최대 4번 더).
+  - 끝나면 되는 코드를 원래 키에 반영하고, 임시 키와 끝내 안 되는 키를 Broker 표·harness 목록·시나리오에서 함께 지운 뒤 다시 배포한다.
+- Broker `claude/broker-series-probe`: 임시 키 6줄, 원/엔 단위 확정. 테스트 236개 통과.
