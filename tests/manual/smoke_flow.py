@@ -66,8 +66,10 @@ MEMORY_INSTRUCTION = (
 # app/core.py BROKER_READ_PROMPT and ORDER_PROMPT, broker unification plan §9).
 BROKER_PROMPT = (
     " PIA can use the broker tool to look up the user's account (cash, holdings, and "
-    "what one stock they can buy or sell), live quotes, price and investor history "
-    "for a stock or the KOSPI/KOSDAQ market, and market rankings. PIA can place "
+    "what one stock they can buy or sell), quotes and price history for a Korean "
+    "stock, the KOSPI/KOSDAQ market, major overseas indices and index futures, "
+    "rates, exchange rates and commodities, investor history for a stock or the "
+    "KOSPI/KOSDAQ market, and market rankings. PIA can place "
     "Korean stock buy and sell orders, but only after the user agrees to the "
     "confirmation question in the very next message."
 )
