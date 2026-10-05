@@ -269,8 +269,9 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             "Held: quantity 10 shares; sellable now 7 shares; average price 58,966.67 "
             "KRW; current price 70,000 KRW; valuation 700,000 KRW; profit +110,333 KRW; "
             "return +18.71%.\n"
-            "Buyable now, as calculated by the broker without margin on a market-order "
-            "basis (unit price used by the broker 91,000 KRW): up to 12 shares, amount "
+            "Buyable now, as calculated by the broker without margin for a limit order "
+            "at the current price (unit price used by the broker 91,000 KRW): up to 12 "
+            "shares, amount "
             "1,180,000 KRW.",
             text,
         )
@@ -347,7 +348,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             "Prices of 삼성전자(005930) over the last 6 months, weekly bars dated as KIS "
             "dates them; the first and last may cover part of a week, oldest first, 2 "
             "rows, looked up at 2026-09-28 09:31 KST. Split-adjusted prices in KRW; "
-            "volume in shares; trading value in 억 원 (조 원 from 1조). The newest row may cover a "
+            "volume in shares; trading value in 억 원. The newest row may cover a "
             "session, week or month still in progress. If the user asked for daily rows "
             "and these are not daily, say so.",
             lines[0],
@@ -370,7 +371,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Index levels in points", text)
         self.assertIn(
             "- 2026-09-25: open 2,612.50; high 2,630.10; low 2,600.25; close 2,621.07; "
-            "volume 412,345,000 shares; trading value 15.23조 원",
+            "volume 412,345,000 shares; trading value 152,345.67억 원",
             text,
         )
         self.assertEqual(
@@ -400,7 +401,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         lines = text.splitlines()
         self.assertEqual(
             "Ranking: top losers by change rate, market kosdaq, looked up at 2026-09-28 "
-            "09:31 KST, in the broker's order. Amounts in 억 원 (조 원 from 1조).",
+            "09:31 KST, in the broker's order. Market caps in 조 원, other amounts in 억 원.",
             lines[0],
         )
         self.assertIn("does not say which trading day", lines[1])
@@ -552,11 +553,13 @@ class UnitTest(unittest.TestCase):
         self.assertEqual("-0.5억 원", _market_amount(-50_000_000, _WON))
         self.assertEqual("+12억 원", _market_amount(1200, _MILLION, signed=True))
         self.assertEqual("0억 원", _market_amount(-1, _WON))
-        # From 1조 the amount reads in 조 원.
-        self.assertEqual("1,613.57조 원", _market_amount(16135729, _EOK))
-        self.assertEqual("1조 원", _market_amount(9_999.996, _EOK))
-        self.assertEqual("-1.2조 원", _market_amount(-1_200_000, _MILLION))
-        self.assertEqual("9,999.99억 원", _market_amount(9_999.99, _EOK))
+        # The unit belongs to the figure, not its size: market caps in 조 원,
+        # every other amount in 억 원 however large.
+        self.assertEqual("1,613.57조 원", _market_amount(16135729, _EOK, in_jo=True))
+        self.assertEqual("0.05조 원", _market_amount(500, _EOK, in_jo=True))
+        self.assertEqual(
+            "-15,462.13억 원", _market_amount(-1_546_213, _MILLION, signed=True)
+        )
         self.assertIsNone(_market_amount(None, _WON))
 
 

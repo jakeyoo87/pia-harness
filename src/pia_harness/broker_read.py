@@ -5,8 +5,8 @@ It calls pia-broker's internal routes with the signed client PIA also gives the
 order tool; Harness knows no AWS. Every failure becomes a sentence for the model
 rather than an exception, so one broker problem does not end the Turn. Figures
 come from the broker as they are; only their units are converted here, so every
-market amount reaches the model in 억 원 (조 원 from 1조) and every volume in
-shares.
+market amount reaches the model in 억 원 (market caps in 조 원) and every volume
+in shares.
 """
 
 from __future__ import annotations
@@ -345,8 +345,9 @@ class BrokerReadTool:
                 ),
                 f"Held: {_position(position) if position else 'none'}.",
                 (
-                    "Buyable now, as calculated by the broker without margin on a "
-                    f"market-order basis{basis}: up to {_shares(buyable['quantity'])}, "
+                    "Buyable now, as calculated by the broker without margin for a "
+                    f"limit order at the current price{basis}: up to "
+                    f"{_shares(buyable['quantity'])}, "
                     f"amount {_krw(buyable['amount'])}."
                 ),
             )
@@ -361,7 +362,10 @@ class BrokerReadTool:
                 ("change from the previous close", _change(quote)),
                 ("volume", _shares(quote.get("volume"))),
                 ("trading value", _market_amount(quote.get("trading_value"), _WON)),
-                ("market cap", _market_amount(quote.get("market_cap"), _EOK)),
+                (
+                    "market cap",
+                    _market_amount(quote.get("market_cap"), _EOK, in_jo=True),
+                ),
                 ("PER", _plain(quote.get("per"))),
                 ("PBR", _plain(quote.get("pbr"))),
                 ("52-week high", _krw(quote.get("high_52w"))),
@@ -398,7 +402,7 @@ class BrokerReadTool:
             lines = [
                 (
                     f"Prices of {subject} {when} {units}; volume in shares; trading "
-                    "value in 억 원 (조 원 from 1조). The newest row may cover a session, "
+                    "value in 억 원. The newest row may cover a session, "
                     "week or month "
                     "still in progress. If the user asked for daily rows and these are "
                     "not daily, say so."
@@ -425,7 +429,7 @@ class BrokerReadTool:
             lines = [
                 (
                     f"Net buying by investor group in {subject} {when} Positive = net "
-                    "buying, negative = net selling; amounts in 억 원 (조 원 from 1조), "
+                    "buying, negative = net selling; amounts in 억 원, "
                     "volumes in "
                     f"shares; close is {close_unit}. The newest row may be a session "
                     "still in progress."
@@ -469,8 +473,8 @@ class BrokerReadTool:
         lines = [
             (
                 f"Ranking: {_RANKINGS[by]}, {'; '.join(basis)}, looked up at "
-                f"{_kst(reply['observed_at'])}, in the broker's order. Amounts in 억 원 "
-                "(조 원 from 1조)."
+                f"{_kst(reply['observed_at'])}, in the broker's order. Market caps in "
+                "조 원, other amounts in 억 원."
             )
         ]
         if ask["data"] != "short_selling":  # short selling carries its KIS dates
@@ -621,14 +625,20 @@ def _krw(value: object, *, signed: bool = False) -> str | None:
     return f"{text} KRW"
 
 
-def _market_amount(value: object, divisor: int, *, signed: bool = False) -> str | None:
-    """A market amount in 억 원, or in 조 원 from 1조, to two decimals."""
+def _market_amount(
+    value: object, divisor: int, *, signed: bool = False, in_jo: bool = False
+) -> str | None:
+    """A market amount to two decimals, in 억 원, or in 조 원 for market caps.
+
+    The unit belongs to the figure, never to its size: one figure keeps one unit
+    across rows, so a model can chart it without converting anything.
+    """
 
     number = _number(value)
     if number is None:
         return None
     amount, unit = number / divisor, "억 원"
-    if abs(round(amount, 2)) >= 10_000:
+    if in_jo:
         amount, unit = amount / 10_000, "조 원"
     amount = round(amount, 2)
     text = f"{abs(amount) if signed else amount:,.2f}".rstrip("0").rstrip(".")
@@ -726,7 +736,7 @@ def _kst(value: str) -> str:
 # Ranking figures from the broker and how to read them out; KIS units as checked
 # live (plans/2026-10-02_broker-ranking.md "실호출 확인").
 _FIGURES: dict[str, tuple[str, Callable[[object], str | None]]] = {
-    "market_cap": ("market cap", lambda value: _market_amount(value, _EOK)),
+    "market_cap": ("market cap", lambda value: _market_amount(value, _EOK, in_jo=True)),
     "market_cap_share": ("share of the market's total cap", _share),
     "trading_value": ("trading value", lambda value: _market_amount(value, _WON)),
     "short_volume": ("short-sold volume", _shares),
