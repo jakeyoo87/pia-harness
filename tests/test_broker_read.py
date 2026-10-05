@@ -6,7 +6,7 @@ import unittest
 import httpx
 
 from pia_harness import BrokerReadTool, ToolCall
-from pia_harness.broker_read import _EOK, _MILLION, _WON, _market_amount
+from pia_harness.broker_read import _EOK, _MILLION, _WON, _exact, _market_amount
 
 MEMBER = "member-1"
 SAMSUNG = {"status": "FOUND", "code": "005930", "name": "삼성전자", "market": "KOSPI"}
@@ -662,6 +662,19 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
 
 
 class UnitTest(unittest.TestCase):
+    def test_exact_keeps_every_decimal_of_any_number(self) -> None:
+        for value, text in (
+            (1384.5512, "1,384.5512"),
+            (0.00001, "0.00001"),
+            (1.085, "1.085"),
+            (4.0, "4"),
+            (12345678, "12,345,678"),
+            (-0.031, "-0.031"),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(text, _exact(value))
+        self.assertEqual("+0.00001", _exact(0.00001, signed=True))
+
     def test_market_amounts_reach_market_amount_from_any_kis_unit(self) -> None:
         for value, divisor in (
             (123_456_789_012, _WON),

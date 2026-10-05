@@ -15,6 +15,7 @@ import json
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -788,8 +789,7 @@ def _exact(value: object, *, signed: bool = False) -> str | None:
     number = _number(value)
     if number is None:
         return None
-    whole, _, decimals = repr(abs(number)).partition(".")
-    text = f"{int(whole):,}" + (f".{decimals}" if decimals.strip("0") else "")
+    text = f"{Decimal(repr(abs(number))).normalize():,f}"
     if number < 0:
         return "-" + text
     return ("+" if signed and number > 0 else "") + text

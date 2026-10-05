@@ -270,3 +270,16 @@ Broker 표가 키마다 KIS 값의 단위를 준다. 실호출로 확인해 채�
 - **기간 시세:** 일·주·월 단위마다 하나씩 `usdkrw` 1m, `spx` 1y, `gold` 3y(각 최대 3번). 날짜별 줄, 날짜 기준(한국·현지), 주·월 줄의 날짜를 본다.
 - KIS 요청은 40번 안팎이다. 시장 구분 코드가 틀린 분류만 다른 코드로 한 번 더 묻는다.
 - 안 되는 키는 Broker 표, harness 목록·설명, 시나리오에서 함께 뺀다. 단위가 다르면 단위 문구만 고친다.
+
+## Codex 구현 검토 반영 (Claude, 2026-10-05)
+
+Codex 구현 검토: P2 세 건(모두 harness), 대상 우선순위·Broker 단일 대상·31개 키와 스키마 동기화·해외 거래량 제외·국내 회귀는 확인. 세 건 모두 실제로 생기므로 그대로 고쳤다.
+
+| P2 | 고친 것 |
+|---|---|
+| `_exact`가 `1e-05` 같은 지수 표기를 못 읽어 정상 응답이 형식 오류가 됨 | `Decimal(repr(x)).normalize()`를 `,f`로 쓰는 공통 포맷 하나로 바꿈. 작은 소수·정수·음수 단위 테스트 추가 |
+| 시나리오 채점이 `target` 튜플을 못 읽어 b8·b10·b17–b24 정상 인자가 CHECK | `_filled`가 고른 대상을 원래 인자명(`market`·`macro`·`commodity`·`name`)으로 펼침 |
+| fake의 단위·봉 단위가 Broker와 다름(WTI 1년이 points·day) | fake 단위에 `wti` USD per barrel 추가, 국내·series 모두 같은 기간별 봉 단위 표(`_BAR_UNIT`) 사용 |
+
+- 오프라인으로 시나리오 채점을 기대 인자로 재현: `expect_args`가 있는 22개 모두 PASS. fake WTI 1년은 `USD per barrel`·`week`.
+- harness 테스트 189개 통과, ruff·mypy 오류 수는 main과 같음.

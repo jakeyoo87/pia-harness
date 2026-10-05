@@ -73,6 +73,8 @@ BROKER_PROMPT = (
 )
 _MEMORY_ACTIONS = {"update": "UPDATE", "forget": "FORGET"}
 _EXECUTION_TOOLS = frozenset({"order", "confirm"})
+# Bars by period, as the broker returns them (pia-broker README).
+_BAR_UNIT = {"6m": "week", "1y": "week", "3y": "month", "5y": "month"}
 
 
 @dataclass
@@ -322,9 +324,18 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
         # A market index, macro figure or commodity: fixed values in the broker's
         # series shapes (pia-broker README 9).
         kind, key = series
-        value = {"us10y": 4.1234, "usdkrw": 1384.5512, "gold": 2650.4}.get(key, 6012.25)
-        unit = {"us10y": "%", "usdkrw": "KRW per USD", "gold": "USD per troy ounce"}
-        unit_of = unit.get(key, "points")
+        value = {
+            "us10y": 4.1234,
+            "usdkrw": 1384.5512,
+            "gold": 2650.4,
+            "wti": 71.23,
+        }.get(key, 6012.25)
+        unit_of = {
+            "us10y": "%",
+            "usdkrw": "KRW per USD",
+            "gold": "USD per troy ounce",
+            "wti": "USD per barrel",
+        }.get(key, "points")
         if path.endswith("/quote"):
             return {
                 kind: key,
@@ -343,7 +354,7 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
             "name": key.upper(),
             "price_unit": unit_of,
             "period": params["period"],
-            "unit": "day",
+            "unit": _BAR_UNIT.get(params["period"], "day"),
             "observed_at": now,
             "rows": [
                 {
@@ -393,13 +404,12 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
                 }
                 for day in range(25, 21, -1)
             ]
-        unit = {"6m": "week", "1y": "week", "3y": "month", "5y": "month"}
         return {
             "data": params["data"],
             "code": params.get("code"),
             "market": params.get("market"),
             "period": params["period"],
-            "unit": unit.get(params["period"], "day"),
+            "unit": _BAR_UNIT.get(params["period"], "day"),
             "observed_at": now,
             "rows": rows,
         }
@@ -434,9 +444,14 @@ def _filled(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     if name != "broker":
         return arguments
     try:
-        return _resolve(arguments)
+        filled = _resolve(arguments)
     except _ArgumentProblem:
         return {}
+    # The chosen target under its own argument name, as a scenario expects it.
+    kind, value = filled.pop("target", (None, None))
+    if kind is not None:
+        filled[kind] = value
+    return filled
 
 
 def _check(scenario: dict[str, Any], record: Record) -> str:
