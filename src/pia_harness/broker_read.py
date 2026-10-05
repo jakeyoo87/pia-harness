@@ -42,7 +42,6 @@ _SERIES_MARKETS = {
     "spx": "S&P 500",
     "nasdaq": "NASDAQ Composite",
     "nasdaq100": "NASDAQ-100",
-    "dow": "Dow Jones Industrial Average",
     "sox": "PHLX Semiconductor Index (a sector index)",
     "nikkei": "Nikkei 225",
     "hangseng": "Hang Seng",
@@ -196,7 +195,7 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
             + ", ".join(f"{key} = {label}" for key, label in _SERIES_MARKETS.items())
             + ". history investors: kospi or kosdaq only (net buying in the whole "
             "market). ranking: all (default), kospi or kosdaq (Korean stocks in that "
-            "market).",
+            "market). The Dow Jones index is not here: use web_search.",
         },
         "macro": {
             "type": ["string", "null"],

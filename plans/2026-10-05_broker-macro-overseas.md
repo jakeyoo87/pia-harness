@@ -305,3 +305,19 @@ Broker `c067a85` dev 배포 후 31개 키 quote + 기간 시세 3가지를 운�
   - 금이 되는 코드가 나오면 나머지 상품 4개를 그 코드로 확인(최대 4번 더).
   - 끝나면 되는 코드를 원래 키에 반영하고, 임시 키와 끝내 안 되는 키를 Broker 표·harness 목록·시나리오에서 함께 지운 뒤 다시 배포한다.
 - Broker `claude/broker-series-probe`: 임시 키 6줄, 원/엔 단위 확정. 테스트 236개 통과.
+
+### 후보 시험 결과와 정리 (2026-10-05)
+
+Broker `738e12f` 배포 후 임시 키 6개(요청 사이 1.5초):
+
+| 임시 키 | 결과 |
+|---|---|
+| gold N | 4,162.3 USD/온스, 전일 대비 -40 (-0.95%) |
+| gold X | 4,162.2998 (같은 값, 소수 잡음) |
+| gold I | 0 |
+| dow `DJI`·`DJIA`·`INDU` (N) | 모두 0 |
+
+- **정리:** 상품 5개는 시장 구분 N(금 확인, 나머지 4개는 배포 후 확인). dow는 표에서 뺀다. 임시 키 삭제. 키는 30개.
+- Broker `claude/broker-series-final` `2e3f96c`: 표·docstring·README·테스트 키 수 30.
+- harness(이 커밋): `_SERIES_MARKETS`에서 dow 삭제, `market` 설명에 "다우 지수는 없음: web_search", 시나리오 b28 "다우 지수 어때?" → `web_search`, README.
+- 다음: Codex 검토 → Broker 배포 → 상품 5개 quote + gold 3y history 확인(6번) → 안 되는 상품은 뺌 → b28 시나리오만 실행(유료) → harness 병합.

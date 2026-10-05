@@ -25,5 +25,6 @@
   {"id": "b24", "message": "VIX 얼마야?", "expect": "broker", "expect_args": {"action": "quote", "macro": "vix"}},
   {"id": "b25", "message": "엔비디아 주가 얼마야?"},
   {"id": "b26", "message": "미국 CPI 발표 결과 알려줘"},
-  {"id": "b27", "message": "요즘 DRAM 가격 어때?"}
+  {"id": "b27", "message": "요즘 DRAM 가격 어때?"},
+  {"id": "b28", "message": "다우 지수 어때?", "expect": "web_search"}
 ]
