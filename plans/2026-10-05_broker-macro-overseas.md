@@ -321,3 +321,16 @@ Broker `738e12f` 배포 후 임시 키 6개(요청 사이 1.5초):
 - Broker `claude/broker-series-final` `2e3f96c`: 표·docstring·README·테스트 키 수 30.
 - harness(이 커밋): `_SERIES_MARKETS`에서 dow 삭제, `market` 설명에 "다우 지수는 없음: web_search", 시나리오 b28 "다우 지수 어때?" → `web_search`, README.
 - 다음: Codex 검토 → Broker 배포 → 상품 5개 quote + gold 3y history 확인(6번) → 안 되는 상품은 뺌 → b28 시나리오만 실행(유료) → harness 병합.
+
+### 상품 확인 (Broker `2e3f96c` 배포 후, 2026-10-05)
+
+| 조회 | 결과 |
+|---|---|
+| gold | 4,162.3 USD/온스, -40 (-0.95%) |
+| silver | 60.42 USD/온스, -0.76 (-1.24%) |
+| wti | 91.11 USD/배럴, -1.76 (-1.89%) |
+| brent | 102.25 USD/배럴, -0.06 (-0.06%) |
+| copper | 14,355 USD/톤, +20 (+0.14%) |
+| gold 3y history | 월봉 36줄, 1번 호출. 월봉 날짜는 그 달 1일(국내 지수는 마지막 거래일이었음) |
+
+- 상품 5개 모두 시장 구분 N에서 정상. 키 30개 모두 실호출로 값을 확인했다.
