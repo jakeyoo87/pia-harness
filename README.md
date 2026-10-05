@@ -293,16 +293,17 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
 증권사 조회(`broker`)는 사용자가 연결한 증권 계좌로 내 계좌·현재 시세·기간별 시세와 투자자 동향·시장 순위를 조회하는 읽기 도구다. 주문 도구와 같은 Broker 내부 경로를 쓰고, PIA가 넘긴 서명된 client를 같이 쓴다(`BrokerReadTool(base_url=..., client=...)`). harness는 AWS를 모른다. 설계와 결정은 `plans/2026-10-04_broker-tool-structure.md`다.
 
 ```text
-◇ 모델이 broker 호출 { action, data, name, market, period, by, count } (action만 필수, 쓰지 않는 인자는 무시)
+◇ 모델이 broker 호출 { action, data, name, market, macro, commodity, period, by, count } (action만 필수, 쓰지 않는 인자는 무시)
   ├─ account ··· 내 계좌                                    Broker /account
   │     name 없음: 연결된 계좌의 예수금·D+2 예수금·보유 종목(매도 가능 포함)·총평가·총손익
   │     name 있음: 그 종목의 보유·매도 가능·평균가 + 증권사가 계산한 미수 없는 매수 가능 금액·수량(현재가 지정가 기준)
   │     확인된 KIS 연결이 없으면(409) 연결 상태(/broker-status)와 회원 웹 안내
-  ├─ quote ····· 지금, data=prices                          Broker /quote
-  │     현재가·전일 대비·등락률·거래량·거래대금·시가총액·PER·PBR·52주 최고·최저
-  ├─ history ··· 기간별, name(종목) 또는 market(kospi·kosdaq 시장 자체)   Broker /history
-  │     data=prices    period 1m·3m 일, 6m·1y 주, 3y·5y 월 → 시가·고가·저가·종가·거래량·거래대금 (지수는 points)
-  │     data=investors period 1m(일)만 → 개인·외국인·기관 순매수 수량·금액
+  ├─ quote ····· 지금, data=prices, 대상 name·market·macro·commodity 중 하나   Broker /quote
+  │     종목: 현재가·전일 대비·등락률·거래량·거래대금·시가총액·PER·PBR·52주 최고·최저
+  │     지수·지표·상품: KIS가 준 최근 값과 전일 대비(소수 그대로, 대상의 단위)
+  ├─ history ··· 기간별, 대상 하나   Broker /history
+  │     data=prices    period 1m·3m 일, 6m·1y 주, 3y·5y 월 → 시가·고가·저가·종가 (+ 국내 종목·코스피·코스닥은 거래량·거래대금)
+  │     data=investors period 1m(일)만, name 또는 market(kospi·kosdaq) → 개인·외국인·기관 순매수 수량·금액
   └─ ranking ··· 순위, market(all·kospi·kosdaq)·count(기본 10)   Broker /ranking
         data=prices        by market_cap·gainers·losers·volume·trading_value
         data=investors     by foreign_buying·foreign_selling·institution_buying·institution_selling
@@ -312,6 +313,7 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
 조회 시각(KST)과 단위를 붙인 결과 문장을 이번 Turn의 Context에 추가
 ```
 
+- **대상 넷:** `name`(국내 종목·ETF), `market`(지수로 나타내는 시장: kospi·kosdaq, 해외 대표 지수, 업종 지수 sox, CME 지수선물), `macro`(금리·환율·VIX), `commodity`(금·은·유가·구리). quote와 history는 이 순서로 처음 준 대상 하나만 쓰고 그 값만 검사한다. 키 목록은 pia-broker의 series 표(`src/pia_broker/series.py`)와 같게 손으로 맞춘다. 해외 개별 종목, 경제 지표 발표값(CPI 등), 기준금리 결정, 가상자산, DRAM 가격은 없어 웹 검색으로 답한다(설명에 적음). 계획은 `plans/2026-10-05_broker-macro-overseas.md`.
 - **표 하나:** 액션·data·by·period의 허용 값은 `broker_read.py`의 `_ACTIONS` 하나에서 나오고, schema·설명·검사가 모두 이 표를 쓴다. `data`·`by`·`period`는 생략(null)하면 그 목록의 첫 값이다. history의 `market`에는 기본값이 없다. 그 액션·data가 쓰지 않는 인자는 검사하지도, Broker에 보내지도 않는다(예: history에 name이 있으면 market은 무시).
 - **계산하지 않는다**: 매수 가능 수량은 증권사 값(KIS 매수 가능 조회, 현재가 지정가 기준(주문 도구의 기본 주문과 같음), 미수 없음)만 쓴다. 예수금÷가격은 결제 대기·미체결 주문·증거금률 때문에 실제와 다를 수 있다. 도구 설명과 `account` 결과에 "매수 가능은 account에 name으로"를 적는다. 투자자 동향을 주·월로 묶지 않는다(더하기가 되므로 1개월 일 단위만).
 - **단위**(사용자 결정 2026-10-04, 써 본 뒤 다시 본다): 가격과 내 계좌 금액은 원(KRW), 시가총액은 조 원, 그 밖의 시장 금액(거래대금·순매수 금액·공매도 금액)은 1조가 넘어도 억 원(단위는 값의 크기가 아니라 항목으로 정해 한 항목은 늘 같은 단위, 소수 둘째 자리, 도구가 바꿈), 수량은 주, 지수는 points. Broker는 KIS 단위 그대로 주고 변환은 harness 한 곳에서 한다. KIS 단위(2026-10-02 실호출 확인): 시가총액 억 원, 거래대금·공매도 금액 원, 순위 순매수 금액 백만 원. 2026-10-05 실호출 확인: 종목 기간 시세 거래대금 원·거래량 주, 지수 기간 시세 거래대금 백만 원·거래량 천 주, 시장 투자자 순매수 수량 천 주·금액 백만 원, 종목 투자자 수량 주·금액 백만 원.

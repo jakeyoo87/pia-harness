@@ -14,5 +14,16 @@
   {"id": "b12", "message": "코스피 외국인 순매수 상위 종목", "expect": "broker", "expect_args": {"action": "ranking", "data": "investors", "by": "foreign_buying", "market": "kospi"}},
   {"id": "b13", "message": "일주일 기준 공매도 많은 종목", "expect": "broker", "expect_args": {"action": "ranking", "data": "short_selling", "period": "1w"}},
   {"id": "b14", "message": "요즘 사람들이 많이 보는 종목은?", "expect": "broker", "expect_args": {"action": "ranking", "data": "attention"}},
-  {"id": "b15", "message": "삼성전자 시가총액 1년 추이 보여줘"}
+  {"id": "b15", "message": "삼성전자 시가총액 1년 추이 보여줘"},
+  {"id": "b17", "message": "미국 10년물 금리 얼마야?", "expect": "broker", "expect_args": {"action": "quote", "macro": "us10y"}},
+  {"id": "b18", "message": "원달러 환율 3개월 추이 차트로", "expect": "broker", "expect_args": {"action": "history", "macro": "usdkrw", "period": "3m"}},
+  {"id": "b19", "message": "요즘 금값 어때?", "expect": "broker", "expect_args": {"commodity": "gold"}},
+  {"id": "b20", "message": "WTI 유가 1년 흐름", "expect": "broker", "expect_args": {"action": "history", "commodity": "wti", "period": "1y"}},
+  {"id": "b21", "message": "나스닥 요즘 어때?", "expect": "broker", "expect_args": {"market": "nasdaq"}},
+  {"id": "b22", "message": "밤사이 나스닥 선물 어때?", "expect": "broker", "expect_args": {"action": "quote", "market": "nasdaq100_futures"}},
+  {"id": "b23", "message": "필라델피아 반도체 지수 얼마야?", "expect": "broker", "expect_args": {"action": "quote", "market": "sox"}},
+  {"id": "b24", "message": "VIX 얼마야?", "expect": "broker", "expect_args": {"action": "quote", "macro": "vix"}},
+  {"id": "b25", "message": "엔비디아 주가 얼마야?"},
+  {"id": "b26", "message": "미국 CPI 발표 결과 알려줘"},
+  {"id": "b27", "message": "요즘 DRAM 가격 어때?"}
 ]

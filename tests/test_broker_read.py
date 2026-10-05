@@ -96,9 +96,64 @@ FLOWS = {
 }
 
 
+SERIES = {
+    ("macro", "usdkrw"): ("USD/KRW", "KRW per USD", 1384.5512),
+    ("macro", "us10y"): ("US 10-year Treasury yield", "%", 4.1234),
+    ("commodity", "gold"): ("Gold (COMEX)", "USD per troy ounce", 2650.4),
+    ("market", "spx"): ("S&P 500", "points", 6012.25),
+}
+
+
+def series_of(params: httpx.QueryParams) -> tuple[str, str] | None:
+    for kind in ("market", "macro", "commodity"):
+        key = params.get(kind)
+        if key is not None and (kind, key) in SERIES:
+            return kind, key
+    return None
+
+
+def series_quote(kind: str, key: str) -> dict:
+    name, unit, price = SERIES[(kind, key)]
+    return {
+        kind: key,
+        "name": name,
+        "unit": unit,
+        "price": price,
+        "change": -0.031,
+        "change_rate": -0.75,
+        "observed_at": AT,
+    }
+
+
 def history(request: httpx.Request) -> dict:
     params = request.url.params
     stock = "code" in params
+    series = series_of(params)
+    if series is not None:
+        name, unit, price = SERIES[series]
+        return {
+            "data": "prices",
+            "code": None,
+            "market": None,
+            series[0]: series[1],
+            "name": name,
+            "price_unit": unit,
+            "period": params["period"],
+            "unit": "day",
+            "observed_at": AT,
+            "rows": [
+                {
+                    "date": day,
+                    "open": price,
+                    "high": price + 1.25,
+                    "low": price - 0.5,
+                    "close": price,
+                    "volume": None,
+                    "trading_value": None,
+                }
+                for day in ("2026-09-25", "2026-09-24")
+            ],
+        }
     if params["data"] == "prices":
         rows = [
             {
@@ -168,6 +223,9 @@ class FakeBroker:
         if self.not_connected:
             return httpx.Response(409, json={"error": {"code": "BROKER_NOT_CONNECTED"}})
         if path == f"/internal/members/{MEMBER}/quote":
+            series = series_of(request.url.params)
+            if series is not None:
+                return httpx.Response(200, json=series_quote(*series))
             return httpx.Response(200, json=QUOTE)
         if path == f"/internal/members/{MEMBER}/ranking":
             return httpx.Response(200, json=self.ranking)
@@ -469,7 +527,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
                 {"action": "orders"},
                 "action must be one of account, quote, history, ranking",
             ),
-            ({"action": "quote"}, "quote needs the stock name"),
+            ({"action": "quote"}, "quote prices needs one of name, market, macro"),
             ({"action": ["account"]}, "action must be one of"),
             ({"action": "quote", "name": " "}, "name must be the stock name"),
             ({"action": "account", "name": ""}, "name must be the stock name"),
@@ -484,9 +542,21 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             ),
             (
                 {"action": "history"},
-                "history needs the stock name, or market kospi or kosdaq",
+                "history prices needs one of name, market, macro, commodity",
             ),
-            ({"action": "history", "market": "all"}, "history needs the stock name"),
+            (
+                {"action": "history", "market": "all"},
+                "market for history prices must be",
+            ),
+            (
+                {"action": "history", "data": "investors", "market": "spx"},
+                "market for history investors must be one of kospi, kosdaq",
+            ),
+            ({"action": "quote", "macro": "bitcoin"}, "macro for quote prices must be"),
+            (
+                {"action": "quote", "commodity": ["gold"]},
+                "commodity for quote prices must be",
+            ),
             (
                 {
                     "action": "history",
@@ -539,6 +609,56 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
                 params = self.broker.requests[-1].url.params
                 self.assertNotIn("nxt", params.values())
                 self.assertNotIn("5d", params.values())
+
+    async def test_quote_of_a_macro_figure_keeps_its_decimals(self) -> None:
+        text = await self.lookup("quote", macro="us10y")
+        self.assertTrue(
+            text.startswith(
+                "US 10-year Treasury yield, looked up at 2026-09-28 09:31 KST: 4.1234%; "
+                "change from the previous close -0.031 percentage points (-0.75%). This "
+                "is the latest value KIS gives as of the lookup time, not necessarily a "
+                "live one."
+            ),
+            text,
+        )
+        self.assertEqual({"macro": "us10y"}, self.params())
+        text = await self.lookup("quote", commodity="gold")
+        self.assertIn("Gold (COMEX), looked up at", text)
+        self.assertIn(
+            ": 2,650.4 USD per troy ounce; change from the previous close", text
+        )
+        self.assertIn("-0.031 USD per troy ounce", text)
+
+    async def test_history_of_a_series_has_no_volume(self) -> None:
+        text = await self.lookup("history", macro="usdkrw", period="3m")
+        lines = text.splitlines()
+        self.assertTrue(
+            lines[0].startswith(
+                "Prices of USD/KRW over the last 3 months, daily rows (one per trading "
+                "day), oldest first, 2 rows, looked up at 2026-09-28 09:31 KST. Values in "
+                "KRW per USD, as KIS reports them."
+            ),
+            lines[0],
+        )
+        self.assertEqual(
+            "- 2026-09-24: open 1,384.5512; high 1,385.8012; low 1,384.0512; close "
+            "1,384.5512",
+            lines[1],
+        )
+        self.assertEqual(
+            {"data": "prices", "period": "3m", "macro": "usdkrw"}, self.params()
+        )
+
+    async def test_the_target_is_the_first_given(self) -> None:
+        # A name comes first; otherwise market, then macro, then commodity.
+        await self.lookup("quote", "삼성전자", macro="us10y", commodity="gold")
+        self.assertEqual({"code": "005930"}, self.params())
+        await self.lookup("quote", market="spx", commodity="gold")
+        self.assertEqual({"market": "spx"}, self.params())
+        await self.lookup("history", macro="us10y", commodity="nope")
+        self.assertEqual(
+            {"data": "prices", "period": "1m", "macro": "us10y"}, self.params()
+        )
 
 
 class UnitTest(unittest.TestCase):

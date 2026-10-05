@@ -230,6 +230,8 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
                     200, json={"status": "AMBIGUOUS", "candidates": candidates}
                 )
             return httpx.Response(200, json={"status": "NOT_FOUND"})
+        if path.endswith("/quote") and "code" not in request.url.params:
+            return httpx.Response(200, json=_fake_read(path, request.url.params))
         if path.endswith("/quote"):
             code = request.url.params["code"]
             price = next(v[2] for v in FAKE_INSTRUMENTS.values() if v[0] == code)
@@ -304,6 +306,57 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
             "total_valuation": 5855000,
             "total_profit": 155000,
             "observed_at": now,
+        }
+    series = next(
+        (
+            (kind, params[kind])
+            for kind in ("market", "macro", "commodity")
+            if kind in params
+        ),
+        None,
+    )
+    if series is not None and (
+        path.endswith("/quote")
+        or (path.endswith("/history") and series[1] not in ("kospi", "kosdaq"))
+    ):
+        # A market index, macro figure or commodity: fixed values in the broker's
+        # series shapes (pia-broker README 9).
+        kind, key = series
+        value = {"us10y": 4.1234, "usdkrw": 1384.5512, "gold": 2650.4}.get(key, 6012.25)
+        unit = {"us10y": "%", "usdkrw": "KRW per USD", "gold": "USD per troy ounce"}
+        unit_of = unit.get(key, "points")
+        if path.endswith("/quote"):
+            return {
+                kind: key,
+                "name": key.upper(),
+                "unit": unit_of,
+                "price": value,
+                "change": -0.031,
+                "change_rate": -0.75,
+                "observed_at": now,
+            }
+        return {
+            "data": "prices",
+            "code": None,
+            "market": None,
+            kind: key,
+            "name": key.upper(),
+            "price_unit": unit_of,
+            "period": params["period"],
+            "unit": "day",
+            "observed_at": now,
+            "rows": [
+                {
+                    "date": f"2026-09-{day:02d}",
+                    "open": value,
+                    "high": value,
+                    "low": value,
+                    "close": value,
+                    "volume": None,
+                    "trading_value": None,
+                }
+                for day in range(25, 21, -1)
+            ],
         }
     if path.endswith("/history"):
         stock = "code" in params

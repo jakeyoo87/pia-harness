@@ -34,6 +34,57 @@ _HISTORY_PERIODS = ("1m", "3m", "6m", "1y", "3y", "5y")
 _SHORT_SELLING_PERIODS = ("1d", "2d", "3d", "4d", "1w", "2w", "3w", "1m", "2m", "3m")
 _MARKETS = ("all", "kospi", "kosdaq")
 _INDEX_MARKETS = ("kospi", "kosdaq")
+# Figures other than Korean stocks, by the kind of target that asks for them. The
+# keys are pia-broker's series table (src/pia_broker/series.py); the two lists are
+# kept in step by hand.
+_SERIES_MARKETS = {
+    "spx": "S&P 500",
+    "nasdaq": "NASDAQ Composite",
+    "nasdaq100": "NASDAQ-100",
+    "dow": "Dow Jones Industrial Average",
+    "sox": "PHLX Semiconductor Index (a sector index)",
+    "nikkei": "Nikkei 225",
+    "hangseng": "Hang Seng",
+    "shanghai": "Shanghai Composite",
+    "dax": "DAX",
+    "ftse": "FTSE 100",
+    "sp500_futures": "E-Mini S&P 500 index futures",
+    "nasdaq100_futures": "E-Mini NASDAQ-100 index futures",
+}
+_MACRO = {
+    "us10y": "US 10-year Treasury yield",
+    "us30y": "US 30-year Treasury yield",
+    "us1y": "US 1-year T-bill yield",
+    "fed_funds": "US federal funds rate (call rate, not the FOMC target decision)",
+    "jp10y": "Japan 10-year government bond yield",
+    "kr3y": "Korea 3-year treasury bond yield (not the Bank of Korea base rate)",
+    "kr10y": "Korea 10-year treasury bond yield",
+    "cd91": "Korea CD 91-day rate",
+    "usdkrw": "USD/KRW exchange rate",
+    "jpykrw": "JPY/KRW exchange rate",
+    "eurusd": "EUR/USD exchange rate",
+    "usdjpy": "USD/JPY exchange rate",
+    "usdcny": "USD/CNY exchange rate",
+    "vix": "VIX volatility index",
+}
+_COMMODITY = {
+    "gold": "gold (COMEX)",
+    "silver": "silver (COMEX)",
+    "wti": "WTI crude oil",
+    "brent": "Brent crude oil",
+    "copper": "copper (LME)",
+}
+_PRICE_TARGETS: dict[str, tuple[str, ...]] = {
+    "market": (*_INDEX_MARKETS, *_SERIES_MARKETS),
+    "macro": tuple(_MACRO),
+    "commodity": tuple(_COMMODITY),
+}
+# What a quote or history can be about besides a stock name, in the order taken.
+_TARGETS: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {
+    ("quote", "prices"): _PRICE_TARGETS,
+    ("history", "prices"): _PRICE_TARGETS,
+    ("history", "investors"): {"market": _INDEX_MARKETS},
+}
 # What each action offers: data -> (ranking bases, periods). The first value of
 # each list is the default, and the schema, description and checks all use this.
 _ACTIONS: dict[str, dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
@@ -110,10 +161,11 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
             "description": "account: the user's own account: connection, cash "
             "(deposit and D+2 deposit), holdings and totals. With name, that one "
             "stock in the account: quantity held, sellable now, average price, and "
-            "how much can be bought now as the broker calculates it. quote: one "
-            "stock's live price and market figures. history: figures over a period "
-            "for one stock (name) or for the KOSPI or KOSDAQ market itself (market). "
-            "ranking: a market-wide ranking of stocks.",
+            "how much can be bought now as the broker calculates it. quote: the "
+            "latest value of one stock (with its market figures), market index, macro "
+            "figure or commodity. history: values over a period for one of those "
+            "(investor flows: a Korean stock or KOSPI/KOSDAQ only). ranking: a "
+            "market-wide ranking of Korean stocks.",
         },
         "data": {
             "type": ["string", "null"],
@@ -131,15 +183,35 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
             "description": "The one stock the question is about: the official listed "
             "stock or ETF name. Convert nicknames and abbreviations (삼전 -> 삼성전자, "
             "하닉 -> SK하이닉스). Use the 6-character code only if the user gave a code. "
-            "account: narrows the account to that stock. quote: required. history: "
-            "used instead of market.",
+            "Korean stocks and ETFs only. account: narrows the account to that stock. "
+            "quote and history: the stock to look up; it is used before market, macro "
+            "or commodity.",
         },
         "market": {
             "type": ["string", "null"],
-            "enum": [*_MARKETS, None],
-            "description": "The market the question is about. history without name: "
-            "kospi or kosdaq (the index, or net buying in the whole market). ranking: "
-            "all (default), kospi or kosdaq (stocks in that market).",
+            "enum": [*_MARKETS, *_SERIES_MARKETS, None],
+            "description": "The market the question is about, as an index for a whole "
+            "market or a sector. quote and history prices: kospi, kosdaq, "
+            + ", ".join(f"{key} = {label}" for key, label in _SERIES_MARKETS.items())
+            + ". history investors: kospi or kosdaq only (net buying in the whole "
+            "market). ranking: all (default), kospi or kosdaq (Korean stocks in that "
+            "market).",
+        },
+        "macro": {
+            "type": ["string", "null"],
+            "enum": [*_MACRO, None],
+            "description": "A rate, exchange rate or volatility figure for quote or "
+            "history prices: "
+            + "; ".join(f"{key} = {label}" for key, label in _MACRO.items())
+            + ". Economic releases (CPI, jobs, GDP), central bank decisions and "
+            "crypto are not here: use web_search.",
+        },
+        "commodity": {
+            "type": ["string", "null"],
+            "enum": [*_COMMODITY, None],
+            "description": "One commodity's market price for quote or history prices: "
+            + "; ".join(f"{key} = {label}" for key, label in _COMMODITY.items())
+            + ". Memory chip (DRAM, NAND) prices are not here: use web_search.",
         },
         "period": {
             "type": ["string", "null"],
@@ -175,9 +247,12 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
 }
 BROKER_DESCRIPTION = (
     "Look up through the user's connected brokerage account: their account (cash, "
-    "holdings, and what one stock they can buy or sell), a stock's live price, price "
-    "or investor history for a stock or the KOSPI/KOSDAQ market, and market "
-    "rankings. Read-only; orders go through the order tool. Figures are live at the "
+    "holdings, and what one stock they can buy or sell), the latest value and price "
+    "history of a Korean stock, a market index (Korean, overseas, sector or index "
+    "futures), a rate, exchange rate or volatility figure, or a commodity, investor "
+    "flows for a Korean stock or market, and Korean market rankings. Overseas "
+    "individual stocks are not offered: use web_search for them. Read-only; orders "
+    "go through the order tool. Figures are live at the "
     "time shown, so call again for a later question instead of reusing an earlier "
     "result. Never work out a buyable quantity from cash and price; use account "
     "with name."
@@ -253,7 +328,9 @@ class BrokerReadTool:
             return await self._ranking(user_key, ask)
         if action == "account" and name is None:
             return await self._account(user_key)
-        if name is None:  # history of a market
+        if action != "account" and ask["target"][0] != "name":
+            if action == "quote":
+                return await self._series_quote(user_key, *ask["target"])
             return await self._history(user_key, ask, None, None)
         found = await find_instrument(self._client, name)
         if found.code is None:
@@ -375,22 +452,64 @@ class BrokerReadTool:
             + _NO_SESSION_DATE
         )
 
+    async def _series_quote(self, user_key: str, kind: str, key: str) -> str:
+        quote = await self._get(f"/internal/members/{user_key}/quote", {kind: key})
+        unit = quote["unit"]
+        value = f"{_exact(quote['price'])}{'' if unit == '%' else ' '}{unit}"
+        change = _exact(quote.get("change"), signed=True)
+        rate = _percent(quote.get("change_rate"))
+        moved = ""
+        if change is not None:
+            change_unit = "percentage points" if unit == "%" else unit
+            moved = f"; change from the previous close {change} {change_unit}"
+            moved += f" ({rate})" if rate else ""
+        return (
+            f"{quote['name']}, looked up at {_kst(quote['observed_at'])}: {value}{moved}. "
+            "This is the latest value KIS gives as of the lookup time, not necessarily "
+            "a live one. " + _NO_SESSION_DATE
+        )
+
     async def _history(
         self, user_key: str, ask: dict[str, Any], code: str | None, label: str | None
     ) -> str:
         data, period = ask["data"], ask["period"]
+        kind, key = ask["target"]
         params = {"data": data, "period": period}
         if code is None:
-            params["market"] = ask["market"]
+            params[kind] = key
         else:
             params["code"] = code
         reply = await self._get(f"/internal/members/{user_key}/history", params)
         rows = list(reversed(reply["rows"]))  # the broker gives the newest first
-        subject = f"the {str(ask['market']).upper()} market" if code is None else label
         when = (
             f"over the last {_PERIOD_WORDS[period]}, {_UNIT_WORDS[reply['unit']]}, oldest "
             f"first, {len(rows)} rows, looked up at {_kst(reply['observed_at'])}."
         )
+        if code is None and key not in _INDEX_MARKETS:
+            # An overseas index, rate, exchange rate or commodity: values exactly as
+            # KIS reports them, in the series' own unit, with no volume.
+            lines = [
+                (
+                    f"Prices of {reply['name']} {when} Values in {reply['price_unit']}, "
+                    "as KIS reports them. The newest row may cover a session, week or "
+                    "month still in progress. If the user asked for daily rows and these "
+                    "are not daily, say so."
+                )
+            ]
+            lines.extend(
+                f"- {row['date']}: "
+                + _join(
+                    ("open", _exact(row["open"])),
+                    ("high", _exact(row["high"])),
+                    ("low", _exact(row["low"])),
+                    ("close", _exact(row["close"])),
+                )
+                for row in rows
+            )
+            if not rows:
+                lines.append("The broker returned no rows for this period.")
+            return "\n".join(lines)
+        subject = f"the {key.upper()} market" if code is None else label
         source = "market" if code is None else "stock"
         if data == "prices":
             per_unit, divisor = _PRICE_DAY_UNITS[source]
@@ -560,18 +679,8 @@ def _resolve(arguments: dict[str, Any]) -> dict[str, Any]:
         ask["period"] = (
             _choice(arguments, "period", periods, where) if periods else None
         )
-    if action == "quote" and name is None:
-        raise _ArgumentProblem(
-            "quote needs the stock name. Ask the user which stock if it is not clear."
-        )
-    if action == "history" and name is None:
-        market = arguments.get("market")
-        if market not in _INDEX_MARKETS:
-            raise _ArgumentProblem(
-                "history needs the stock name, or market kospi or kosdaq. Ask the "
-                "user which if it is not clear."
-            )
-        ask["market"] = market
+    if action in ("quote", "history"):
+        ask["target"] = _target(arguments, name, action, ask["data"])
     if action == "ranking":
         ask["market"] = _choice(arguments, "market", _MARKETS, action)
         count = arguments.get("count")
@@ -581,6 +690,31 @@ def _resolve(arguments: dict[str, Any]) -> dict[str, Any]:
             raise _ArgumentProblem("count must be a whole number of 1 or more.")
         ask["count"] = count
     return ask
+
+
+def _target(
+    arguments: dict[str, Any], name: str | None, action: str, data: str
+) -> tuple[str, str]:
+    """The one thing a quote or history is about: the name, else the first of
+    market, macro and commodity given. Only that one is checked."""
+
+    if name is not None:
+        return "name", name
+    offered = _TARGETS[(action, data)]
+    for kind, values in offered.items():
+        value = arguments.get(kind)
+        if value is None:
+            continue
+        if not isinstance(value, str) or value not in values:
+            raise _ArgumentProblem(
+                f"{kind} for {action} {data} must be one of {', '.join(values)}."
+            )
+        return kind, value
+    kinds = ", ".join(("name", *offered))
+    raise _ArgumentProblem(
+        f"{action} {data} needs one of {kinds}. Ask the user what to look up if it is "
+        "not clear."
+    )
 
 
 def _choice(
@@ -645,6 +779,20 @@ def _market_amount(
     if signed and amount:
         text = ("-" if amount < 0 else "+") + text
     return f"{'0' if text in ('-0', '') else text}{unit}"
+
+
+def _exact(value: object, *, signed: bool = False) -> str | None:
+    """A number with thousands separators and every decimal the broker gave, for
+    figures such as exchange rates and yields where two decimals would hide moves."""
+
+    number = _number(value)
+    if number is None:
+        return None
+    whole, _, decimals = repr(abs(number)).partition(".")
+    text = f"{int(whole):,}" + (f".{decimals}" if decimals.strip("0") else "")
+    if number < 0:
+        return "-" + text
+    return ("+" if signed and number > 0 else "") + text
 
 
 def _percent(value: object) -> str | None:

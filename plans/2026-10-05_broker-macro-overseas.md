@@ -250,3 +250,14 @@ Broker 표가 키마다 KIS 값의 단위를 준다. 실호출로 확인해 채�
 - **선택 규칙:** 액션·data가 받는 대상 종류만 본다 → 그중 `name`·`market`·`macro`·`commodity` 순서로 첫 non-None → 그 값만 검사(잘못이면 결과 문장, 다음 대상으로 넘어가지 않음) → 하나만 Broker에 보낸다. `account`의 name 생략(전체 계좌), `ranking`의 market 기본 all은 그대로.
 - **§8 축소:** KIS에서 열리지 않으면 멈추고 별도 계획을 쓴다(대체 업체 상세는 그때).
 - 두 저장소의 키 목록은 자동으로 같아지지 않는다. 키를 빼거나 바꿀 때 Broker 표, harness enum·설명, 시나리오를 함께 고친다.
+
+## 구현 기록 (Claude, 2026-10-05)
+
+| 저장소·브랜치 | 내용 |
+|---|---|
+| pia-broker `claude/broker-macro-overseas` `c067a85` | `series.py` 표 하나(31개 키 → 종류·이름·단위·KIS 시장 구분·심볼), `/quote`·`/history`가 대상 정확히 하나(code·market·macro·commodity)를 받음, `get_series_quote`(기간 시세 API의 `output1`), `get_price_history`가 series도 받음(거래량·거래대금 없음), 국내 지수 지금 값도 같은 방식. 응답에 `name`·`price_unit`. 테스트 236개 통과, ruff·mypy 통과 |
+| pia-harness `claude/broker-macro-overseas` (이 커밋) | `macro`·`commodity` 인자와 `market` 해외 키, `_TARGETS` 표(액션·data별 받는 대상), `_target`(name → market → macro → commodity, 고른 값만 검사), 지표 지금 값·기간 시세 글(Broker 소수 그대로 `_exact`, 금리 전일 대비는 percentage points, 거래량 없음), 설명에 웹 검색으로 갈 것들, 시나리오 b17~b27과 가짜 Broker, README. 테스트 188개 통과 |
+
+- Broker의 `/history`는 대상이 둘 이상이면 400이 됐다(전에는 code가 market보다 앞섰음). harness는 하나만 보낸다.
+- 국내 `quote`에 `market=kospi|kosdaq`(지금 지수)도 생겼다. 같은 기간 시세 API의 `output1`.
+- 실호출 전이라 시장 구분 코드(N·X·I·S)와 단위는 짐작이다. 실호출에서 안 되는 키는 Broker 표와 harness 목록에서 함께 뺀다.
