@@ -107,8 +107,9 @@ def history(request: httpx.Request) -> dict:
                 "high": 71000 if stock else 2630.1,
                 "low": 69000 if stock else 2600.25,
                 "close": 70500 if stock else 2621.07,
-                "volume": 1234567 if stock else None,
-                "trading_value": 87037037000,
+                # A market counts thousands of shares and millions of KRW.
+                "volume": 1234567 if stock else 412345,
+                "trading_value": 87037037000 if stock else 15234567,
             }
             for day in ("2026-09-25", "2026-09-24")
         ]
@@ -369,7 +370,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Index levels in points", text)
         self.assertIn(
             "- 2026-09-25: open 2,612.50; high 2,630.10; low 2,600.25; close 2,621.07; "
-            "trading value 870.37억 원",
+            "volume 412,345,000 shares; trading value 15.23조 원",
             text,
         )
         self.assertEqual(

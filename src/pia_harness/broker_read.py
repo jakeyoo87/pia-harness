@@ -387,7 +387,9 @@ class BrokerReadTool:
             f"over the last {_PERIOD_WORDS[period]}, {_UNIT_WORDS[reply['unit']]}, oldest "
             f"first, {len(rows)} rows, looked up at {_kst(reply['observed_at'])}."
         )
+        source = "market" if code is None else "stock"
         if data == "prices":
+            per_unit, divisor = _PRICE_DAY_UNITS[source]
             units = (
                 "Index levels in points"
                 if code is None
@@ -410,18 +412,16 @@ class BrokerReadTool:
                         ("high", _plain(row["high"])),
                         ("low", _plain(row["low"])),
                         ("close", _plain(row["close"])),
-                        ("volume", _shares(row.get("volume"))),
+                        ("volume", _shares(row.get("volume"), per_unit)),
                         (
                             "trading value",
-                            _market_amount(row.get("trading_value"), _WON),
+                            _market_amount(row.get("trading_value"), divisor),
                         ),
                     )
                 )
         else:
             close_unit = "the index level in points" if code is None else "in KRW"
-            per_unit, divisor = _INVESTOR_DAY_UNITS[
-                "market" if code is None else "stock"
-            ]
+            per_unit, divisor = _INVESTOR_DAY_UNITS[source]
             lines = [
                 (
                     f"Net buying by investor group in {subject} {when} Positive = net "
@@ -594,9 +594,10 @@ def _choice(
 _WON = 100_000_000
 _MILLION = 100
 _EOK = 1
-# Daily investor flows: (volume per unit share, amount unit). Unconfirmed until
-# the live check (plans/2026-10-04_broker-tool-structure.md §6); the stock figures
-# follow the per-stock investor API, the market ones the market investor API.
+# History rows of a stock or a market: (shares per volume unit, amount unit), as
+# checked live (plans/2026-10-04_broker-tool-structure.md "실호출 확인 결과"). A
+# market counts volume in thousands of shares and amounts in millions of KRW.
+_PRICE_DAY_UNITS = {"stock": (1, _WON), "market": (1000, _MILLION)}
 _INVESTOR_DAY_UNITS = {"stock": (1, _MILLION), "market": (1000, _MILLION)}
 
 

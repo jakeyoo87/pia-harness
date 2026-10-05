@@ -334,8 +334,9 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
                     "high": close,
                     "low": close,
                     "close": close,
-                    "volume": 1000000 if stock else None,
-                    "trading_value": 285500000000,
+                    # A market counts thousands of shares and millions of KRW.
+                    "volume": 1000000 if stock else 412345,
+                    "trading_value": 285500000000 if stock else 15234567,
                 }
                 for day in range(25, 21, -1)
             ]
