@@ -35,8 +35,9 @@ ORDER_ARGUMENTS_SCHEMA: dict[str, Any] = {
     "properties": {
         "name": {
             "type": ["string", "null"],
-            "description": "Official name of a Korean or US stock or ETF (Korean or "
-            "English), or a US ticker. Convert nicknames and abbreviations (삼전 -> "
+            "description": "Official name of a Korean or US stock or ETF in the "
+            "language the user used, or a US ticker; do not translate a Korean name "
+            "into English (애플, not Apple). Convert nicknames and abbreviations (삼전 -> "
             "삼성전자, 하닉 -> SK하이닉스). Use a code (005930, NAS:NVDA) only if the "
             "user gave one or a candidate list showed it. Null only if no stock was "
             "named.",

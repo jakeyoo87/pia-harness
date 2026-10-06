@@ -181,8 +181,9 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
         "name": {
             "type": ["string", "null"],
             "description": "The one stock the question is about: a Korean or US stock "
-            "or ETF by its official name (Korean or English) or US ticker. Convert "
-            "nicknames and abbreviations (삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use a "
+            "or ETF by its official name in the language the user used, or its US "
+            "ticker; do not translate a Korean name into English (애플, not Apple). "
+            "Convert nicknames and abbreviations (삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use a "
             "code (005930, NAS:NVDA) only if the user gave one or a candidate list "
             "showed it. account: narrows the account to that stock. "
             "quote and history: the stock to look up; it is used before market, macro "
