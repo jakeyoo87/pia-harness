@@ -9,7 +9,19 @@ from pia_harness import BrokerOrderTool, PreparedAction, ToolCall
 
 MEMBER = "member-1"
 SAMSUNG = {"status": "FOUND", "code": "005930", "name": "삼성전자", "market": "KOSPI"}
-QUOTE = {"code": "005930", "price": 285500, "observed_at": "2026-09-28T00:31:05Z"}
+QUOTE = {
+    "code": "005930",
+    "price": 285500,
+    "currency": "KRW",
+    "observed_at": "2026-09-28T00:31:05Z",
+}
+NVDA = {"status": "FOUND", "code": "NAS:NVDA", "name": "엔비디아", "market": "NAS"}
+US_QUOTE = {
+    "code": "NAS:NVDA",
+    "price": 233.95,
+    "currency": "USD",
+    "observed_at": "2026-09-28T00:31:05Z",
+}
 
 
 class FakeBroker:
@@ -36,7 +48,8 @@ class FakeBroker:
                 return httpx.Response(
                     self.quote_status, json={"error": {"code": "BROKER_NOT_CONNECTED"}}
                 )
-            return httpx.Response(200, json=QUOTE)
+            us = request.url.params.get("code") == "NAS:NVDA"
+            return httpx.Response(200, json=US_QUOTE if us else QUOTE)
         if path == f"/internal/members/{MEMBER}/orders":
             self.orders.append(json.loads(request.content))
             if isinstance(self.order_reply, Exception):
@@ -183,3 +196,60 @@ class BrokerOrderToolTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UsOrderTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.broker = FakeBroker()
+        self.broker.search = NVDA
+        client = httpx.AsyncClient(
+            base_url="https://broker.example",
+            transport=httpx.MockTransport(self.broker.handle),
+        )
+        self.tool = BrokerOrderTool(base_url="https://broker.example", client=client)
+
+    async def confirm(self, **arguments: object) -> PreparedAction:
+        result = await self.tool.prepare(
+            MEMBER, call(name="엔비디아", quantity=2, **arguments)
+        )
+        assert result.action is not None, result.observation_text
+        # The prepared action goes through storage as JSON before it runs.
+        stored = PreparedAction(
+            result.action.summary,
+            result.action.confirmation,
+            json.loads(json.dumps(result.action.arguments_json)),
+        )
+        await self.tool.execute(MEMBER, stored)
+        return result.action
+
+    async def test_limit_at_the_current_price_keeps_cents_end_to_end(self) -> None:
+        action = await self.confirm()
+        self.assertEqual(
+            "엔비디아(NAS:NVDA) 2주를 233.95달러 지정가로 매수할까요? "
+            "(09:31 기준 현재가 233.95달러)",
+            action.confirmation,
+        )
+        (sent,) = self.broker.orders
+        self.assertEqual(
+            {"code": "NAS:NVDA", "quantity": 2, "order_type": "LIMIT", "price": 233.95},
+            {key: sent[key] for key in ("code", "quantity", "order_type", "price")},
+        )
+
+    async def test_a_price_the_user_gave_is_sent_as_given(self) -> None:
+        action = await self.confirm(price=230.5)
+        self.assertIn("230.5달러 지정가", action.confirmation)
+        self.assertEqual(230.5, self.broker.orders[0]["price"])
+
+    async def test_market_order_is_offered_as_a_limit_order_instead(self) -> None:
+        result = await self.tool.prepare(
+            MEMBER, call(name="엔비디아", quantity=2, order_type="MARKET")
+        )
+        self.assertIsNone(result.action)
+        self.assertIn("US stocks take limit orders only", result.observation_text)
+        self.assertIn("233.95달러", result.observation_text)
+
+    async def test_a_korean_price_with_decimals_is_refused(self) -> None:
+        self.broker.search = SAMSUNG
+        result = await self.tool.prepare(MEMBER, call(price=285500.5))
+        self.assertIsNone(result.action)
+        self.assertIn("whole won", result.observation_text)

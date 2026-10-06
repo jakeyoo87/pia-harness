@@ -23,5 +23,11 @@
   {"id": "o20", "message": "삼전 3주, 하닉 2주 사줘", "expect": "order"},
   {"id": "o20-1", "message": "삼전만 해줘", "expect": "confirm"},
   {"id": "o21", "message": "삼전 1주 사줘", "expect": "order"},
-  {"id": "o21-1", "message": "오늘 삼성전자 뉴스 확인해보고 괜찮으면 사줘", "expect": "web_search"}
+  {"id": "o21-1", "message": "오늘 삼성전자 뉴스 확인해보고 괜찮으면 사줘", "expect": "web_search"},
+  {"id": "u1", "message": "엔비디아 2주 사줘", "expect": "order"},
+  {"id": "u1-1", "message": "응", "expect": "confirm"},
+  {"id": "u2", "message": "테슬라 시장가로 1주 사줘", "expect": "order"},
+  {"id": "u2-1", "message": "그럼 지정가로 해줘", "expect": "order"},
+  {"id": "u2-2", "message": "응", "expect": "confirm"},
+  {"id": "u3", "message": "마이크론 5주 사줘", "expect": "order"}
 ]

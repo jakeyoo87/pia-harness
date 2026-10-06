@@ -11,6 +11,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -34,27 +35,31 @@ ORDER_ARGUMENTS_SCHEMA: dict[str, Any] = {
     "properties": {
         "name": {
             "type": ["string", "null"],
-            "description": "Official listed stock name. Convert nicknames and "
-            "abbreviations (삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use the 6-character code "
-            "only if the user gave a code. Null only if no stock was named.",
+            "description": "Official name of a Korean or US stock or ETF (Korean or "
+            "English), or a US ticker. Convert nicknames and abbreviations (삼전 -> "
+            "삼성전자, 하닉 -> SK하이닉스). Use a code (005930, NAS:NVDA) only if the "
+            "user gave one or a candidate list showed it. Null only if no stock was "
+            "named.",
         },
         "side": {"type": ["string", "null"], "enum": ["BUY", "SELL", None]},
         "quantity": {"type": ["integer", "null"], "description": "Number of shares."},
         "order_type": {
             "type": ["string", "null"],
             "enum": ["LIMIT", "MARKET", None],
-            "description": "LIMIT unless the user explicitly asks for a market order.",
+            "description": "LIMIT unless the user explicitly asks for a market order. "
+            "US stocks take limit orders only.",
         },
         "price": {
-            "type": ["integer", "null"],
-            "description": "Limit price in KRW only if the user gave one.",
+            "type": ["number", "null"],
+            "description": "Limit price in the stock's currency (KRW, or USD for a US "
+            "stock) only if the user gave one.",
         },
     },
     "required": ["name", "side", "quantity", "order_type", "price"],
     "additionalProperties": False,
 }
 ORDER_DESCRIPTION = (
-    "Prepare a Korean stock buy or sell order for the user's confirmation; nothing "
+    "Prepare a Korean or US stock buy or sell order for the user's confirmation; nothing "
     "is executed yet. Use when the user asks to buy or sell a stock, or answers a "
     "question about an order being drafted; call it once per order. Fill each field from the whole "
     "conversation (a short reply like '3주' continues the previous order request). "
@@ -113,11 +118,12 @@ class BrokerOrderTool:
             or not _positive_int(quantity)
             or not isinstance(order_type, str)
             or order_type not in _ORDER_TYPES
-            or (price is not None and not _positive_int(price))
+            or (price is not None and not _positive_number(price))
         ):
             return PreparationResult(
                 "Order not prepared. The side, quantity, or price is not valid "
-                "(quantity and price must be positive whole numbers). Ask the user."
+                "(quantity must be a positive whole number, price a positive number). "
+                "Ask the user."
             )
 
         found = await find_instrument(self._client, name)
@@ -135,24 +141,40 @@ class BrokerOrderTool:
             )
         response.raise_for_status()
         quote = response.json()
-        current = int(quote["price"])
+        # The price stays the JSON number the broker sent; a float's repr is its
+        # shortest form, so 233.95 reaches the confirmation and the order unchanged.
+        current = quote["price"]
+        currency = quote["currency"]
         at = _kst_clock(str(quote["observed_at"]))
+        if currency == "USD" and order_type == "MARKET":
+            return PreparationResult(
+                "Order not prepared. US stocks take limit orders only. Ask the user "
+                f"whether to place a limit order at the current price "
+                f"{_amount(current, currency)} instead."
+            )
+        if currency == "KRW" and price is not None and price != int(price):
+            return PreparationResult(
+                "Order not prepared. A Korean stock's price is whole won. Ask the user."
+            )
+        if currency == "KRW" and price is not None:
+            price = int(price)
 
         label = f"{official_name}({code}) {quantity:,}주"
         action_word = _SIDES[side]
+        now = _amount(current, currency)
         if order_type == "LIMIT":
             limit = price or current
-            summary = f"{label} {limit:,}원 지정가 {action_word}"
+            summary = f"{label} {_amount(limit, currency)} 지정가 {action_word}"
             confirmation = (
-                f"{label}를 {limit:,}원 지정가로 {action_word}할까요? "
-                f"({at} 기준 현재가 {current:,}원)"
+                f"{label}를 {_amount(limit, currency)} 지정가로 {action_word}할까요? "
+                f"({at} 기준 현재가 {now})"
             )
         else:
             limit = None
             summary = f"{label} 시장가 {action_word}"
             confirmation = (
                 f"{label}를 시장가로 {action_word}할까요? "
-                f"(예상 금액 약 {current * quantity:,}원, {at} 기준 현재가 {current:,}원)"
+                f"(예상 금액 약 {current * quantity:,}원, {at} 기준 현재가 {now})"
             )
         stored = {
             "request_id": uuid.uuid4().hex,
@@ -212,6 +234,17 @@ class BrokerOrderTool:
 
 def _positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _positive_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and value > 0
+
+
+def _amount(value: float, currency: str) -> str:
+    """285,500원 or 233.95달러: every decimal kept, never rounded here."""
+
+    text = f"{Decimal(repr(value)).normalize():,f}"
+    return f"{text}원" if currency == "KRW" else f"{text}달러"
 
 
 def _kst_clock(value: str) -> str:

@@ -14,6 +14,7 @@ AT = "2026-09-28T00:31:05Z"
 QUOTE = {
     "code": "005930",
     "price": 68500,
+    "currency": "KRW",
     "observed_at": AT,
     "change": -1500,
     "change_rate": -2.14,
@@ -59,12 +60,55 @@ ACCOUNT = {
 STOCK_ACCOUNT = {
     "buyable": {
         "code": "005930",
+        "currency": "KRW",
         "amount": 1180000,
         "quantity": 12,
         "unit_price": 91000,
+        "after_exchange_amount": None,
+        "after_exchange_quantity": None,
         "observed_at": AT,
     },
     "position": ACCOUNT["positions"][0],
+}
+NVDA = {"status": "FOUND", "code": "NAS:NVDA", "name": "엔비디아", "market": "NAS"}
+US_QUOTE = {
+    "code": "NAS:NVDA",
+    "price": 233.95,
+    "currency": "USD",
+    "observed_at": AT,
+    "change": -3.09,
+    "change_rate": -1.34,
+    "volume": 120000000,
+    "trading_value": 28074000000,
+    "market_cap": 5700000,
+    "per": 55.1,
+    "pbr": 40.2,
+    "high_52w": 250.1,
+    "low_52w": 120,
+}
+US_POSITION = {
+    "code": "NAS:NVDA",
+    "name": "엔비디아",
+    "quantity": 2,
+    "sellable_quantity": 2,
+    "average_price": 180.25,
+    "current_price": 233.95,
+    "valuation": 467.9,
+    "profit": 107.4,
+    "profit_rate": 29.79,
+}
+US_STOCK_ACCOUNT = {
+    "buyable": {
+        "code": "NAS:NVDA",
+        "currency": "USD",
+        "amount": 12.5,
+        "quantity": 0,
+        "unit_price": 233.95,
+        "after_exchange_amount": 1180000,
+        "after_exchange_quantity": 5,
+        "observed_at": AT,
+    },
+    "position": US_POSITION,
 }
 
 
@@ -154,6 +198,28 @@ def history(request: httpx.Request) -> dict:
                 for day in ("2026-09-25", "2026-09-24")
             ],
         }
+    if params.get("code") == "NAS:NVDA":
+        return {
+            "data": "prices",
+            "code": "NAS:NVDA",
+            "market": None,
+            "price_unit": "USD",
+            "period": params["period"],
+            "unit": "week",
+            "observed_at": AT,
+            "rows": [
+                {
+                    "date": day,
+                    "open": 230.1,
+                    "high": 235.5,
+                    "low": 229,
+                    "close": 233.95,
+                    "volume": 1000,
+                    "trading_value": 233950,
+                }
+                for day in ("2026-09-21", "2026-09-14")
+            ],
+        }
     if params["data"] == "prices":
         rows = [
             {
@@ -226,12 +292,15 @@ class FakeBroker:
             series = series_of(request.url.params)
             if series is not None:
                 return httpx.Response(200, json=series_quote(*series))
-            return httpx.Response(200, json=QUOTE)
+            us = request.url.params.get("code") == "NAS:NVDA"
+            return httpx.Response(200, json=US_QUOTE if us else QUOTE)
         if path == f"/internal/members/{MEMBER}/ranking":
             return httpx.Response(200, json=self.ranking)
         if path == f"/internal/members/{MEMBER}/history":
             return httpx.Response(200, json=history(request))
         if path == f"/internal/members/{MEMBER}/account":
+            if request.url.params.get("code") == "NAS:NVDA":
+                return httpx.Response(200, json=US_STOCK_ACCOUNT)
             if request.url.params.get("code"):
                 return httpx.Response(200, json=self.stock_account)
             return httpx.Response(200, json=self.account)
@@ -698,3 +767,85 @@ class UnitTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UsStockTest(unittest.IsolatedAsyncioTestCase):
+    """US stocks come through the same name argument and routes, in USD."""
+
+    def setUp(self) -> None:
+        self.broker = FakeBroker()
+        self.broker.search = NVDA
+        client = httpx.AsyncClient(
+            base_url="https://broker.example",
+            transport=httpx.MockTransport(self.broker.handle),
+        )
+        self.tool = BrokerReadTool(base_url="https://broker.example", client=client)
+
+    async def lookup(self, action: str, **arguments: object) -> str:
+        result = await self.tool.execute(
+            MEMBER, call(action, "엔비디아", **arguments), ()
+        )
+        return result.observation_text
+
+    async def test_quote_is_in_dollars_without_unconfirmed_units(self) -> None:
+        text = await self.lookup("quote")
+        self.assertIn(
+            "Quote for 엔비디아(NAS:NVDA), looked up at 2026-09-28 09:31 KST: price "
+            "233.95 USD; change from the previous close -3.09 USD (-1.34%); volume "
+            "120,000,000 shares; PER 55.10; PBR 40.20; 52-week high 250.1 USD; 52-week "
+            "low 120 USD.",
+            text,
+        )
+        self.assertNotIn("market cap", text)
+        self.assertNotIn("trading value", text)
+
+    async def test_stock_account_gives_both_kis_buyable_figures(self) -> None:
+        text = await self.lookup("account")
+        self.assertIn("Amounts in USD.", text)
+        self.assertIn("average price 180.25 USD", text)
+        self.assertIn("up to 0 shares, amount 12.5 USD.", text)
+        self.assertIn(
+            "After exchanging KRW (KIS 환전이후 figure): up to 5 shares.", text
+        )
+
+    async def test_history_prices_keep_cents_and_investors_are_korean_only(
+        self,
+    ) -> None:
+        text = await self.lookup("history", data="prices", period="1y")
+        self.assertIn("Split-adjusted prices in USD, as KIS reports them", text)
+        self.assertIn(
+            "- 2026-09-14: open 230.1; high 235.5; low 229; close 233.95; volume 1,000 "
+            "shares",
+            text,
+        )
+        asked = len(self.broker.requests)
+        text = await self.lookup("history", data="investors")
+        self.assertIn("investor flows are offered for Korean stocks", text)
+        self.assertEqual(asked + 1, len(self.broker.requests))  # only the name search
+
+    async def test_account_lists_the_us_part_after_the_korean_one(self) -> None:
+        self.broker.account = {
+            **ACCOUNT,
+            "us": {
+                "currency": "USD",
+                "positions": [US_POSITION],
+                "cash": 12.5,
+                "exchange_rate": 1344.2,
+                "totals": {"tot_asst_amt": 1500000},
+                "observed_at": AT,
+            },
+        }
+        result = await self.tool.execute(MEMBER, call("account"), ())
+        lines = result.observation_text.splitlines()
+        self.assertIn(
+            "US stocks (amounts in USD, as KIS reports them): USD deposit 12.5 USD; "
+            "exchange rate KIS applies 1,344.2 KRW per USD. The totals above are the Korean "
+            "account's.",
+            lines,
+        )
+        self.assertEqual(
+            "- 엔비디아(NAS:NVDA): quantity 2 shares; sellable now 2 shares; average "
+            "price 180.25 USD; current price 233.95 USD; valuation 467.9 USD; profit "
+            "+107.4 USD; return +29.79%",
+            lines[-1],
+        )

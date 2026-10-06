@@ -46,11 +46,17 @@ from pia_harness.testing import InMemoryConversationStore
 SCENARIOS = Path(__file__).with_name("scenarios")
 SCENARIO_SETS = ("read", "execution", "broker")
 # name: (code, market, current price). The fake order reply is UNKNOWN for 005935
-# so one scenario sees the "check the broker app" result.
+# so one scenario sees the "check the broker app" result. US codes are exchange:ticker
+# and found by ticker too; "마이크론" matches two names, as in the real list.
 FAKE_INSTRUMENTS = {
     "삼성전자": ("005930", "KOSPI", 285500),
     "삼성전자우": ("005935", "KOSPI", 231000),
     "SK하이닉스": ("000660", "KOSPI", 351000),
+    "하나마이크론": ("067310", "KOSDAQ", 25000),
+    "엔비디아": ("NAS:NVDA", "NAS", 233.95),
+    "테슬라": ("NAS:TSLA", "NAS", 251.3),
+    "애플": ("NAS:AAPL", "NAS", 254.1),
+    "마이크론 테크놀로지": ("NAS:MU", "NAS", 120.45),
 }
 USER = "smoke-flow-user"
 SYSTEM_PROMPT = (
@@ -66,12 +72,12 @@ MEMORY_INSTRUCTION = (
 # app/core.py BROKER_READ_PROMPT and ORDER_PROMPT, broker unification plan §9).
 BROKER_PROMPT = (
     " PIA can use the broker tool to look up the user's account (cash, holdings, and "
-    "what one stock they can buy or sell), quotes and price history for a Korean "
-    "stock, the KOSPI/KOSDAQ market, major overseas indices and index futures, "
-    "rates, exchange rates and commodities, investor history for a stock or the "
-    "KOSPI/KOSDAQ market, and market rankings. PIA can place "
-    "Korean stock buy and sell orders, but only after the user agrees to the "
-    "confirmation question in the very next message."
+    "what one stock they can buy or sell), quotes and price history for a Korean or "
+    "US stock, the KOSPI/KOSDAQ market, major overseas indices and index futures, "
+    "rates, exchange rates and commodities, investor history for a Korean stock or "
+    "the KOSPI/KOSDAQ market, and market rankings. PIA can place Korean and US stock "
+    "buy and sell orders (US: limit orders only), but only after the user agrees to "
+    "the confirmation question in the very next message."
 )
 _MEMORY_ACTIONS = {"update": "UPDATE", "forget": "FORGET"}
 _EXECUTION_TOOLS = frozenset({"order", "confirm"})
@@ -222,9 +228,13 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
             exact = [
                 name
                 for name, (code, _, _) in FAKE_INSTRUMENTS.items()
-                if name.casefold() == query or code == query
+                if "".join(name.split()).casefold() == query
+                or code.casefold() == query
+                or code.partition(":")[2].casefold() == query
             ]
-            found = exact or [n for n in FAKE_INSTRUMENTS if query in n.casefold()]
+            found = exact or [
+                n for n in FAKE_INSTRUMENTS if query in "".join(n.split()).casefold()
+            ]
             _log(started["started"], "BROKER search", f"{query} -> {found}")
             if len(found) == 1:
                 return httpx.Response(200, json={"status": "FOUND", **item(found[0])})
@@ -240,8 +250,10 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
             code = request.url.params["code"]
             price = next(v[2] for v in FAKE_INSTRUMENTS.values() if v[0] == code)
             now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            currency = "USD" if ":" in code else "KRW"
             return httpx.Response(
-                200, json={"code": code, "price": price, "observed_at": now}
+                200,
+                json={"code": code, "price": price, "currency": currency, "observed_at": now},
             )
         if path.endswith(("/account", "/history", "/ranking", "/broker-status")):
             return httpx.Response(200, json=_fake_read(path, request.url.params))
@@ -292,13 +304,40 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
             "verification_reason": None,
         }
         return {"connection": connection}
+    us_position = {
+        "code": "NAS:NVDA",
+        "name": "엔비디아",
+        "quantity": 2,
+        "sellable_quantity": 2,
+        "average_price": 180.25,
+        "current_price": 233.95,
+        "valuation": 467.9,
+        "profit": 107.4,
+        "profit_rate": 29.79,
+    }
     if path.endswith("/account"):
+        if "code" in params and ":" in params["code"]:
+            buyable = {
+                "code": params["code"],
+                "currency": "USD",
+                "amount": 12.5,
+                "quantity": 0,
+                "unit_price": 233.95,
+                "after_exchange_amount": 2900,
+                "after_exchange_quantity": 12,
+                "observed_at": now,
+            }
+            held = us_position if params["code"] == "NAS:NVDA" else None
+            return {"buyable": buyable, "position": held}
         if "code" in params:
             buyable = {
                 "code": params["code"],
+                "currency": "KRW",
                 "amount": 2855000,
                 "quantity": 10,
                 "unit_price": 285500,
+                "after_exchange_amount": None,
+                "after_exchange_quantity": None,
                 "observed_at": now,
             }
             held = position if params["code"] == "005930" else None
@@ -310,6 +349,14 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
             "total_valuation": 5855000,
             "total_profit": 155000,
             "observed_at": now,
+            "us": {
+                "currency": "USD",
+                "positions": [us_position],
+                "cash": 12.5,
+                "exchange_rate": 1344.2,
+                "totals": {},
+                "observed_at": now,
+            },
         }
     series = next(
         (
@@ -371,6 +418,29 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
                 for day in range(25, 21, -1)
             ],
         }
+    if path.endswith("/history") and ":" in params.get("code", ""):
+        # A US stock: prices only, in USD (investor flows are Korean only).
+        return {
+            "data": "prices",
+            "code": params["code"],
+            "market": None,
+            "price_unit": "USD",
+            "period": params["period"],
+            "unit": _BAR_UNIT.get(params["period"], "day"),
+            "observed_at": now,
+            "rows": [
+                {
+                    "date": f"2026-09-{day:02d}",
+                    "open": 250.1,
+                    "high": 255.2,
+                    "low": 248.05,
+                    "close": 251.3,
+                    "volume": 90000000,
+                    "trading_value": None,
+                }
+                for day in range(25, 21, -1)
+            ],
+        }
     if path.endswith("/history"):
         stock = "code" in params
         if params["data"] == "investors":
@@ -410,6 +480,7 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
             "data": params["data"],
             "code": params.get("code"),
             "market": params.get("market"),
+            "price_unit": "KRW" if stock else "points",
             "period": params["period"],
             "unit": _BAR_UNIT.get(params["period"], "day"),
             "observed_at": now,

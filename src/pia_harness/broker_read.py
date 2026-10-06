@@ -180,10 +180,11 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
         },
         "name": {
             "type": ["string", "null"],
-            "description": "The one stock the question is about: the official listed "
-            "stock or ETF name. Convert nicknames and abbreviations (삼전 -> 삼성전자, "
-            "하닉 -> SK하이닉스). Use the 6-character code only if the user gave a code. "
-            "Korean stocks and ETFs only. account: narrows the account to that stock. "
+            "description": "The one stock the question is about: a Korean or US stock "
+            "or ETF by its official name (Korean or English) or US ticker. Convert "
+            "nicknames and abbreviations (삼전 -> 삼성전자, 하닉 -> SK하이닉스). Use a "
+            "code (005930, NAS:NVDA) only if the user gave one or a candidate list "
+            "showed it. account: narrows the account to that stock. "
             "quote and history: the stock to look up; it is used before market, macro "
             "or commodity.",
         },
@@ -248,10 +249,11 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
 BROKER_DESCRIPTION = (
     "Look up through the user's connected brokerage account: their account (cash, "
     "holdings, and what one stock they can buy or sell), the latest value and price "
-    "history of a Korean stock, a market index (Korean, overseas, sector or index "
+    "history of a Korean or US stock, a market index (Korean, overseas, sector or index "
     "futures), a rate, exchange rate or volatility figure, or a commodity, investor "
-    "flows for a Korean stock or market, and Korean market rankings. Overseas "
-    "individual stocks are not offered: use web_search for them. Read-only; orders "
+    "flows for a Korean stock or market, and Korean market rankings. US stocks and "
+    "ETFs (Nasdaq, NYSE, AMEX) work like Korean ones, in USD; other overseas stocks "
+    "are not offered: use web_search for them. Read-only; orders "
     "go through the order tool. Figures are live at the "
     "time shown, so call again for a later question instead of reusing an earlier "
     "result. Never work out a buyable quantity from cash and price; use account "
@@ -336,6 +338,11 @@ class BrokerReadTool:
         if found.code is None:
             raise _BrokerFailure(str(found.problem))
         label = f"{found.name}({found.code})"
+        if action == "history" and ask["data"] == "investors" and ":" in found.code:
+            raise _BrokerFailure(
+                f"investor flows are offered for Korean stocks and the KOSPI/KOSDAQ "
+                f"market only; {label} is a US stock."
+            )
         if action == "account":
             return await self._stock_account(user_key, found.code, label)
         if action == "quote":
@@ -396,11 +403,27 @@ class BrokerReadTool:
             lines.append("Holdings: none.")
         else:
             lines.append(f"Holdings ({len(positions)}):")
-            lines.extend(
-                f"- {item.get('name') or item['code']}({item['code']}): "
-                + _position(item)
-                for item in positions
+            lines.extend(_holding(item, "KRW") for item in positions)
+        us = reply.get("us")
+        if us is not None:
+            us_cash = _join(
+                ("USD deposit", _money(us.get("cash"), "USD")),
+                (
+                    "exchange rate KIS applies",
+                    _money(us.get("exchange_rate"), "KRW per USD"),
+                ),
             )
+            lines.append(
+                f"US stocks (amounts in USD, as KIS reports them): "
+                f"{us_cash or 'cash not reported'}. The totals above are the Korean "
+                "account's."
+            )
+            us_positions = us["positions"]
+            if not us_positions:
+                lines.append("US holdings: none.")
+            else:
+                lines.append(f"US holdings ({len(us_positions)}):")
+                lines.extend(_holding(item, "USD") for item in us_positions)
         return "\n".join(lines)
 
     async def _stock_account(self, user_key: str, code: str, label: str) -> str:
@@ -412,41 +435,58 @@ class BrokerReadTool:
             return await self._status(user_key)
         buyable = reply["buyable"]
         position = reply["position"]
-        unit = _krw(buyable.get("unit_price"))
+        currency = buyable["currency"]
+        unit = _money(buyable.get("unit_price"), currency)
         basis = f" (unit price used by the broker {unit})" if unit else ""
-        return "\n".join(
+        lines = [
             (
-                (
-                    f"{label} in the user's account at {_kst(buyable['observed_at'])}, "
-                    "as reported by the broker. Amounts in KRW."
-                ),
-                f"Held: {_position(position) if position else 'none'}.",
-                (
-                    "Buyable now, as calculated by the broker without margin for a "
-                    f"limit order at the current price{basis}: up to "
-                    f"{_shares(buyable['quantity'])}, "
-                    f"amount {_krw(buyable['amount'])}."
-                ),
+                f"{label} in the user's account at {_kst(buyable['observed_at'])}, "
+                f"as reported by the broker. Amounts in {currency}."
+            ),
+            f"Held: {_position(position, currency) if position else 'none'}.",
+            (
+                "Buyable now, as calculated by the broker without margin for a "
+                f"limit order at the current price{basis}: up to "
+                f"{_shares(buyable['quantity'])}, "
+                f"amount {_money(buyable['amount'], currency)}."
+            ),
+        ]
+        after = buyable.get("after_exchange_quantity")
+        if after is not None:
+            lines.append(
+                f"After exchanging KRW (KIS 환전이후 figure): up to {_shares(after)}. "
+                "PIA does not exchange currency; KIS does it when the user's account "
+                "allows buying US stocks with KRW."
             )
-        )
+        return "\n".join(lines)
 
     async def _quote(self, user_key: str, code: str, label: str) -> str:
         quote = await self._get(f"/internal/members/{user_key}/quote", {"code": code})
+        currency = quote["currency"]
+        korean = currency == "KRW"
         return (
             f"Quote for {label}, looked up at {_kst(quote['observed_at'])}: "
             + _join(
-                ("price", _krw(quote["price"])),
-                ("change from the previous close", _change(quote)),
+                ("price", _money(quote["price"], currency)),
+                ("change from the previous close", _change(quote, currency)),
                 ("volume", _shares(quote.get("volume"))),
-                ("trading value", _market_amount(quote.get("trading_value"), _WON)),
+                # The units KIS uses for these two in USD are not confirmed yet.
+                (
+                    "trading value",
+                    _market_amount(quote.get("trading_value"), _WON)
+                    if korean
+                    else None,
+                ),
                 (
                     "market cap",
-                    _market_amount(quote.get("market_cap"), _EOK, in_jo=True),
+                    _market_amount(quote.get("market_cap"), _EOK, in_jo=True)
+                    if korean
+                    else None,
                 ),
                 ("PER", _plain(quote.get("per"))),
                 ("PBR", _plain(quote.get("pbr"))),
-                ("52-week high", _krw(quote.get("high_52w"))),
-                ("52-week low", _krw(quote.get("low_52w"))),
+                ("52-week high", _money(quote.get("high_52w"), currency)),
+                ("52-week low", _money(quote.get("low_52w"), currency)),
             )
             + ". "
             + _NO_SESSION_DATE
@@ -511,7 +551,27 @@ class BrokerReadTool:
             return "\n".join(lines)
         subject = f"the {key.upper()} market" if code is None else label
         source = "market" if code is None else "stock"
-        if data == "prices":
+        if data == "prices" and reply.get("price_unit") == "USD":
+            lines = [
+                (
+                    f"Prices of {subject} {when} Split-adjusted prices in USD, as KIS "
+                    "reports them; volume in shares. The newest row may cover a "
+                    "session, week or month still in progress. If the user asked for "
+                    "daily rows and these are not daily, say so."
+                )
+            ]
+            lines.extend(
+                f"- {row['date']}: "
+                + _join(
+                    ("open", _exact(row["open"])),
+                    ("high", _exact(row["high"])),
+                    ("low", _exact(row["low"])),
+                    ("close", _exact(row["close"])),
+                    ("volume", _shares(row.get("volume"))),
+                )
+                for row in rows
+            )
+        elif data == "prices":
             per_unit, divisor = _PRICE_DAY_UNITS[source]
             units = (
                 "Index levels in points"
@@ -606,7 +666,7 @@ class BrokerReadTool:
             figures = row.get("figures") or {}
             details = _join(
                 ("price", _krw(row.get("price"))),
-                ("change", _change(row)),
+                ("change", _change(row, "KRW")),
                 ("volume", _shares(row.get("volume"))),
                 *(_figure(key, value) for key, value in figures.items()),
             )
@@ -819,22 +879,37 @@ def _share(value: object) -> str | None:
     return None if number is None else f"{_format(number)}%"
 
 
-def _change(quote: dict[str, Any]) -> str | None:
-    amount = _krw(quote.get("change"), signed=True)
+def _money(value: object, currency: str, *, signed: bool = False) -> str | None:
+    """KRW as today; USD with every decimal KIS gave (233.95 USD)."""
+
+    if currency == "KRW":
+        return _krw(value, signed=signed)
+    text = _exact(value, signed=signed)
+    return None if text is None else f"{text} {currency}"
+
+
+def _change(quote: dict[str, Any], currency: str) -> str | None:
+    amount = _money(quote.get("change"), currency, signed=True)
     rate = _percent(quote.get("change_rate"))
     if amount and rate:
         return f"{amount} ({rate})"
     return amount or rate
 
 
-def _position(item: dict[str, Any]) -> str:
+def _holding(item: dict[str, Any], currency: str) -> str:
+    return f"- {item.get('name') or item['code']}({item['code']}): " + _position(
+        item, currency
+    )
+
+
+def _position(item: dict[str, Any], currency: str) -> str:
     return _join(
         ("quantity", _shares(item.get("quantity"))),
         ("sellable now", _shares(item.get("sellable_quantity"))),
-        ("average price", _krw(item.get("average_price"))),
-        ("current price", _krw(item.get("current_price"))),
-        ("valuation", _krw(item.get("valuation"))),
-        ("profit", _krw(item.get("profit"), signed=True)),
+        ("average price", _money(item.get("average_price"), currency)),
+        ("current price", _money(item.get("current_price"), currency)),
+        ("valuation", _money(item.get("valuation"), currency)),
+        ("profit", _money(item.get("profit"), currency, signed=True)),
         ("return", _percent(item.get("profit_rate"))),
     )
 
