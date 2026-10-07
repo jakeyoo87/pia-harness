@@ -332,7 +332,6 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
                 "amount": 12.5,
                 "quantity": 0,
                 "unit_price": 233.95,
-                "after_exchange_amount": 2900,
                 "after_exchange_quantity": 12,
                 "observed_at": now,
             }
@@ -345,7 +344,6 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
                 "amount": 2855000,
                 "quantity": 10,
                 "unit_price": 285500,
-                "after_exchange_amount": None,
                 "after_exchange_quantity": None,
                 "observed_at": now,
             }
@@ -363,7 +361,6 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
                 "positions": [us_position],
                 "cash": 12.5,
                 "exchange_rate": 1344.2,
-                "totals": {},
                 "observed_at": now,
             },
         }

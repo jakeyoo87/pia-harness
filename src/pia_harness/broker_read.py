@@ -5,7 +5,8 @@ It calls pia-broker's internal routes with the signed client PIA also gives the
 order tool; Harness knows no AWS. Every failure becomes a sentence for the model
 rather than an exception, so one broker problem does not end the Turn. Figures
 come from the broker as they are; only their units are converted here, so every
-market amount reaches the model in 억 원 (market caps in 조 원) and every volume
+market amount reaches the model in 억 원 (market caps in 조 원), a US stock's in
+억 달러 and 조 달러, and every volume
 in shares.
 """
 
@@ -471,25 +472,23 @@ class BrokerReadTool:
     async def _quote(self, user_key: str, code: str, label: str) -> str:
         quote = await self._get(f"/internal/members/{user_key}/quote", {"code": code})
         currency = quote["currency"]
-        korean = currency == "KRW"
+        # KIS gives a Korean market cap in 억 원 and a US one in dollars.
+        word, cap_divisor = ("원", _EOK) if currency == "KRW" else ("달러", _WON)
         return (
             f"Quote for {label}, looked up at {_kst(quote['observed_at'])}: "
             + _join(
                 ("price", _money(quote["price"], currency)),
                 ("change from the previous close", _change(quote, currency)),
                 ("volume", _shares(quote.get("volume"))),
-                # The units KIS uses for these two in USD are not confirmed yet.
                 (
                     "trading value",
-                    _market_amount(quote.get("trading_value"), _WON)
-                    if korean
-                    else None,
+                    _market_amount(quote.get("trading_value"), _WON, currency=word),
                 ),
                 (
                     "market cap",
-                    _market_amount(quote.get("market_cap"), _EOK, in_jo=True)
-                    if korean
-                    else None,
+                    _market_amount(
+                        quote.get("market_cap"), cap_divisor, in_jo=True, currency=word
+                    ),
                 ),
                 ("PER", _plain(quote.get("per"))),
                 ("PBR", _plain(quote.get("pbr"))),
@@ -563,7 +562,8 @@ class BrokerReadTool:
             lines = [
                 (
                     f"Prices of {subject} {when} Split-adjusted prices in USD, as KIS "
-                    "reports them; volume in shares. The newest row may cover a "
+                    "reports them; volume in shares; trading value in 억 달러. The newest "
+                    "row may cover a "
                     "session, week or month still in progress. If the user asked for "
                     "daily rows and these are not daily, say so."
                 )
@@ -576,6 +576,10 @@ class BrokerReadTool:
                     ("low", _exact(row["low"])),
                     ("close", _exact(row["close"])),
                     ("volume", _shares(row.get("volume"))),
+                    (
+                        "trading value",
+                        _market_amount(row.get("trading_value"), _WON, currency="달러"),
+                    ),
                 )
                 for row in rows
             )
@@ -828,9 +832,15 @@ def _krw(value: object, *, signed: bool = False) -> str | None:
 
 
 def _market_amount(
-    value: object, divisor: int, *, signed: bool = False, in_jo: bool = False
+    value: object,
+    divisor: int,
+    *,
+    signed: bool = False,
+    in_jo: bool = False,
+    currency: str = "원",
 ) -> str | None:
-    """A market amount to two decimals, in 억 원, or in 조 원 for market caps.
+    """A market amount to two decimals, in 억, or in 조 for market caps, of 원 or
+    달러 (a US stock's amounts come in dollars and follow the same rule).
 
     The unit belongs to the figure, never to its size: one figure keeps one unit
     across rows, so a model can chart it without converting anything.
@@ -839,9 +849,9 @@ def _market_amount(
     number = _number(value)
     if number is None:
         return None
-    amount, unit = number / divisor, "억 원"
+    amount, unit = number / divisor, f"억 {currency}"
     if in_jo:
-        amount, unit = amount / 10_000, "조 원"
+        amount, unit = amount / 10_000, f"조 {currency}"
     amount = round(amount, 2)
     text = f"{abs(amount) if signed else amount:,.2f}".rstrip("0").rstrip(".")
     if signed and amount:

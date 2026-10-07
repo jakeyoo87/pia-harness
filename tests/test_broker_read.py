@@ -79,8 +79,8 @@ US_QUOTE = {
     "change": -3.09,
     "change_rate": -1.34,
     "volume": 120000000,
-    "trading_value": 28074000000,
-    "market_cap": 5700000,
+    "trading_value": 24485355016,
+    "market_cap": 5764238000000,
     "per": 55.1,
     "pbr": 40.2,
     "high_52w": 250.1,
@@ -215,7 +215,7 @@ def history(request: httpx.Request) -> dict:
                     "low": 229,
                     "close": 233.95,
                     "volume": 1000,
-                    "trading_value": 233950,
+                    "trading_value": 24485355016,
                 }
                 for day in ("2026-09-21", "2026-09-14")
             ],
@@ -788,17 +788,15 @@ class UsStockTest(unittest.IsolatedAsyncioTestCase):
         )
         return result.observation_text
 
-    async def test_quote_is_in_dollars_without_unconfirmed_units(self) -> None:
+    async def test_quote_is_in_dollars_with_market_amounts_in_dollars(self) -> None:
         text = await self.lookup("quote")
         self.assertIn(
             "Quote for 엔비디아(NAS:NVDA), looked up at 2026-09-28 09:31 KST: price "
             "233.95 USD; change from the previous close -3.09 USD (-1.34%); volume "
-            "120,000,000 shares; PER 55.10; PBR 40.20; 52-week high 250.1 USD; 52-week "
-            "low 120 USD.",
+            "120,000,000 shares; trading value 244.85억 달러; market cap 5.76조 달러; PER "
+            "55.10; PBR 40.20; 52-week high 250.1 USD; 52-week low 120 USD.",
             text,
         )
-        self.assertNotIn("market cap", text)
-        self.assertNotIn("trading value", text)
 
     async def test_stock_account_gives_both_kis_buyable_figures(self) -> None:
         text = await self.lookup("account")
@@ -816,7 +814,7 @@ class UsStockTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Split-adjusted prices in USD, as KIS reports them", text)
         self.assertIn(
             "- 2026-09-14: open 230.1; high 235.5; low 229; close 233.95; volume 1,000 "
-            "shares",
+            "shares; trading value 244.85억 달러",
             text,
         )
         asked = len(self.broker.requests)
