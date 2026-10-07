@@ -35,6 +35,14 @@ _KST = timezone(timedelta(hours=9))
 _HISTORY_PERIODS = ("1m", "3m", "6m", "1y", "3y", "5y")
 _SHORT_SELLING_PERIODS = ("1d", "2d", "3d", "4d", "1w", "2w", "3w", "1m", "2m", "3m")
 _MARKETS = ("all", "kospi", "kosdaq")
+# Rankings by data: price rankings also take us (Nasdaq, NYSE and AMEX together);
+# the first value is the default.
+_RANKING_MARKETS = {
+    "prices": (*_MARKETS, "us"),
+    "investors": _MARKETS,
+    "short_selling": _MARKETS,
+    "attention": _MARKETS,
+}
 _INDEX_MARKETS = ("kospi", "kosdaq")
 # Figures other than Korean stocks, by the kind of target that asks for them. The
 # keys are pia-broker's series table (src/pia_broker/series.py); the two lists are
@@ -192,13 +200,15 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
         },
         "market": {
             "type": ["string", "null"],
-            "enum": [*_MARKETS, *_SERIES_MARKETS, None],
+            "enum": [*_MARKETS, "us", *_SERIES_MARKETS, None],
             "description": "The market the question is about, as an index for a whole "
             "market or a sector. quote and history prices: kospi, kosdaq, "
             + ", ".join(f"{key} = {label}" for key, label in _SERIES_MARKETS.items())
             + ". history investors: kospi or kosdaq only (net buying in the whole "
             "market). ranking: all (default), kospi or kosdaq (Korean stocks in that "
-            "market). The Dow Jones index is not here: use web_search.",
+            "market); ranking prices also us (US stocks of Nasdaq, NYSE and AMEX "
+            "together, the latest US session). The Dow Jones index is not here: use "
+            "web_search.",
         },
         "macro": {
             "type": ["string", "null"],
@@ -253,7 +263,8 @@ BROKER_DESCRIPTION = (
     "holdings, and what one stock they can buy or sell), the latest value and price "
     "history of a Korean or US stock, a market index (Korean, overseas, sector or index "
     "futures), a rate, exchange rate or volatility figure, or a commodity, investor "
-    "flows for a Korean stock or market, and Korean market rankings. US stocks and "
+    "flows for a Korean stock or market, and market rankings (Korean, or US price "
+    "rankings). US stocks and "
     "ETFs (Nasdaq, NYSE, AMEX) work like Korean ones, in USD; other overseas stocks "
     "are not offered: use web_search for them. Read-only; orders "
     "go through the order tool. Figures are live at the "
@@ -661,11 +672,21 @@ class BrokerReadTool:
                 "KIS's provisional tally; history investors gives daily figures whose "
                 "basis and timing can differ"
             )
+        currency = reply.get("currency", "KRW")
+        if currency == "KRW":
+            order = (
+                "in the broker's order. Market caps in 조 원, other amounts in 억 원."
+            )
+        else:
+            order = (
+                "Nasdaq, NYSE and AMEX merged by the ranked figure (KIS ranks each "
+                "exchange); prices in USD, market caps in 조 달러, other amounts in 억 "
+                "달러."
+            )
         lines = [
             (
                 f"Ranking: {_RANKINGS[by]}, {'; '.join(basis)}, looked up at "
-                f"{_kst(reply['observed_at'])}, in the broker's order. Market caps in "
-                "조 원, other amounts in 억 원."
+                f"{_kst(reply['observed_at'])}, {order}"
             )
         ]
         if ask["data"] != "short_selling":  # short selling carries its KIS dates
@@ -677,10 +698,10 @@ class BrokerReadTool:
             label = f"{row.get('name') or row['code']}({row['code']})"
             figures = row.get("figures") or {}
             details = _join(
-                ("price", _krw(row.get("price"))),
-                ("change", _change(row, "KRW")),
+                ("price", _money(row.get("price"), currency)),
+                ("change", _change(row, currency)),
                 ("volume", _shares(row.get("volume"))),
-                *(_figure(key, value) for key, value in figures.items()),
+                *(_figure(key, value, currency) for key, value in figures.items()),
             )
             lines.append(f"{number}. {label}" + (f": {details}" if details else ""))
         if count > len(rows):
@@ -754,7 +775,12 @@ def _resolve(arguments: dict[str, Any]) -> dict[str, Any]:
     if action in ("quote", "history"):
         ask["target"] = _target(arguments, name, action, ask["data"])
     if action == "ranking":
-        ask["market"] = _choice(arguments, "market", _MARKETS, action)
+        ask["market"] = _choice(
+            arguments,
+            "market",
+            _RANKING_MARKETS[ask["data"]],
+            f"{action} {ask['data']}",
+        )
         count = arguments.get("count")
         if count is None:
             count = _DEFAULT_COUNT
@@ -932,8 +958,12 @@ def _position(item: dict[str, Any], currency: str) -> str:
     )
 
 
-def _figure(key: str, value: object) -> tuple[str, str | None]:
+def _figure(key: str, value: object, currency: str = "KRW") -> tuple[str, str | None]:
     label, unit = _FIGURES.get(key, (key, _plain))
+    if currency == "USD" and key in ("market_cap", "trading_value"):
+        # KIS gives US amounts in dollars: the same 조 / 억 rule, in 달러.
+        in_jo = key == "market_cap"
+        return label, _market_amount(value, _WON, in_jo=in_jo, currency="달러")
     return label, unit(value)
 
 

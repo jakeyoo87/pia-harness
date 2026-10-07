@@ -132,3 +132,12 @@ KIS 요청 15번(5개×3). 실제 주문 없음.
 | 결과 문장 단위를 통화로 | 그대로(`_money`·`_market_amount` 재사용, 순위 API의 `tomv`·`tamt` 단위는 실호출로 확인) |
 | "당일" = KIS NDAY=0 최신 미국 세션 | 그대로, 날짜를 만들지 않음 |
 | 시나리오 expect_args에 action·data·by·market·count | 그대로 |
+
+## 구현 기록 (Claude, 2026-10-07)
+
+| 저장소·브랜치 | 내용 |
+|---|---|
+| pia-broker `claude/us-ranking` `4b342f2` | `MarketScope.US`, `US_RANKINGS`(가격 다섯), `TradingService.ranking`이 us×그 밖의 by를 KIS 전에 400. `_us_ranking`: 세 거래소 한 페이지씩(`output2`, 빈 행 건너뜀), 기준값 필수(`rate`만 `_with_sign`), Decimal로 정렬(하락률은 작은 순), `tr_cont` M·F인 거래소의 가장 적은 줄 수까지만. 행 코드 `NAS:NVDA`, 응답 `currency`. 거래량·거래대금은 `PRC1`·`PRC2` 빈 값. 테스트 276개(합치기, 확실한 길이, 하락 부호, 기준값·거래소 실패, 요청 형식, us 조합 거절) |
+| pia-harness `claude/us-ranking`(이 커밋) | `_RANKING_MARKETS`(prices만 us, 첫 값 all), schema enum·설명, 결과 첫 줄과 행을 통화에 맞춤(`_money`, `_figure`가 USD 시가총액은 조 달러·거래대금은 억 달러). 가짜 Broker 미국 순위 36줄, 국내 순위 응답에 currency. 시나리오 b36(시총 Top10 us 10)·b37(상승률 us 5)·b38(관찰: 미국 외국인 순매수). 테스트 200개 |
+
+- 국내 순위의 오류 문장이 "market for ranking must be one of"에서 "market for ranking prices must be one of"로 바뀐다(data별 표 때문, 테스트 갱신).

@@ -497,6 +497,40 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
         "foreign_buying": {"net_buy_value": 72542, "net_buy_volume": 254000},
         "short_selling": {"short_volume": 1200000, "short_value": 342600000000},
     }.get(params["by"], {})
+    if params["market"] == "us":
+        # Enough US rows for any asked count, already merged and in dollars.
+        tickers = (
+            "NVDA",
+            "AAPL",
+            "GOOGL",
+            "MSFT",
+            "AMZN",
+            "TSM",
+            "META",
+            "AVGO",
+            "TSLA",
+        )
+        rows = [
+            {
+                "code": f"{'NYS' if ticker == 'TSM' else 'NAS'}:{ticker}",
+                "name": ticker,
+                "price": 200.5 + rank,
+                "change": 1.25,
+                "change_rate": 0.6,
+                "volume": 1000000 * (rank + 1),
+                "figures": {"market_cap": 5800000000000 - rank * 400000000000}
+                if params["by"] == "market_cap"
+                else {"trading_value": 24000000000 - rank * 1000000000},
+            }
+            for rank, ticker in enumerate(tickers * 4)
+        ]
+        return {
+            "by": params["by"],
+            "market": "us",
+            "currency": "USD",
+            "observed_at": now,
+            "rows": rows,
+        }
     row = {
         "code": "005930",
         "name": "삼성전자",
@@ -509,6 +543,7 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
     reply = {
         "by": params["by"],
         "market": params["market"],
+        "currency": "KRW",
         "observed_at": now,
         "rows": [row],
     }

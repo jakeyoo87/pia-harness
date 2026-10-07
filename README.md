@@ -304,7 +304,7 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
   ├─ history ··· 기간별, 대상 하나   Broker /history
   │     data=prices    period 1m·3m 일, 6m·1y 주, 3y·5y 월 → 시가·고가·저가·종가 (+ 국내 종목·코스피·코스닥은 거래량·거래대금)
   │     data=investors period 1m(일)만, name 또는 market(kospi·kosdaq) → 개인·외국인·기관 순매수 수량·금액
-  └─ ranking ··· 순위, market(all·kospi·kosdaq)·count(기본 10)   Broker /ranking
+  └─ ranking ··· 순위, market(all·kospi·kosdaq, prices는 us도)·count(기본 10)   Broker /ranking
         data=prices        by market_cap·gainers·losers·volume·trading_value
         data=investors     by foreign_buying·foreign_selling·institution_buying·institution_selling
         data=short_selling by short_volume, period 1d~3m
@@ -324,7 +324,7 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
 - **최신성**: 결과에 조회 시각을 붙인다. 저장된 지난 Turn의 시세·잔고는 그때 값이므로 나중 질문에는 다시 조회한다(도구 설명과 AGENT_INSTRUCTION).
 - **데이터**: 결과에 계좌번호·자격 증명은 없다. `account`는 예수금만 물어도 보유 종목 전체를 돌려주고, 그 결과가 Turn 도구 기록으로 저장된다.
 - **기간별(`history`)**: 줄은 오래된 것부터 적는다(추이·차트 순서). 주·월 줄의 날짜는 KIS 기준일 그대로이고 첫·마지막 줄은 부분 주·월일 수 있다. 마지막 줄은 진행 중인 장·주·월일 수 있다고 적는다. 사용자가 일 단위를 원했는데 아니면 말하게 한다.
-- **순위(`ranking`)**: 배당·PER·PBR·관심종목·신고가 근접 순위는 없다(KIS 배당률 순위는 배당 한 건씩이고, PER 순위는 높은 순만 있으며, 관심종목 순위는 실호출에서 값이 시가총액과 같았고, 신고가 근접은 대부분 동률이라 코드 순이었다). 결과 첫 줄에 기준을 적는다: 시장, 공매도 기간과 KIS 기준일(행의 거래량은 기간 누적), 투자자 순위는 KIS 잠정 집계라 history의 일별 값과 기준·시점이 다를 수 있음, 조회 상위는 시장 선택 없음. 순서는 Broker(KIS) 그대로이고, `count`가 응답보다 크면 실제 개수를 적는다.
+- **순위(`ranking`)**: 배당·PER·PBR·관심종목·신고가 근접 순위는 없다(KIS 배당률 순위는 배당 한 건씩이고, PER 순위는 높은 순만 있으며, 관심종목 순위는 실호출에서 값이 시가총액과 같았고, 신고가 근접은 대부분 동률이라 코드 순이었다). 결과 첫 줄에 기준을 적는다: 시장, 공매도 기간과 KIS 기준일(행의 거래량은 기간 누적), 투자자 순위는 KIS 잠정 집계라 history의 일별 값과 기준·시점이 다를 수 있음, 조회 상위는 시장 선택 없음. 순서는 Broker(KIS) 그대로이고, `count`가 응답보다 크면 실제 개수를 적는다. 미국(`market=us`, 가격 순위 다섯만, 2026-10-07 `plans/2026-10-07_us-ranking.md`)은 Broker가 나스닥·뉴욕·아멕스를 기준값으로 합쳐 확실히 맞는 길이까지 주고, 첫 줄에 그렇게 합쳤다고 적으며 가격은 USD, 시가총액은 조 달러, 거래대금은 억 달러다. data마다 받는 market은 표 하나(`_RANKING_MARKETS`)다.
 - **원칙**: 액션은 질문의 대상과 모양(내 계좌·지금·기간별·순위)으로만 나눈다. 새 데이터는 이 넷 중 하나의 `data` 값이나 결과 항목으로 더하고 새 액션을 만들지 않는다. 인자 하나의 뜻은 액션마다 같다.
 - **기준 거래일**: 결과의 시각은 조회 시각("looked up at")이다. 장 시간 밖이나 휴장일에는 마지막 거래일 값인데, 시세·순위 응답에는 거래일이 없다. 그래서 이 결과에는 "조회 시각 기준 값이라고 말하고, 질문에 '오늘'이 있어도 오늘 값이라 하거나 거래일을 말하지 말라. 날짜는 날짜가 있는 다른 결과에서만 쓴다"는 문장을 붙인다. 공매도(KIS 기준일)와 history(날짜별 줄)는 날짜를 그대로 보여 준다(2026-10-03 휴장일 확인에서 나온 문제).
 
