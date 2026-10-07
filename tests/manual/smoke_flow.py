@@ -497,9 +497,10 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
         "foreign_buying": {"net_buy_value": 72542, "net_buy_volume": 254000},
         "short_selling": {"short_volume": 1200000, "short_value": 342600000000},
     }.get(params["by"], {})
-    if params["market"] == "us":
-        # Enough US rows for any asked count, already merged and in dollars.
-        tickers = (
+    # Enough distinct rows for any asked count, best first by the ranked figure.
+    us = params["market"] == "us"
+    names = (
+        (
             "NVDA",
             "AAPL",
             "GOOGL",
@@ -509,21 +510,56 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
             "META",
             "AVGO",
             "TSLA",
+            "BRK/B",
         )
-        rows = [
+        if us
+        else (
+            "삼성전자",
+            "SK하이닉스",
+            "삼성전자우",
+            "LG에너지솔루션",
+            "삼성바이오로직스",
+        )
+    )
+    rows = []
+    for rank in range(30):
+        base = names[rank % len(names)]
+        name = base if rank < len(names) else f"{base} 계열{rank}"
+        rate = (
+            round(9.5 - rank * 0.3, 2)
+            if params["by"] != "losers"
+            else -round(9.5 - rank * 0.3, 2)
+        )
+        figures = (
             {
-                "code": f"{'NYS' if ticker == 'TSM' else 'NAS'}:{ticker}",
-                "name": ticker,
-                "price": 200.5 + rank,
-                "change": 1.25,
-                "change_rate": 0.6,
-                "volume": 1000000 * (rank + 1),
-                "figures": {"market_cap": 5800000000000 - rank * 400000000000}
-                if params["by"] == "market_cap"
-                else {"trading_value": 24000000000 - rank * 1000000000},
+                "market_cap": (5800000000000 if us else 16135729)
+                - rank * (150000000000 if us else 400000)
             }
-            for rank, ticker in enumerate(tickers * 4)
-        ]
+            if params["by"] == "market_cap"
+            else {
+                "trading_value": (24000000000 if us else 2400000000000)
+                - rank * 500000000
+            }
+            if params["by"] in ("volume", "trading_value") and us
+            else dict(figures)
+        )
+        rows.append(
+            {
+                "code": (
+                    f"{'NYS' if base in ('TSM', 'BRK/B') else 'NAS'}:{base}"
+                    if us
+                    else f"{rank + 1:06d}"
+                )
+                + ("" if rank < len(names) or not us else str(rank)),
+                "name": name,
+                "price": 200.5 + rank if us else 285500 - rank * 1000,
+                "change": 1.25 if us else 1500,
+                "change_rate": rate,
+                "volume": 1000000 * (rank + 1),
+                "figures": figures,
+            }
+        )
+    if us:
         return {
             "by": params["by"],
             "market": "us",
@@ -531,21 +567,12 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
             "observed_at": now,
             "rows": rows,
         }
-    row = {
-        "code": "005930",
-        "name": "삼성전자",
-        "price": 285500,
-        "change": 1500,
-        "change_rate": 0.53,
-        "volume": 1000000,
-        "figures": figures,
-    }
     reply = {
         "by": params["by"],
         "market": params["market"],
         "currency": "KRW",
         "observed_at": now,
-        "rows": [row],
+        "rows": rows,
     }
     if params["by"] == "short_selling":
         reply |= {"period": params["period"], "basis_dates": ["20260922", "20260926"]}
