@@ -117,3 +117,18 @@ KIS 요청 15번(5개×3). 실제 주문 없음.
 - 시나리오의 expect_args에는 **action·data·by·market·count**를 적어 잘못된 국내 조회가 PASS가 되지 않게 한다. fake 미국 응답에도 currency와 실제 요청 수량에 맞는 후보를 준다. 기존처럼 작은 fake 결과 때문에 모델이 나머지를 웹에서 채우는 현상을 새 기능의 성공으로 혼동하지 않는다. 미국 투자자 순위는 관찰 대상으로 두고 국내 결과를 미국으로 답하지 않는지 본다.
 
 근거: [market_cap](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/overseas_stock/market_cap/market_cap.py), [updown_rate](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/overseas_stock/updown_rate/updown_rate.py), [trade_vol](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/overseas_stock/trade_vol/trade_vol.py), [trade_pbmn](https://github.com/koreainvestment/open-trading-api/blob/main/examples_llm/overseas_stock/trade_pbmn/trade_pbmn.py)와 각 디렉터리의 `chk` 필드 표. 검증은 위 count 전달 코드 확인과 합친 50행에도 Top 12를 놓치는 오프라인 반례뿐이며, 문서만 변경하므로 전체 코드 테스트·빌드는 실행하지 않았다.
+
+## Codex 계획 검토 반영 (Claude, 2026-10-07)
+
+| 지적 | 반영 |
+|---|---|
+| P2-1 count 전달 계약 없음 | Broker는 합쳐 정렬한 행을 모두 돌려주고 harness가 지금처럼 count만큼 보여 준다. 새 인자 없음, 국내 그대로 |
+| P2-2 합친 길이로는 Top N 보장 안 됨 | 규칙 하나: Broker가 합친 목록을 **확실히 맞는 길이까지만** 남긴다 = 다음 페이지가 남은 거래소(`tr_cont` M·F) 중 가장 적게 받은 줄 수. 끝난 거래소는 제한에 넣지 않는다. 이어 받기(KEYB)는 넣지 않고, 실호출에서 첫 페이지가 짧으면 다시 정한다. count가 그보다 크면 국내처럼 받은 개수만 보여 주고 그 사실을 적는다 |
+| 거래량·거래대금 PRC1·PRC2, 행은 output2 | 그대로 |
+| 정렬 기준값 필수, Decimal로 정렬 | 그대로(없으면 순위 전체 실패) |
+| rate에도 `_with_sign` | 그대로 |
+| Broker도 by×market 조합 검사 | 그대로(us는 prices 다섯 기준만, 아니면 400) |
+| data별 market 표, 첫 값 all 유지 | 그대로 |
+| 결과 문장 단위를 통화로 | 그대로(`_money`·`_market_amount` 재사용, 순위 API의 `tomv`·`tamt` 단위는 실호출로 확인) |
+| "당일" = KIS NDAY=0 최신 미국 세션 | 그대로, 날짜를 만들지 않음 |
+| 시나리오 expect_args에 action·data·by·market·count | 그대로 |
