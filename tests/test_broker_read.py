@@ -373,7 +373,8 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             lines[1],
         )
         self.assertEqual(
-            "Totals: total valuation 2,245,000 KRW; total profit +95,333 KRW.", lines[2]
+            "Korean account totals: total valuation 2,245,000 KRW; total profit +95,333 KRW.",
+            lines[2],
         )
         self.assertEqual(
             "- 삼성전자(005930): quantity 10 shares; sellable now 7 shares; average price "
@@ -839,8 +840,8 @@ class UsStockTest(unittest.IsolatedAsyncioTestCase):
         lines = result.observation_text.splitlines()
         self.assertIn(
             "US stocks (amounts in USD, as KIS reports them): USD deposit 12.5 USD; "
-            "exchange rate KIS applies 1,344.2 KRW per USD. The totals above are the Korean "
-            "account's.",
+            "exchange rate KIS applies 1,344.2 KRW per USD. The Korean account totals "
+            "above leave these out.",
             lines,
         )
         self.assertEqual(

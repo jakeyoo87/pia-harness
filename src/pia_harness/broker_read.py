@@ -397,7 +397,7 @@ class BrokerReadTool:
                 f"Cash: {cash or 'not reported'}. Cash is not what can be spent on one "
                 "stock; use account with name for that."
             ),
-            f"Totals: {totals or 'not reported'}.",
+            f"Korean account totals: {totals or 'not reported'}.",
         ]
         positions = reply["positions"]
         if not positions:
@@ -423,8 +423,8 @@ class BrokerReadTool:
             )
             lines.append(
                 f"US stocks (amounts in USD, as KIS reports them): "
-                f"{us_cash or 'cash not reported'}. The totals above are the Korean "
-                "account's."
+                f"{us_cash or 'cash not reported'}. The Korean account totals above "
+                "leave these out."
             )
             us_positions = us["positions"]
             if not us_positions:
