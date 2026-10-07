@@ -849,3 +849,18 @@ class UsStockTest(unittest.IsolatedAsyncioTestCase):
             "+107.4 USD; return +29.79%",
             lines[-1],
         )
+
+    async def test_a_failed_us_part_is_said_without_hiding_the_korean_account(
+        self,
+    ) -> None:
+        self.broker.account = {**ACCOUNT, "us": None, "us_error": "BUSINESS_REJECTED"}
+        result = await self.tool.execute(MEMBER, call("account"), ())
+        lines = result.observation_text.splitlines()
+        self.assertIn("Holdings (2):", lines)
+        self.assertTrue(
+            lines[-1].startswith(
+                "US stocks: not available this time (broker error BUSINESS_REJECTED); "
+                "the Korean account above is complete."
+            ),
+            lines[-1],
+        )

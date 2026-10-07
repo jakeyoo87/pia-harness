@@ -406,6 +406,13 @@ class BrokerReadTool:
             lines.append(f"Holdings ({len(positions)}):")
             lines.extend(_holding(item, "KRW") for item in positions)
         us = reply.get("us")
+        if us is None and reply.get("us_error"):
+            lines.append(
+                f"US stocks: not available this time (broker error {reply['us_error']}); "
+                "the Korean account above is complete. Do not say the user has no US "
+                "stocks. The account may not be set up for overseas trading, or the "
+                "broker's overseas service may be down; suggest checking the KIS app."
+            )
         if us is not None:
             us_cash = _join(
                 ("USD deposit", _money(us.get("cash"), "USD")),
