@@ -253,10 +253,19 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
             currency = "USD" if ":" in code else "KRW"
             return httpx.Response(
                 200,
-                json={"code": code, "price": price, "currency": currency, "observed_at": now},
+                json={
+                    "code": code,
+                    "price": price,
+                    "currency": currency,
+                    "observed_at": now,
+                },
             )
         if path.endswith(("/account", "/history", "/ranking", "/broker-status")):
-            return httpx.Response(200, json=_fake_read(path, request.url.params))
+            reply = _fake_read(path, request.url.params)
+            # A scenario may set broker_us_error: the US part fails, Korea stays.
+            if "us" in reply and started.get("broker_us_error"):
+                reply = {**reply, "us": None, "us_error": started["broker_us_error"]}
+            return httpx.Response(200, json=reply)
         if path.endswith("/orders"):
             body = json.loads(request.content)
             orders.append(body)
@@ -639,6 +648,7 @@ async def run(
         for scenario in scenarios:
             print(f"\n===== {scenario['id']}: {scenario['message']}", flush=True)
             state["record"], state["started"] = Record(), time.monotonic()
+            state["broker_us_error"] = scenario.get("broker_us_error")
             first = asyncio.create_task(
                 orchestrator.submit(user_key=USER, message=scenario["message"])
             )

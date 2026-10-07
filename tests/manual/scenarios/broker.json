@@ -32,5 +32,6 @@
   {"id": "b31", "message": "내 미국 주식 보여줘", "expect": "broker", "expect_args": {"action": "account"}},
   {"id": "b32", "message": "엔비디아 외국인 순매수 추이 보여줘"},
   {"id": "b33", "message": "소니 주가 얼마야?"},
-  {"id": "b34", "message": "달러로 환전해줘"}
+  {"id": "b34", "message": "달러로 환전해줘"},
+  {"id": "b35", "message": "내 계좌 다시 보여줘", "broker_us_error": "BUSINESS_REJECTED", "expect": "broker", "expect_args": {"action": "account"}}
 ]
