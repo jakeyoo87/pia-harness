@@ -555,7 +555,7 @@ def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
                 "price": 200.5 + rank if us else 285500 - rank * 1000,
                 "change": 1.25 if us else 1500,
                 "change_rate": rate,
-                "volume": 1000000 * (rank + 1),
+                "volume": 1000000 * (30 - rank),  # best first, like the ranked figure
                 "figures": figures,
             }
         )
