@@ -24,6 +24,8 @@
 | 8 | "어제 기준"에 `version`과 `as_of`를 함께 줘 `version`이 쓰이고 틀린 답 | 둘을 함께 주면 읽지 않고 "하나만"을 돌려준다 |
 | 9 | 비중을 물으니 안 하나만 냄 | 지침: 비중·전략을 물으면 2~3개 안과 장단점을 보이고, 사용자가 고른 것만 `plan`으로 확인을 받는다 |
 
+| 10 | — | **사용자 결정:** 대화 모델을 `openai/gpt-6-luna`에서 Claude Haiku 5.5로 바꿔 본다(아래 "모델 변경") |
+
 범위 밖: 예전 Memory에 남은 관심 종목(지침 변경 전 기록, 자동 이관 안 함 결정) → 다음 Reset 작업에서 정리. AI가 "Memory를 직접 볼 수 없다"고 한 것은 기존 문제로 메모만.
 
 ## 설계
@@ -44,6 +46,13 @@
 - `app/core.py`의 `PLAN_PROMPT`는 harness 것을 가져와 붙인다. Memory 지침은 PIA에 그대로.
 - `telegram_adapter.PROGRESS_LABELS`에 #3 두 이름.
 - harness 새 버전 릴리스 뒤 `requirements` 핀 갱신.
+
+### 모델 변경 (#10)
+
+- 코드 변경 없음: Bot 설정 `OPENROUTER_MODEL`(pia `ops/dev_deployment_rollout.md`의 "The Bot model remains `openai/gpt-6-luna`")만 바꾼다.
+- Claude Haiku 5.5: Anthropic ID `claude-haiku-5-5`, 1M context, 입력 $0.10 / 출력 $0.50 per 1M(100K 토큰 이하 요청; 넘으면 $0.50 / $2.50). OpenRouter의 정확한 모델 ID와 도구 호출·`response_format` json_schema(`require_parameters: True`로 요구) 지원은 배포 전에 OpenRouter 모델 목록에서 확인한다(지원하지 않으면 Memory·Summary 작성이 실패).
+- 비교: 시나리오 `--set plan`(+ 기존 `broker`)을 지금 모델과 Haiku 5.5로 각각 1회 돌려 도구 선택·확인 흐름·답변 품질·토큰·시간을 비교한 뒤 사용자가 고른다(유료, 승인 뒤). 결과 기록은 harness `tests/manual/records/`.
+- 참고: Compaction 기준이 128,000토큰이라 그 근처 대화는 100K를 넘어 요금 구간이 바뀐다. 비교 결과를 보고 기준 조정은 따로 정한다(이번 범위 밖).
 
 ## 테스트
 
