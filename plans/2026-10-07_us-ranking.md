@@ -141,3 +141,15 @@ KIS 요청 15번(5개×3). 실제 주문 없음.
 | pia-harness `claude/us-ranking`(이 커밋) | `_RANKING_MARKETS`(prices만 us, 첫 값 all), schema enum·설명, 결과 첫 줄과 행을 통화에 맞춤(`_money`, `_figure`가 USD 시가총액은 조 달러·거래대금은 억 달러). 가짜 Broker 미국 순위 36줄, 국내 순위 응답에 currency. 시나리오 b36(시총 Top10 us 10)·b37(상승률 us 5)·b38(관찰: 미국 외국인 순매수). 테스트 200개 |
 
 - 국내 순위의 오류 문장이 "market for ranking must be one of"에서 "market for ranking prices must be one of"로 바뀐다(data별 표 때문, 테스트 갱신).
+
+## 실호출 결과와 시가총액 시험 (Claude·사용자, 2026-10-07~09)
+
+Broker `4b342f2` 배포 후(요청 사이 1.5초):
+
+| 순위 | 결과 |
+|---|---|
+| gainers·losers·volume·trading_value | 정상. 각 0.6초, 합친 결과가 정확히 100줄(거래소마다 100줄, `tr_cont` 신호를 읽어 확실한 길이로 자름). 거래대금 `tamt`는 USD(마이크론 23.98억 달러). 하락률 부호·정렬 맞음. ETF 포함(국내 순위와 같음). 상승률 상위는 1~2달러 소형주가 대부분(KIS 거래량 조건 0=전체 그대로) |
+| market_cap | 502 BUSINESS_REJECTED. 로그를 남기게 한 뒤(Broker `d669c0f`) 확인: `HHDFS76350100` status 200 `msg_cd=OPSQ2001`(INPUT INVALID_CHECK_MRKT_DIV_CODE). 요청은 공식 예제 두 곳과 같고, 같은 `EXCD=NAS`를 다른 순위 API는 받는다. 첫 거래소(NAS)에서 멈춰 NYS·AMS는 불리지 않았다 |
+
+- **시험(사용자):** Broker `claude/us-mcap-probe`(임시)로 `ranking?by=market_cap&market=us&probe_excd=X`가 KIS 답을 그대로 돌려준다. 후보 NAS·NYS·AMS·NASD·NYSE·AMEX 한 번씩(KIS 6번). 결과로 시가총액의 거래소 코드를 정하고 임시 기능을 지운다. 안 되면 미국 순위는 네 가지로 출시한다.
+- 나중 후보(사용자 질문에서): 순위 조건(거래량·시가총액 등)은 조건별 인자 대신 코드 실행 도구로(범용, 별도 작업).
