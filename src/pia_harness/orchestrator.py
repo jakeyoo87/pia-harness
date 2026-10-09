@@ -60,6 +60,12 @@ APPLIED_AFTER_ANSWER_NOTE = (
     "already saved."
 )
 APPLIED_ACTION_FAILED_NOTICE = "요청한 변경을 저장하지 못했습니다. 다시 요청해 주세요."
+# A waiting action's question is the tool's fixed text, added after the answer;
+# a model that also asks shows the user two questions.
+CONFIRMATION_APPENDED_NOTE = (
+    " The confirmation question is appended to your answer automatically; do not "
+    "ask it yourself."
+)
 # Orders one request may prepare, each waiting for its own confirmation.
 MAX_PENDING_ACTIONS = 5
 CONFIRM_TOOL = "confirm"
@@ -214,7 +220,7 @@ MEMORY_TOOL_SPEC = _BuiltinTool(
     MEMORY_TOOL,
     "Keep or remove durable facts about the user in long-term Memory. Use when the "
     "user asks you to remember or forget something, or states a lasting fact or "
-    "preference about themselves (investment goals, risk profile, holdings plans). "
+    "preference about themselves (how they like answers, their situation). "
     "The change is made from this request after your answer; do not say it is "
     "already saved.",
     {
@@ -912,7 +918,7 @@ class ConversationOrchestrator:
                 outcome.prepared.append(
                     _PendingAction(execution, draft, request_at, action_id)
                 )
-                text += f" (action ID {action_id})"
+                text += f"{CONFIRMATION_APPENDED_NOTE} (action ID {action_id})"
             outcome.results[index] = text
         outcome.answer_next = bool(drafts)
         return outcome

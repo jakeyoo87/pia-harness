@@ -542,3 +542,34 @@ def _required(name: str, value: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} is required")
     return value
+
+
+class InMemoryPlanStore:
+    """Investment plan versions in memory, with the same rules as the host's store:
+    newest first, a version is never replaced."""
+
+    def __init__(self) -> None:
+        self.plans: dict[str, list[Any]] = {}
+
+    def get_plan(self, user_key: str, version: int | None = None) -> Any:
+        plans = self.plans.get(user_key, [])
+        if version is None:
+            return plans[-1] if plans else None
+        return next((plan for plan in plans if plan.version == version), None)
+
+    def list_plans(
+        self, user_key: str, *, limit: int, saved_through: datetime | None = None
+    ) -> tuple[Any, ...]:
+        plans = [
+            plan
+            for plan in reversed(self.plans.get(user_key, []))
+            if saved_through is None or plan.created_at <= saved_through
+        ]
+        return tuple(plans[:limit])
+
+    def save_plan(self, user_key: str, plan: Any) -> bool:
+        plans = self.plans.setdefault(user_key, [])
+        if any(saved.version == plan.version for saved in plans):
+            return False
+        plans.append(plan)
+        return True

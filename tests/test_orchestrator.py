@@ -1401,8 +1401,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(OrchestratorStatus.DELIVERED, first.status)
         self.assertEqual([], executed)
         self.assertNotIn("confirm", [tool.name for tool in contexts[0].tools])
-        # After a draft the model answers without tools.
+        # After a draft the model answers without tools, told the question is added.
         self.assertEqual((), contexts[1].tools)
+        self.assertIn("do not ask it yourself", _results(contexts[1])[0])
         # The user gets the question last; the Turn keeps only the model's
         # answer, so later Turns never show the model a question it did not write.
         self.assertTrue(
@@ -1641,6 +1642,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([[]], answered)
         self.assertEqual(['{"market": "금리 인하 기대"}'], executed)
         self.assertIn("do not say it is already saved", _results(contexts[1])[0])
+        self.assertNotIn("do not ask it yourself", _results(contexts[1])[0])
         self.assertEqual((), contexts[1].tools)
         self.assertEqual(
             "시장 판단을 바꿨어요.\n\nPlan saved as version 1.", result.final_text

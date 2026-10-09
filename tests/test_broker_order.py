@@ -87,7 +87,7 @@ class BrokerOrderToolTest(unittest.IsolatedAsyncioTestCase):
             "(09:31 기준 현재가 285,500원)",
             result.action.confirmation,
         )
-        self.assertIn("do not say the order was placed", result.observation_text)
+        self.assertIn("Do not say the order was placed", result.observation_text)
 
     async def test_market_order_shows_the_estimated_amount(self) -> None:
         result = await self.tool.prepare(MEMBER, call(order_type="MARKET", side="SELL"))

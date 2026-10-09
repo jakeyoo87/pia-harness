@@ -187,9 +187,8 @@ class BrokerOrderTool:
             "summary": summary,
         }
         return PreparationResult(
-            f"Order prepared and waiting for the user's confirmation: {summary}. The "
-            "confirmation question is appended to the answer automatically; do not "
-            "repeat it and do not say the order was placed.",
+            f"Order prepared and waiting for the user's confirmation: {summary}. Do "
+            "not say the order was placed.",
             PreparedAction(
                 summary, confirmation, json.dumps(stored, ensure_ascii=False)
             ),

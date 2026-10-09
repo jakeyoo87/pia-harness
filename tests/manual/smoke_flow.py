@@ -8,7 +8,7 @@ replies; no real order or account lookup is ever sent.
 
     OPENROUTER_API_KEY=... EXA_API_KEY=... NAVER_API_HUB_CLIENT_ID=... \\
     NAVER_API_HUB_CLIENT_SECRET=... python -m tests.manual.smoke_flow \\
-        [--set read|execution|broker] [--only 1,2]
+        [--set read|execution|broker|plan] [--only 1,2] [--model ID] [--context-limit N]
 """
 
 from __future__ import annotations
@@ -27,10 +27,13 @@ from typing import Any
 import httpx
 
 from pia_harness import (
+    PLAN_MEMORY_RULE,
+    PLAN_PROMPT,
     BrokerOrderTool,
     BrokerReadTool,
     ConversationOrchestrator,
     ExaWebSearch,
+    InvestmentPlan,
     JinaPageExtractor,
     ModelTokenBudget,
     NaverNewsSearch,
@@ -41,10 +44,10 @@ from pia_harness.broker_read import _ArgumentProblem, _resolve
 from pia_harness.compaction import TokenCompactor
 from pia_harness.context import PromptContextAssembler
 from pia_harness.memory import MemoryReviewer
-from pia_harness.testing import InMemoryConversationStore
+from pia_harness.testing import InMemoryConversationStore, InMemoryPlanStore
 
 SCENARIOS = Path(__file__).with_name("scenarios")
-SCENARIO_SETS = ("read", "execution", "broker")
+SCENARIO_SETS = ("read", "execution", "broker", "plan")
 # name: (code, market, current price). The fake order reply is UNKNOWN for 005935
 # so one scenario sees the "check the broker app" result. US codes are exchange:ticker
 # and found by ticker too; "마이크론" matches two names, as in the real list.
@@ -79,6 +82,11 @@ BROKER_PROMPT = (
     "buy and sell orders (US: limit orders only), but only after the user agrees to "
     "the confirmation question in the very next message."
 )
+# The plan set keeps what PIA keeps out of Memory (pia-agent app/core.py).
+PLAN_MEMORY_INSTRUCTION = (
+    "Keep durable facts a financial investment agent should remember about the user. "
+    f"{PLAN_MEMORY_RULE} Do not keep news content or one-off questions."
+)
 _MEMORY_ACTIONS = {"update": "UPDATE", "forget": "FORGET"}
 _EXECUTION_TOOLS = frozenset({"order", "confirm"})
 # Bars by period, as the broker returns them (pia-broker README).
@@ -96,6 +104,12 @@ class Record:
     memory: str = "NONE"
     current_user: str = ""
     tokens: list[int] = field(default_factory=list)
+    # Provider-reported total tokens of each answer (the estimate above is not).
+    usage: list[int] = field(default_factory=list)
+    # The plan set: the plan and Memory after the Turn.
+    plan_versions: list[Any] = field(default_factory=list)
+    memory_text: str = ""
+    orders_sent: int = 0
     # Provider calls besides the loop model, for the cost of one question.
     calls: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(("search", "page", "notes"), 0)
@@ -128,6 +142,8 @@ def _instrument(model: OpenRouterModelAdapter):
             raise
         if result.answer is not None:
             record.steps.append("answer")
+            if result.answer.usage is not None:
+                record.usage.append(result.answer.usage.total_tokens)
             _log(state["started"], "ANSWER", f"tools_offered={len(context.tools)}")
         else:
             names = []
@@ -618,7 +634,28 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
         ok = ok and record.memory == scenario["expect_memory"]
     if "then" in scenario:
         ok = ok and scenario["then"] in record.current_user
-    return "PASS" if ok else "CHECK"
+    used = {name for step in record.steps for name in step.split("+")}
+    ok = ok and not set(scenario.get("forbid", ())) & used
+    return "PASS" if ok and _plan_ok(scenario, record) else "CHECK"
+
+
+def _plan_ok(scenario: dict[str, Any], record: Record) -> bool:
+    """The plan set: what was saved, not only which tools ran."""
+    plans = record.plan_versions
+    latest = dict(plans[-1].sections) if plans else {}
+    ok = True
+    if "plan_versions" in scenario:  # a plan step never sends an order
+        ok = len(plans) == scenario["plan_versions"] and record.orders_sent == 0
+    for name, text in scenario.get("expect_plan", {}).items():
+        value = latest.get(name, "")
+        ok = ok and (value == "" if text == "" else text in value)
+    if "same_as_version" in scenario:
+        earlier = dict(plans[scenario["same_as_version"] - 1].sections)
+        names = set(earlier) | set(latest)
+        ok = ok and all(earlier.get(n, "") == latest.get(n, "") for n in names)
+    return ok and not any(
+        word in record.memory_text for word in scenario.get("memory_excludes", ())
+    )
 
 
 async def run(
@@ -626,8 +663,9 @@ async def run(
     model_id: str,
     environ: dict[str, str],
     scenario_set: str = "read",
+    context_limit: int = 1_050_000,
 ) -> int:
-    budget = ModelTokenBudget(context_limit=1_050_000, response_tokens=4_096)
+    budget = ModelTokenBudget(context_limit=context_limit, response_tokens=4_096)
     key = environ["OPENROUTER_API_KEY"]
     model = OpenRouterModelAdapter(
         api_key=key,
@@ -666,14 +704,20 @@ async def run(
     execution_tools = ()
     broker_tools = ()
     broker_client = None
-    if scenario_set in ("execution", "broker"):
+    plan_store = InMemoryPlanStore()
+    plan = InvestmentPlan(plan_store)
+    plan_tools = ()
+    if scenario_set in ("execution", "broker", "plan"):
         broker_client = _fake_broker(state, orders)
         execution_tools = (
             BrokerOrderTool(
                 base_url="https://broker.invalid", client=broker_client
             ).tool(),
         )
-    if scenario_set == "broker":
+    if scenario_set == "plan":
+        execution_tools = (*execution_tools, plan.plan_tool())
+        plan_tools = (logged_result(plan.history_tool()),)
+    if scenario_set in ("broker", "plan"):
         broker_tools = (
             logged_result(
                 BrokerReadTool(
@@ -689,18 +733,24 @@ async def run(
         store=store,
         assembler=PromptContextAssembler(model.count_input_tokens),
         memory_reviewer=MemoryReviewer(
-            store, model.review_memory, instruction=MEMORY_INSTRUCTION
+            store,
+            model.review_memory,
+            instruction=PLAN_MEMORY_INSTRUCTION
+            if scenario_set == "plan"
+            else MEMORY_INSTRUCTION,
         ),
         compactor=TokenCompactor(store, model.summarize),
         generate_reply=model.generate_reply,
         deliver=deliver,
         system_prompt=SYSTEM_PROMPT
-        + (BROKER_PROMPT if scenario_set == "broker" else ""),
+        + (BROKER_PROMPT if scenario_set in ("broker", "plan") else "")
+        + (f" {PLAN_PROMPT}" if scenario_set == "plan" else ""),
         token_budget=budget,
         model_id=model_id,
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
-        read_tools=(*search_tools, extractor.tool(), *broker_tools),
+        read_tools=(*search_tools, extractor.tool(), *broker_tools, *plan_tools),
         execution_tools=execution_tools,
+        context_document=plan.document if scenario_set == "plan" else None,
     )
     rows = []
     try:
@@ -720,9 +770,21 @@ async def run(
                         orchestrator.submit(user_key=USER, message=scenario["then"])
                     )
                 )
+            sent_before = len(orders)
             results = await asyncio.gather(*tasks)
             record: Record = state["record"]
             memory = store.get_memory(USER)
+            record.memory_text = memory.memory_text if memory else ""
+            record.orders_sent = len(orders) - sent_before
+            record.plan_versions = list(plan_store.plans.get(USER, []))
+            if scenario_set == "plan":
+                latest = record.plan_versions[-1] if record.plan_versions else None
+                _log(
+                    state["started"],
+                    "PLAN",
+                    f"versions={len(record.plan_versions)} changed="
+                    + ("-" if latest is None else ",".join(latest.changed)),
+                )
             _log(state["started"], "RESULT", " ".join(str(r.status) for r in results))
             _log(
                 state["started"],
@@ -743,7 +805,7 @@ async def run(
                 )
             if any(result.compaction_failed for result in results):
                 _log(state["started"], "COMPACTION", "failed")
-            if scenario_set in ("execution", "broker"):
+            if scenario_set in ("execution", "broker", "plan"):
                 _log(state["started"], "ORDERS SENT", str(len(orders)))
             rows.append(
                 (
@@ -753,6 +815,7 @@ async def run(
                     _check(scenario, record),
                     f"{time.monotonic() - state['started']:.1f}s",
                     max(record.tokens, default=0),
+                    sum(record.usage),
                     "/".join(
                         str(n) for n in (len(record.steps), *record.calls.values())
                     ),
@@ -768,7 +831,7 @@ async def run(
 
     print(
         "\n===== summary (id | expect | model steps | check | time"
-        " | max input tokens | calls model/search/page/notes)"
+        " | max input tokens (estimate) | reported tokens | calls model/search/page/notes)"
     )
     for row in rows:
         print(" | ".join(str(value) for value in row))
@@ -779,6 +842,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default="openai/gpt-6-luna")
     parser.add_argument("--set", default="read", choices=SCENARIO_SETS)
+    parser.add_argument("--context-limit", type=int, default=1_050_000)
     parser.add_argument("--only", help="comma-separated scenario ids, in file order")
     args = parser.parse_args()
     scenarios = json.loads((SCENARIOS / f"{args.set}.json").read_text(encoding="utf-8"))
@@ -799,7 +863,9 @@ def main() -> None:
         print(f"missing environment variables: {', '.join(missing)}", file=sys.stderr)
         raise SystemExit(2)
     raise SystemExit(
-        asyncio.run(run(scenarios, args.model, dict(os.environ), args.set))
+        asyncio.run(
+            run(scenarios, args.model, dict(os.environ), args.set, args.context_limit)
+        )
     )
 
 

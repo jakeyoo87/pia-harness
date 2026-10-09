@@ -1,0 +1,18 @@
+[
+  {"id": "p1", "message": "내 투자 계획 세워보자", "forbid": ["plan"], "plan_versions": 0},
+  {"id": "p2", "message": "자산 증식, 5년, 중간 정도 위험, 매달 100만원, 국내외 주식과 ETF", "expect": "plan", "plan_versions": 0, "memory_excludes": ["5년", "100만"]},
+  {"id": "p3", "message": "응", "expect": "confirm", "plan_versions": 1, "expect_plan": {"goal": "5년"}},
+  {"id": "p4", "message": "요즘 금리 인하 기대가 커진 것 같아", "forbid": ["plan"], "plan_versions": 1},
+  {"id": "p5", "message": "내 투자 계획 보여줘", "expect": "answer", "forbid": ["plan", "plan_history"], "plan_versions": 1},
+  {"id": "p6", "message": "현금 비중 30%로 늘리고 싶어", "expect": "plan", "plan_versions": 1},
+  {"id": "p7", "message": "아니", "expect": "answer", "forbid": ["plan", "confirm"], "plan_versions": 1},
+  {"id": "p8", "message": "투자 계획 바뀐 이력 보여줘", "expect": "plan_history", "forbid": ["plan"], "plan_versions": 1},
+  {"id": "p9", "message": "너가 나에 대해 기억하고 있는 거 알려줘", "expect": "answer", "forbid": ["plan"], "plan_versions": 1, "memory_excludes": ["5년", "100만", "금리"]},
+  {"id": "p10", "message": "어제 기준 투자 계획 보여줘", "expect": "plan_history", "forbid": ["plan"], "plan_versions": 1},
+  {"id": "p11", "message": "비중 어떻게 나누면 좋을까?", "forbid": ["plan"], "plan_versions": 1},
+  {"id": "p12", "message": "두 번째 안으로 해줘", "expect": "plan", "plan_versions": 1},
+  {"id": "p13", "message": "응", "expect": "confirm", "plan_versions": 2},
+  {"id": "p14", "message": "내 계획 기준으로 지금 삼성전자 사도 될까?", "forbid": ["plan", "order"], "plan_versions": 2},
+  {"id": "p15", "message": "처음 계획으로 되돌려", "expect": "plan_history", "plan_versions": 2},
+  {"id": "p16", "message": "응", "expect": "confirm", "plan_versions": 3, "same_as_version": 1}
+]
