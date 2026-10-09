@@ -551,11 +551,9 @@ class InMemoryPlanStore:
     def __init__(self) -> None:
         self.plans: dict[str, list[Any]] = {}
 
-    def get_plan(self, user_key: str, version: int | None = None) -> Any:
+    def get_plan(self, user_key: str) -> Any:
         plans = self.plans.get(user_key, [])
-        if version is None:
-            return plans[-1] if plans else None
-        return next((plan for plan in plans if plan.version == version), None)
+        return plans[-1] if plans else None
 
     def list_plans(
         self, user_key: str, *, limit: int, saved_through: datetime | None = None

@@ -53,8 +53,9 @@ PLAN_PROMPT = (
     "three options with their trade-offs and let the user choose; never decide "
     "for the user. When the plan is empty and the user wants to make one, first "
     "ask a few short questions (goal, horizon, risk profile, how they invest now; "
-    "read holdings with the broker tool instead of asking) and draft the plan from "
-    "the answers. When showing the plan, keep its section names as written. Refer "
+    "read holdings with the broker tool instead of asking); once they answer, "
+    "propose saving what they decided with the plan tool, leaving undecided "
+    "sections empty, and offer options only for what is still open. When showing the plan, keep its section names as written. Refer "
     "to plan versions by their date and time, never by version number."
 )
 PLAN_MEMORY_RULE = (
@@ -75,11 +76,11 @@ PLAN_TOOL_DESCRIPTION = (
     "its sections."
 )
 HISTORY_TOOL_DESCRIPTION = (
-    "Read earlier versions of the user's investment plan. With no arguments, "
-    "lists the latest versions (date and time, changed sections, reason, version). "
-    "Give either version (that version in full) or as_of (YYYY-MM-DD, KST: the "
-    "plan as it was at the end of that day), not both. The current plan is "
-    "already in the context."
+    "Read earlier versions of the user's investment plan. Without as_of, lists the "
+    "latest changes (date and time, changed sections, reason). With as_of, returns "
+    "the whole plan as it was then: a date YYYY-MM-DD (end of that day, KST) or a "
+    "listed date and time YYYY-MM-DD HH:MM. The current plan is already in the "
+    "context."
 )
 
 
@@ -93,8 +94,8 @@ class PlanVersion:
 
 
 class PlanStore(Protocol):
-    def get_plan(self, user_key: str, version: int | None = None) -> PlanVersion | None:
-        """One version; the latest when version is None."""
+    def get_plan(self, user_key: str) -> PlanVersion | None:
+        """The latest version."""
 
     def list_plans(
         self, user_key: str, *, limit: int, saved_through: datetime | None = None
@@ -153,8 +154,10 @@ class InvestmentPlan:
             arguments_schema={
                 "type": "object",
                 "properties": {
-                    "version": {"type": "integer", "minimum": 1},
-                    "as_of": {"type": "string", "description": "YYYY-MM-DD (KST)"},
+                    "as_of": {
+                        "type": "string",
+                        "description": "YYYY-MM-DD or YYYY-MM-DD HH:MM (KST)",
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -224,27 +227,18 @@ class InvestmentPlan:
             arguments = None
         if not isinstance(arguments, dict):
             return ReadToolResult("Not read: the arguments must be an object.")
-        version, as_of = arguments.get("version"), arguments.get("as_of")
-        if version is not None and as_of is not None:
-            return ReadToolResult("Not read: give version or as_of, not both.")
-        if version is not None:
-            if isinstance(version, bool) or not isinstance(version, int) or version < 1:
-                return ReadToolResult("Not read: version must be a positive integer.")
-            plan = await asyncio.to_thread(self._store.get_plan, user_key, version)
-            return ReadToolResult(
-                "그 투자 계획 버전이 없습니다." if plan is None else render(plan)
-            )
-        if as_of is not None:
-            try:
-                day = date.fromisoformat(str(as_of))
-            except ValueError:
-                return ReadToolResult("Not read: as_of must be YYYY-MM-DD.")
-            end = datetime.combine(day, time.max, _KST)
+        as_of = arguments.get("as_of")
+        if as_of:
+            end = _end_of(str(as_of))
+            if end is None:
+                return ReadToolResult(
+                    "Not read: as_of must be YYYY-MM-DD or YYYY-MM-DD HH:MM."
+                )
             plans = await asyncio.to_thread(
                 self._store.list_plans, user_key, limit=1, saved_through=end
             )
             return ReadToolResult(
-                render(plans[0]) if plans else f"{day} 이전의 투자 계획이 없습니다."
+                render(plans[0]) if plans else f"{as_of} 이전의 투자 계획이 없습니다."
             )
         plans = await asyncio.to_thread(
             self._store.list_plans, user_key, limit=HISTORY_LIMIT
@@ -253,8 +247,7 @@ class InvestmentPlan:
             return ReadToolResult("투자 계획 기록이 없습니다.")
         return ReadToolResult(
             "\n".join(
-                f"{_kst_time(plan.created_at)} [{_labels(plan.changed)}] "
-                f"{plan.reason} (version {plan.version})"
+                f"{_kst_time(plan.created_at)} [{_labels(plan.changed)}] {plan.reason}"
                 for plan in plans
             )
         )
@@ -270,6 +263,17 @@ def render(plan: PlanVersion) -> str:
     for name, label in SECTIONS:
         lines.append(f"\n[{label}]\n{plan.sections.get(name, '')}")
     return "\n".join(lines)
+
+
+def _end_of(value: str) -> datetime | None:
+    """The last moment of a KST day, or of a listed minute."""
+    try:
+        if len(value) == len("YYYY-MM-DD"):
+            return datetime.combine(date.fromisoformat(value), time.max, _KST)
+        minute = datetime.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=_KST)
+    except ValueError:
+        return None
+    return minute + timedelta(minutes=1) - timedelta(microseconds=1)
 
 
 def _change_request(arguments_json: str) -> tuple[dict[str, str], str] | str:

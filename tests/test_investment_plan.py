@@ -11,7 +11,7 @@ NOW = datetime(2026, 10, 9, 7, 13, tzinfo=UTC)  # 16:13 KST
 
 
 class FailingStore(InMemoryPlanStore):
-    def get_plan(self, user_key, version=None):
+    def get_plan(self, user_key):
         raise SessionStoreError("down")
 
 
@@ -125,11 +125,15 @@ class InvestmentPlanTest(unittest.TestCase):
         self.apply({"market": "강세"}, "첫 판단")  # 2026-10-09 16:13 KST
         self.apply({"market": "약세"}, "금리 상승")  # 2026-10-10 16:13 KST
         self.assertEqual(
-            "2026-10-10 16:13 [시장 판단] 금리 상승 (version 2)\n"
-            "2026-10-09 16:13 [시장 판단] 첫 판단 (version 1)",
+            "2026-10-10 16:13 [시장 판단] 금리 상승\n2026-10-09 16:13 [시장 판단] 첫 판단",
             self.history(),
         )
-        self.assertIn("[시장 판단]\n강세", self.history(version=1))
+        # A listed time reads that version; an empty as_of is the list.
+        self.assertIn("[시장 판단]\n강세", self.history(as_of="2026-10-09 16:13"))
+        self.assertIn(
+            "16:12 이전의 투자 계획이 없습니다", self.history(as_of="2026-10-09 16:12")
+        )
+        self.assertEqual(self.history(), self.history(as_of=""))
         self.assertIn(
             "이번 변경: 시장 판단 — 금리 상승", self.history(as_of="2026-10-10")
         )
@@ -137,10 +141,6 @@ class InvestmentPlanTest(unittest.TestCase):
             "2026-10-08 이전의 투자 계획이 없습니다.", self.history(as_of="2026-10-08")
         )
         self.assertIn("Not read", self.history(as_of="10/9"))
-        self.assertEqual(
-            "Not read: give version or as_of, not both.",
-            self.history(version=1, as_of="2026-10-08"),
-        )
 
 
 if __name__ == "__main__":

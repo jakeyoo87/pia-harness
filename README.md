@@ -405,12 +405,12 @@ Broker 현재가 (계좌 미연결이면 "Member Web에서 연결·확인 필요
 
 #### 6.4.2 투자 계획
 
-회원별 투자 계획은 포트폴리오 전략·운용의 유일한 원본이다(`investment_plan.py`, 계획 pia `plans/2026-10-09_investment-plan.md`, `plans/2026-10-09_investment-plan-fixes.md`). 로직·도구·지침은 Harness, 저장은 host(`PlanStore`: `get_plan`, `list_plans(limit, saved_through)`, `save_plan`; 테스트용 `testing.InMemoryPlanStore`)다. Memory와 같은 나눔이다.
+회원별 투자 계획은 포트폴리오 전략·운용의 유일한 원본이다(`investment_plan.py`, 계획 pia `plans/2026-10-09_investment-plan.md`, `plans/2026-10-09_investment-plan-fixes.md`). 로직·도구·지침은 Harness, 저장은 host(`PlanStore`: `get_plan`(최신), `list_plans(limit, saved_through)`, `save_plan`; 테스트용 `testing.InMemoryPlanStore`)다. Memory와 같은 나눔이다.
 
 - 칸 여섯 개: 투자 목표(goal)·운용 원칙(rules)·목표 포트폴리오(portfolio)·관심 종목(watchlist)·시장 판단(market)·점검할 일(checks). 보유·잔고·주문 같은 현황은 넣지 않는다. 칸마다 1,500자, 전체 6,000자, 이유 300자.
 - host는 `InvestmentPlan.document`를 `context_document`로 넘겨 현재 계획을 매 Turn Context에 넣고(→ 3), `PLAN_PROMPT`를 시스템 지침에, `PLAN_MEMORY_RULE`을 Memory 지침에 붙인다.
 - `plan`(실행 도구): 바뀌는 칸만 받아 실제로 글이 달라진 칸이 있으면 **항상 확인 대기**를 만든다(확인 문장에 새 글과 이유, 빈 칸은 "(비움)"). 실행은 그 순간의 최신 계획에 준비한 칸만 적용해 전체를 새 버전으로 저장한다. 결과 문장에 버전 번호는 없다.
-- `plan_history`(읽기 도구): 인자 없으면 최근 30개(날짜·시각, 바뀐 칸, 이유, version), `version` 또는 `as_of`(KST 그날 끝) 하나. 둘을 같이 주면 읽지 않는다. 되돌리기는 읽은 칸 글로 `plan`을 다시 부르는 것이다. 표시에서 빈 칸은 빈 글이라 그대로 복사하면 비운 상태가 된다.
+- `plan_history`(읽기 도구): 인자는 `as_of` 하나. 비어 있으면 최근 30개(날짜·시각, 바뀐 칸, 이유), 날짜면 그날 끝(KST), 목록의 날짜·시각(`YYYY-MM-DD HH:MM`)이면 그 시각의 계획 전체. 버전 번호 인자는 두지 않는다(안 쓰는 인자도 채워 보내는 모델이 `version`과 `as_of`를 함께 보내 같은 거절을 반복했다, 2026-10-09 시나리오). 되돌리기는 읽은 칸 글로 `plan`을 다시 부르는 것이다. 표시에서 빈 칸은 빈 글이라 그대로 복사하면 비운 상태가 된다.
 - 지침: 사용자가 명시적으로 요청하거나 제시한 안에 동의할 때만 바꾼다. 질문·지나가는 말은 답만 한다. 비중·전략을 물으면 2~3개 안을 보여 주고 고르게 한다. 칸 이름은 그대로, 버전은 번호가 아니라 날짜·시각으로 부른다.
 - 시나리오: `tests/manual/smoke_flow.py --set plan`(가짜 Broker, 메모리 저장소, 단계마다 금지 도구·저장 버전 수·저장 내용·Memory 제외·주문 0건 확인).
 
