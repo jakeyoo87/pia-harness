@@ -150,3 +150,13 @@
 이번 검토는 원본 코드 읽기·가짜 Record 판정·무료 공개 메타데이터 조회만 했다.
 제품 코드와 테스트는 수정하지 않았고 전체 suite·CI·유료 호출은 실행하지 않았다.
 릴리스 버전·유료 비교·실제 모델 변경·배포는 해당 단계에서 사용자 결정과 승인을 확인한다.
+
+## 계획 검토 대응과 구현 기록 (Claude, 2026-10-09)
+
+- **P2-1 Memory 지침:** `PLAN_MEMORY_RULE`을 harness(`investment_plan.py`)에 두고 PIA `MEMORY_INSTRUCTION`과 시나리오 `plan` 세트의 Memory 지침이 같은 문구를 쓴다. 기존 read/execution/broker 세트 지침은 바꾸지 않았다(투자 계획 도구가 없는 세트). 함께 찾은 것: harness 기본 `memory` 도구 설명이 "(investment goals, risk profile, holdings plans)"를 예로 들어 계획 내용을 Memory로 보내라고 하고 있어 "(how they like answers, their situation)"으로 바꿨다.
+- **P2-2 시나리오 판정:** 판정기에 선택 필드 `forbid`(모든 단계에서 쓰면 안 되는 도구), `plan_versions`(저장 버전 수, 이때 주문 전송 0건도 확인), `expect_plan`(칸에 들어 있어야 할 글, `""`는 빈 칸), `same_as_version`(되돌린 뒤 그 버전과 칸이 같은지), `memory_excludes`(Memory에 없어야 할 글)를 더했다. 실제 응답 usage 합계를 요약표에 따로 적는다(추정 토큰과 구분). `--context-limit`(Haiku 비교 때 1,000,000). 시나리오 16단계: 원래 12개 + 고른 안 저장(고르기·응) + 되돌리기 확인. 중복 질문·번호 노출·칸 이름·안의 품질은 답변을 사람이 읽고 판정한다.
+- **#0** `src/pia_harness/investment_plan.py`(`PlanVersion`, `PlanStore`, `InvestmentPlan`, `PLAN_PROMPT`, `PLAN_MEMORY_RULE`), `testing.InMemoryPlanStore`, 단위 테스트 7개 이동. pia는 `app/investment_plan.py`·테스트 삭제, 저장·main·core가 harness 것을 쓴다(저장 형식 그대로).
+- **#1** 결정/관찰 구분 제거, 실제로 달라진 칸이 있으면 항상 확인. **#2** `CONFIRMATION_APPENDED_NOTE`를 확인 대기 action을 만들 때만 붙이고 주문 준비 결과의 같은 문구는 지웠다. **#3** pia 진행 이름. **#4** 표시·이력·저장 결과에서 번호를 빼고 `YYYY-MM-DD HH:MM`(KST), 이력 목록 끝에만 `(version n)`. **#5·#9** `PLAN_PROMPT`. **#6·#7** 도구 설명, 표시에서 빈 칸은 빈 글(자리표시 글자 없음). **#8** 둘 다 오면 저장소를 읽기 전에 거절.
+- **검증:** harness 전체 테스트 통과, ruff 41(main과 같음), mypy 30. pia 전체 444개(harness 브랜치 소스 얹음, DynamoDB Local 포함, 옮긴 7개 제외).
+- 브랜치: harness `fac9f2f`, pia `claude/investment-plan-fixes`.
+- 다음: 유료 시나리오 `--set plan`을 `openai/gpt-6-luna`와 `anthropic/claude-haiku-5.5`(`--context-limit 1000000`)로 각 1회(승인 후) → 결과 기록 → Codex 구현 검토.
