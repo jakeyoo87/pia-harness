@@ -40,6 +40,7 @@ from .openrouter import (
     OpenRouterModelError,
 )
 from .orchestrator import (
+    APPLIED_ACTION_FAILED_NOTICE,
     CONFIRMATION_EXPIRED_NOTICE,
     MESSAGE_SEPARATOR,
     ConversationInput,
@@ -79,6 +80,7 @@ from .session import (
 from .web_extract import JinaPageExtractor, PageExcerpt, PageReadError
 
 __all__ = [
+    "APPLIED_ACTION_FAILED_NOTICE",
     "CONFIRMATION_EXPIRED_NOTICE",
     "DEFAULT_MAX_RESPONSE_TOKENS",
     "MAX_CHANGE_SUMMARY_CHARS",

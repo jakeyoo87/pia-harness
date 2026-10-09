@@ -53,6 +53,13 @@ RESEARCH_LIMIT_NOTICE = (
 )
 CONFIRMATION_TTL_SECONDS = 300.0
 CONFIRMATION_EXPIRED_NOTICE = "확인 시간이 지났습니다. 다시 요청해 주세요."
+# An action that needs no confirmation runs after the answer, once the Turn can
+# no longer be cancelled; the model writes the answer before it runs.
+APPLIED_AFTER_ANSWER_NOTE = (
+    " It is applied after your answer: explain the change, but do not say it is "
+    "already saved."
+)
+APPLIED_ACTION_FAILED_NOTICE = "요청한 변경을 저장하지 못했습니다. 다시 요청해 주세요."
 # Orders one request may prepare, each waiting for its own confirmation.
 MAX_PENDING_ACTIONS = 5
 CONFIRM_TOOL = "confirm"
@@ -150,11 +157,14 @@ class ReadToolDefinition:
 
 @dataclass(frozen=True, slots=True)
 class PreparedAction:
-    """An execution tool's draft; it runs only if the user confirms it next Turn."""
+    """An execution tool's draft. It runs only if the user confirms it next Turn,
+    unless the tool decides it needs no confirmation: then it runs once after
+    this Turn's answer, and its result text is appended to the answer."""
 
     summary: str  # listed to the model while it waits for confirmation
     confirmation: str  # appended to the answer as the fixed question
     arguments_json: str  # handed to execute() unchanged
+    needs_confirmation: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +307,8 @@ class _Round:
     prepared: list[_PendingAction] = field(default_factory=list)
     # Waiting actions the user confirmed; they run after the execution claim.
     confirmed: tuple[_PendingAction, ...] = ()
+    # Actions that need no confirmation, by call index; they run after the answer.
+    applied: list[tuple[int, _PendingAction]] = field(default_factory=list)
     # The next model call gets no tools: a draft was made or a limit was hit.
     answer_next: bool = False
     limit_hit: bool = False
@@ -335,6 +347,9 @@ class ConversationOrchestrator:
         execution_tools: tuple[ExecutionToolDefinition, ...] = (),
         research_timeout_seconds: float = RESEARCH_TIMEOUT_SECONDS,
         confirmation_ttl_seconds: float = CONFIRMATION_TTL_SECONDS,
+        # The host's document for the user (or None), read once per generation
+        # and placed after the system prompt as data.
+        context_document: Callable[[str], str | None] | None = None,
     ) -> None:
         if not callable(generate_reply):
             raise ValueError("generate_reply must be callable")
@@ -342,6 +357,8 @@ class ConversationOrchestrator:
             raise ValueError("deliver must be callable")
         if progress is not None and not callable(progress):
             raise ValueError("progress must be callable")
+        if context_document is not None and not callable(context_document):
+            raise ValueError("context_document must be callable")
         # The built-in confirm and memory tools keep their names.
         names = [tool.name for tool in read_tools] + [
             tool.name for tool in execution_tools
@@ -390,6 +407,7 @@ class ConversationOrchestrator:
         self._compactor = compactor
         self._generate_reply = generate_reply
         self._progress = progress
+        self._context_document = context_document
         self._read_tools = read_tools
         self._execution_tools = execution_tools
         self._confirmation_ttl_seconds = float(confirmation_ttl_seconds)
@@ -480,6 +498,8 @@ class ConversationOrchestrator:
             offered = ()
             confirmation_expired = True
         prepared: list[_PendingAction] = []
+        # Positions in kept_observations of actions that run after the answer.
+        applied: list[tuple[int, _PendingAction]] = []
         try:
             async with state.commit_lock:
                 session = validate_active_session(
@@ -490,6 +510,11 @@ class ConversationOrchestrator:
                     ),
                     user_key=user_key,
                 )
+            document = (
+                None
+                if self._context_document is None
+                else await asyncio.to_thread(self._context_document, user_key)
+            )
             tools = self._tools(offered)
             note = _waiting_note(offered)
             observations: tuple[ToolObservation, ...] = ()
@@ -527,6 +552,7 @@ class ConversationOrchestrator:
                     tools=() if answer_only else tools,
                     note=note,
                     closing_note=closing_note,
+                    host_document=document,
                 )
                 if not await self._is_current(state, generation_id):
                     return
@@ -598,6 +624,7 @@ class ConversationOrchestrator:
                             note=note,
                             memory_failed=memory_failed,
                             compaction_failed=compaction_failed,
+                            host_document=document,
                         ),
                     )
                     return
@@ -614,6 +641,10 @@ class ConversationOrchestrator:
                     )
                 )
                 observations += made
+                applied.extend(
+                    (len(kept_observations) + index, pending)
+                    for index, pending in outcome.applied
+                )
                 kept_observations += tuple(
                     replace(observation, result_text=outcome.kept_results[index])
                     if index in outcome.kept_results
@@ -648,6 +679,7 @@ class ConversationOrchestrator:
                     memory_failed=memory_failed,
                     compaction_failed=compaction_failed,
                     prepared=tuple(prepared),
+                    applied=tuple(applied),
                     confirmation_expired=confirmation_expired,
                     tool_observations=kept_observations,
                 ),
@@ -857,11 +889,11 @@ class ConversationOrchestrator:
         outcome.read_calls = len(reads)
 
         request_at = batch[-1].value.accepted_at
-        for index, tool, call in drafts:
+        for index, execution, call in drafts:
             # Preparing only drafts the action; it runs after confirmation.
             try:
                 preparation = await _before_deadline(
-                    deadline, tool.prepare(user_key, call)
+                    deadline, execution.prepare(user_key, call)
                 )
             except TimeoutError:
                 outcome.results[index] = "Not prepared: the time ran out."
@@ -869,10 +901,16 @@ class ConversationOrchestrator:
                 continue
             _validate_preparation(preparation)
             text = preparation.observation_text
-            if preparation.action is not None:
+            draft = preparation.action
+            if draft is not None and not draft.needs_confirmation:
+                outcome.applied.append(
+                    (index, _PendingAction(execution, draft, request_at, ""))
+                )
+                text += APPLIED_AFTER_ANSWER_NOTE
+            elif draft is not None:
                 action_id = f"a{next(self._action_ids)}"
                 outcome.prepared.append(
-                    _PendingAction(tool, preparation.action, request_at, action_id)
+                    _PendingAction(execution, draft, request_at, action_id)
                 )
                 text += f" (action ID {action_id})"
             outcome.results[index] = text
@@ -907,6 +945,7 @@ class ConversationOrchestrator:
         tools: tuple[ToolSpec, ...] = (),
         note: str | None = None,
         closing_note: str | None = None,
+        host_document: str | None = None,
     ) -> AssembledPromptContext:
         """This request's Context. Its size is not checked here: Compaction after
         each answer, on the model's reported usage (see _commit_response), keeps
@@ -933,6 +972,7 @@ class ConversationOrchestrator:
             tools=tools,
             note=note,
             closing_note=closing_note,
+            host_document=host_document,
         )
 
     def _assemble(
@@ -947,6 +987,7 @@ class ConversationOrchestrator:
         tools: tuple[ToolSpec, ...] = (),
         note: str | None = None,
         closing_note: str | None = None,
+        host_document: str | None = None,
     ) -> AssembledPromptContext:
         return self._assembler.assemble(
             user_key=user_key,
@@ -960,6 +1001,7 @@ class ConversationOrchestrator:
             tools=tools,
             note=note,
             closing_note=closing_note,
+            host_document=host_document,
         )
 
     async def _execute_and_commit(
@@ -979,6 +1021,7 @@ class ConversationOrchestrator:
         note: str | None,
         memory_failed: bool,
         compaction_failed: bool,
+        host_document: str | None,
     ) -> tuple[ConversationResult, bool]:
         executed: list[str] = []
         for pending in confirmed:
@@ -1012,6 +1055,7 @@ class ConversationOrchestrator:
             observations,
             note,
             executed_text,
+            host_document,
         )
         return await self._commit_response(
             user_key=user_key,
@@ -1033,11 +1077,17 @@ class ConversationOrchestrator:
         tool_observations: tuple[ToolObservation, ...],
         note: str | None,
         executed_text: str,
+        host_document: str | None,
     ) -> GeneratedAnswer:
         fixed = GeneratedAnswer(executed_text, "fixed-text", 0)
         try:
             assembled = await self._assemble_context(
-                user_key, batch, session, tool_observations, note=note
+                user_key,
+                batch,
+                session,
+                tool_observations,
+                note=note,
+                host_document=host_document,
             )
             reply = await self._generate_reply(assembled)
             _validate_reply(reply, answer_only=True)
@@ -1075,6 +1125,7 @@ class ConversationOrchestrator:
         memory_failed: bool,
         compaction_failed: bool,
         prepared: tuple[_PendingAction, ...] = (),
+        applied: tuple[tuple[int, _PendingAction], ...] = (),
         confirmation_expired: bool = False,
         tool_observations: tuple[ToolObservation, ...] = (),
     ) -> tuple[ConversationResult, bool]:
@@ -1083,6 +1134,23 @@ class ConversationOrchestrator:
         now = batch[-1].value.accepted_at
         combined = _combined_message(batch)
         async with state.commit_lock:
+            # The answer is final, so actions that need no confirmation run now.
+            # Their result, success or not, goes to the user and to the Turn.
+            applied_texts: list[str] = []
+            kept = list(tool_observations)
+            for position, pending in applied:
+                try:
+                    text = await pending.tool.execute(user_key, pending.action)
+                    if not isinstance(text, str) or not text.strip():
+                        raise ValueError("execution result text is required")
+                except ConversationAbandoned:
+                    raise
+                # Any failure is reported to the user instead of failing the Turn.
+                except Exception:  # noqa: BLE001
+                    text = APPLIED_ACTION_FAILED_NOTICE
+                applied_texts.append(text)
+                kept[position] = replace(kept[position], result_text=text)
+            tool_observations = tuple(kept)
             action = memory_action
             if action in (MemoryAction.UPDATE, MemoryAction.FORGET):
                 try:
@@ -1115,7 +1183,9 @@ class ConversationOrchestrator:
             if confirmation_expired:
                 _add_notice(changes, CONFIRMATION_EXPIRED_NOTICE)
 
-            final_text = _final_text(answer.text, changes)
+            final_text = "\n\n".join(
+                (_final_text(answer.text, changes), *applied_texts)
+            )
             if prepared:
                 # Last and outside the notice list, so they are never trimmed.
                 final_text = "\n\n".join(
@@ -1430,7 +1500,8 @@ def _validate_preparation(result: PreparationResult) -> None:
     if action is not None and (
         not isinstance(action, PreparedAction)
         or not action.summary.strip()
-        or not action.confirmation.strip()
+        or not isinstance(action.needs_confirmation, bool)
+        or (action.needs_confirmation and not action.confirmation.strip())
         or not action.arguments_json.strip()
     ):
         raise ValueError("prepared action is invalid")

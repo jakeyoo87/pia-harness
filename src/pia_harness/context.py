@@ -11,6 +11,8 @@ from .session import ConversationContext, MemoryDocument, ToolObservation
 
 class PromptContextKind(StrEnum):
     SYSTEM = "SYSTEM"
+    # A document the host keeps for the user (PIA: the investment plan).
+    HOST_DOCUMENT = "HOST_DOCUMENT"
     MEMORY = "MEMORY"
     SUMMARY = "SUMMARY"
     USER_TURN = "USER_TURN"
@@ -97,6 +99,7 @@ class PromptContextAssembler:
         tools: tuple[ToolSpec, ...] = (),
         note: str | None = None,
         closing_note: str | None = None,
+        host_document: str | None = None,
     ) -> AssembledPromptContext:
         user_key = _required_text("user_key", user_key)
         session_id = _required_text("session_id", session_id)
@@ -120,6 +123,7 @@ class PromptContextAssembler:
         )
         parts = _parts(
             system_prompt=system_prompt,
+            host_document=host_document,
             memory=memory,
             conversation=conversation,
             current_user_message=current_user_message,
@@ -144,6 +148,7 @@ class PromptContextAssembler:
 def _parts(
     *,
     system_prompt: str,
+    host_document: str | None,
     memory: MemoryDocument | None,
     conversation: ConversationContext,
     current_user_message: str,
@@ -158,6 +163,14 @@ def _parts(
             PromptTrust.TRUSTED_INSTRUCTION,
         )
     ]
+    if host_document is not None and host_document.strip():
+        parts.append(
+            PromptContextPart(
+                PromptContextKind.HOST_DOCUMENT,
+                host_document,
+                PromptTrust.UNTRUSTED_DATA,
+            )
+        )
     if memory is not None and memory.memory_text.strip():
         parts.append(
             PromptContextPart(

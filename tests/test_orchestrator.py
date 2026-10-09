@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pia_harness.orchestrator as orchestrator_module
 from pia_harness import (
+    APPLIED_ACTION_FAILED_NOTICE,
     CONFIRMATION_EXPIRED_NOTICE,
     MESSAGE_SEPARATOR,
     ActiveSession,
@@ -223,6 +224,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         execution_tools=(),
         research_timeout_seconds=120.0,
         memory_action=MemoryAction.NONE,
+        context_document=None,
     ):
         """generate returns a GeneratedAnswer (the model answers at once) or a
         ModelReply. memory_action makes the model call the memory tool first."""
@@ -255,6 +257,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             read_tools=read_tools,
             execution_tools=execution_tools,
             research_timeout_seconds=research_timeout_seconds,
+            context_document=context_document,
         )
 
     @staticmethod
@@ -1587,6 +1590,151 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("confirm", [tool.name for tool in contexts[-1].tools])
         self.assertIn(CONFIRMATION_EXPIRED_NOTICE, late.final_text)
         self.assertEqual([], executed)
+
+    def note_tool(self, *, executed=None, execute=None):
+        """An execution tool whose actions need no confirmation."""
+        executed = executed if executed is not None else []
+
+        async def prepare(user_key, call):
+            return PreparationResult(
+                "Plan change prepared.",
+                PreparedAction("plan change", "", call.arguments_json, False),
+            )
+
+        async def default_execute(user_key, prepared):
+            executed.append(prepared.arguments_json)
+            return f"Plan saved as version {len(executed)}."
+
+        return ExecutionToolDefinition(
+            "plan",
+            "Change the plan",
+            {"type": "object"},
+            prepare,
+            execute or default_execute,
+        )
+
+    async def test_an_action_without_confirmation_runs_once_after_the_answer(
+        self,
+    ) -> None:
+        executed: list[str] = []
+        contexts = []
+        answered = []
+
+        def answer(context):
+            # The model answers before the action runs.
+            answered.append(list(executed))
+            return "시장 판단을 바꿨어요."
+
+        orchestrator = self.orchestrator(
+            self.script(
+                [("plan", {"market": "금리 인하 기대"})],
+                answer,
+                "다음 답",
+                contexts=contexts,
+            ),
+            execution_tools=(self.note_tool(executed=executed),),
+        )
+        result = await orchestrator.submit(
+            user_key="user", message="시장 판단 바꿔줘", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+        self.assertEqual([[]], answered)
+        self.assertEqual(['{"market": "금리 인하 기대"}'], executed)
+        self.assertIn("do not say it is already saved", _results(contexts[1])[0])
+        self.assertEqual((), contexts[1].tools)
+        self.assertEqual(
+            "시장 판단을 바꿨어요.\n\nPlan saved as version 1.", result.final_text
+        )
+        # The Turn keeps the model's answer and the action's real result.
+        turn = self.store.turns[-1]
+        self.assertEqual("시장 판단을 바꿨어요.", turn.assistant_message)
+        self.assertEqual(
+            "Plan saved as version 1.", turn.tool_observations[0].result_text
+        )
+        self.assertEqual({}, orchestrator._pending_actions)
+
+        await orchestrator.submit(
+            user_key="user", message="응", accepted_at=self.now + timedelta(minutes=1)
+        )
+        self.assertNotIn("confirm", [tool.name for tool in contexts[2].tools])
+        self.assertEqual(1, len(executed))
+
+    async def test_a_failed_action_without_confirmation_is_reported(self) -> None:
+        async def execute(user_key, prepared):
+            raise RuntimeError("store down")
+
+        orchestrator = self.orchestrator(
+            self.script([("plan", {"market": "x"})], "바꿨어요."),
+            execution_tools=(self.note_tool(execute=execute),),
+        )
+        result = await orchestrator.submit(
+            user_key="user", message="바꿔줘", accepted_at=self.now
+        )
+        self.assertEqual(
+            f"바꿨어요.\n\n{APPLIED_ACTION_FAILED_NOTICE}", result.final_text
+        )
+        self.assertEqual(
+            APPLIED_ACTION_FAILED_NOTICE,
+            self.store.turns[-1].tool_observations[0].result_text,
+        )
+
+    async def test_a_superseded_turn_runs_no_action_without_confirmation(
+        self,
+    ) -> None:
+        executed: list[str] = []
+        answering = asyncio.Event()
+
+        async def generate(context):
+            current = _message(context)
+            if current == "A" and not _results(context):
+                return ModelReply(
+                    tool_calls=(ToolCall("plan", '{"market": "x"}', "c1"),)
+                )
+            if current == "A":
+                answering.set()
+                await asyncio.Event().wait()
+            return GeneratedAnswer(f"answer:{current}", "model", 10)
+
+        orchestrator = self.orchestrator(
+            generate, execution_tools=(self.note_tool(executed=executed),)
+        )
+        first = asyncio.create_task(
+            orchestrator.submit(user_key="user", message="A", accepted_at=self.now)
+        )
+        await answering.wait()
+        second = await orchestrator.submit(
+            user_key="user", message="B", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.SUPERSEDED, (await first).status)
+        self.assertEqual(OrchestratorStatus.DELIVERED, second.status)
+        self.assertEqual([], executed)
+
+    async def test_the_host_document_is_read_once_and_follows_the_system_prompt(
+        self,
+    ) -> None:
+        reads: list[str] = []
+        contexts = []
+
+        def document(user_key):
+            reads.append(user_key)
+            return "투자 계획 (버전 3)"
+
+        self.store.memories["user"] = MemoryDocument(
+            "user", "memory text", "t0", self.now
+        )
+        orchestrator = self.orchestrator(
+            self.script([("search", {"query": "q"})], "answer", contexts=contexts),
+            read_tools=(self.search(),),
+            context_document=document,
+        )
+        await orchestrator.submit(user_key="user", message="hi", accepted_at=self.now)
+        self.assertEqual(["user"], reads)
+        for context in contexts:
+            self.assertEqual(
+                ["SYSTEM", "HOST_DOCUMENT", "MEMORY"],
+                [part.kind.value for part in context.parts[:3]],
+            )
+            self.assertEqual("투자 계획 (버전 3)", context.parts[1].content)
 
     async def test_missing_arguments_prepare_nothing(self) -> None:
         orchestrator = self.orchestrator(
