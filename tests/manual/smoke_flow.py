@@ -629,8 +629,10 @@ _CHECK_KEYS = frozenset(
 def _check(scenario: dict[str, Any], record: Record) -> str:
     """Each condition the scenario names is checked on its own."""
     expect = scenario.get("expect")
-    if not _CHECK_KEYS & set(scenario) or not record.steps:
+    if not _CHECK_KEYS & set(scenario):
         return "OBSERVE"
+    if not record.steps:  # the model never answered: nothing was shown
+        return "CHECK"
     # The first step's tools, without the memory tool that may come with them.
     first = [
         name for name in record.steps[0].split("+") if name != "memory"
