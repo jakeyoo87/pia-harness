@@ -650,7 +650,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
             ),
             (
                 {"action": "ranking", "market": "nxt"},
-                "market for ranking prices must be one of",
+                "market for ranking market_cap must be one of",
             ),
             ({"action": "ranking", "by": ["gainers"]}, "by for ranking prices"),
         )
@@ -869,19 +869,19 @@ class UsRankingTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.broker = FakeBroker()
         self.broker.ranking = {
-            "by": "market_cap",
+            "by": "trading_value",
             "market": "us",
             "currency": "USD",
             "observed_at": AT,
             "rows": [
                 {
-                    "code": "NAS:NVDA",
-                    "name": "엔비디아",
-                    "price": 239.18,
-                    "change": -0.06,
-                    "change_rate": -0.03,
-                    "volume": 415523,
-                    "figures": {"market_cap": 5764238000000},
+                    "code": "NAS:MU",
+                    "name": "마이크론 테크놀로지",
+                    "price": 1020.77,
+                    "change": -24.79,
+                    "change_rate": -2.37,
+                    "volume": 2356838,
+                    "figures": {"trading_value": 2398459487},
                 }
             ],
         }
@@ -891,27 +891,25 @@ class UsRankingTest(unittest.IsolatedAsyncioTestCase):
         )
         self.tool = BrokerReadTool(base_url="https://broker.example", client=client)
 
-    async def test_us_market_cap_ranking_is_in_dollars(self) -> None:
+    async def test_us_trading_value_ranking_is_in_dollars(self) -> None:
         result = await self.tool.execute(
-            MEMBER, call("ranking", market="us", by="market_cap", count=1), ()
+            MEMBER, call("ranking", market="us", by="trading_value", count=1), ()
         )
         lines = result.observation_text.splitlines()
         self.assertIn("Nasdaq, NYSE and AMEX merged by the ranked figure", lines[0])
         self.assertEqual(
-            "1. 엔비디아(NAS:NVDA): price 239.18 USD; change -0.06 USD (-0.03%); volume "
-            "415,523 shares; market cap 5.76조 달러",
+            "1. 마이크론 테크놀로지(NAS:MU): price 1,020.77 USD; change -24.79 USD "
+            "(-2.37%); volume 2,356,838 shares; trading value 23.98억 달러",
             lines[-1],
         )
         params = self.broker.requests[-1].url.params
-        self.assertEqual(("market_cap", "us"), (params["by"], params["market"]))
+        self.assertEqual(("trading_value", "us"), (params["by"], params["market"]))
 
-    async def test_us_is_for_price_rankings_only(self) -> None:
+    async def test_us_is_only_for_the_rankings_the_broker_answers(self) -> None:
         asked = len(self.broker.requests)
-        result = await self.tool.execute(
-            MEMBER, call("ranking", data="investors", market="us"), ()
-        )
-        self.assertIn(
-            "market for ranking investors must be one of all, kospi, kosdaq",
-            result.observation_text,
-        )
+        for arguments in ({"by": "market_cap"}, {"data": "investors"}):
+            result = await self.tool.execute(
+                MEMBER, call("ranking", market="us", **arguments), ()
+            )
+            self.assertIn("must be one of all, kospi, kosdaq.", result.observation_text)
         self.assertEqual(asked, len(self.broker.requests))

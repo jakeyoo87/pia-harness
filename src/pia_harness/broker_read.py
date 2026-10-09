@@ -35,14 +35,9 @@ _KST = timezone(timedelta(hours=9))
 _HISTORY_PERIODS = ("1m", "3m", "6m", "1y", "3y", "5y")
 _SHORT_SELLING_PERIODS = ("1d", "2d", "3d", "4d", "1w", "2w", "3w", "1m", "2m", "3m")
 _MARKETS = ("all", "kospi", "kosdaq")
-# Rankings by data: price rankings also take us (Nasdaq, NYSE and AMEX together);
-# the first value is the default.
-_RANKING_MARKETS = {
-    "prices": (*_MARKETS, "us"),
-    "investors": _MARKETS,
-    "short_selling": _MARKETS,
-    "attention": _MARKETS,
-}
+# The rankings the broker also answers for us (Nasdaq, NYSE and AMEX together). KIS
+# refuses the US market-cap ranking (OPSQ2001, live 2026-10-09).
+_US_RANKINGS = ("gainers", "losers", "volume", "trading_value")
 _INDEX_MARKETS = ("kospi", "kosdaq")
 # Figures other than Korean stocks, by the kind of target that asks for them. The
 # keys are pia-broker's series table (src/pia_broker/series.py); the two lists are
@@ -206,8 +201,9 @@ BROKER_ARGUMENTS_SCHEMA: dict[str, Any] = {
             + ", ".join(f"{key} = {label}" for key, label in _SERIES_MARKETS.items())
             + ". history investors: kospi or kosdaq only (net buying in the whole "
             "market). ranking: all (default), kospi or kosdaq (Korean stocks in that "
-            "market); ranking prices also us (US stocks of Nasdaq, NYSE and AMEX "
-            "together, the latest US session). The Dow Jones index is not here: use "
+            "market); ranking gainers, losers, volume and trading_value also us (US "
+            "stocks of Nasdaq, NYSE and AMEX together, the latest US session). There is "
+            "no US market-cap ranking and the Dow Jones index is not here: use "
             "web_search.",
         },
         "macro": {
@@ -263,8 +259,8 @@ BROKER_DESCRIPTION = (
     "holdings, and what one stock they can buy or sell), the latest value and price "
     "history of a Korean or US stock, a market index (Korean, overseas, sector or index "
     "futures), a rate, exchange rate or volatility figure, or a commodity, investor "
-    "flows for a Korean stock or market, and market rankings (Korean, or US price "
-    "rankings). US stocks and "
+    "flows for a Korean stock or market, and market rankings (Korean, or US gainers, "
+    "losers, volume and trading value). US stocks and "
     "ETFs (Nasdaq, NYSE, AMEX) work like Korean ones, in USD; other overseas stocks "
     "are not offered: use web_search for them. Read-only; orders "
     "go through the order tool. Figures are live at the "
@@ -775,12 +771,9 @@ def _resolve(arguments: dict[str, Any]) -> dict[str, Any]:
     if action in ("quote", "history"):
         ask["target"] = _target(arguments, name, action, ask["data"])
     if action == "ranking":
-        ask["market"] = _choice(
-            arguments,
-            "market",
-            _RANKING_MARKETS[ask["data"]],
-            f"{action} {ask['data']}",
-        )
+        # Markets by ranking: all (the default), kospi, kosdaq, and us where offered.
+        markets = (*_MARKETS, "us") if ask["by"] in _US_RANKINGS else _MARKETS
+        ask["market"] = _choice(arguments, "market", markets, f"{action} {ask['by']}")
         count = arguments.get("count")
         if count is None:
             count = _DEFAULT_COUNT

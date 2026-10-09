@@ -34,7 +34,7 @@
   {"id": "b33", "message": "소니 주가 얼마야?"},
   {"id": "b34", "message": "달러로 환전해줘"},
   {"id": "b35", "message": "내 계좌 다시 보여줘", "broker_us_error": "BUSINESS_REJECTED", "expect": "broker", "expect_args": {"action": "account"}},
-  {"id": "b36", "message": "미국 시가총액 Top10 보여줘", "expect": "broker", "expect_args": {"action": "ranking", "data": "prices", "by": "market_cap", "market": "us", "count": 10}},
+  {"id": "b36", "message": "미국 시가총액 Top10 보여줘"},
   {"id": "b37", "message": "오늘 미국 상승률 상위 5개", "expect": "broker", "expect_args": {"action": "ranking", "data": "prices", "by": "gainers", "market": "us", "count": 5}},
   {"id": "b38", "message": "미국 주식 외국인 순매수 상위 종목"}
 ]

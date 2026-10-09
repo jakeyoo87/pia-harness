@@ -153,3 +153,11 @@ Broker `4b342f2` 배포 후(요청 사이 1.5초):
 
 - **시험(사용자):** Broker `claude/us-mcap-probe`(임시)로 `ranking?by=market_cap&market=us&probe_excd=X`가 KIS 답을 그대로 돌려준다. 후보 NAS·NYS·AMS·NASD·NYSE·AMEX 한 번씩(KIS 6번). 결과로 시가총액의 거래소 코드를 정하고 임시 기능을 지운다. 안 되면 미국 순위는 네 가지로 출시한다.
 - 나중 후보(사용자 질문에서): 순위 조건(거래량·시가총액 등)은 조건별 인자 대신 코드 실행 도구로(범용, 별도 작업).
+
+## 시가총액 시험 결과와 정리 (사용자, 2026-10-09)
+
+임시 기능(`148f20d` 배포)으로 market-cap을 거래소 코드 여섯 개로 한 번씩 불렀다: NAS·NYS·AMS·NASD·NYSE·AMEX 모두 status 200, `rt_cd` 2, `msg_cd` OPSQ2001(시장 구분 코드 오류), 0줄. 거래소 코드 문제가 아니고 공식 예제 밖의 값이거나 KIS 쪽 문제로 보인다. 추측 시험은 그만둔다.
+
+- **결정(사용자):** 미국 시가총액 순위는 빼고 출시. "미국 시총 Top10"은 웹 검색. KIS 문의는 사용자가(OPSQ2001과 요청 인자) — 답이 오면 표에 한 줄로 다시 넣는다.
+- Broker `claude/us-ranking-final` `8c87f3e`: 임시 시험 코드 삭제, `US_RANKINGS`와 해외 순위 표에서 시가총액 삭제(이유 주석), README. 테스트 277개.
+- harness(이 커밋): 미국을 받는 순위를 data 표 대신 **순위 목록 하나**(`_US_RANKINGS` 넷)로. 시가총액에 us를 주면 "market for ranking market_cap must be one of all, kospi, kosdaq"로 Broker를 부르지 않는다. 설명에 "미국 시가총액 순위 없음: web_search". 시나리오 b36(미국 시총 Top10)은 관찰로. 테스트 200개.
