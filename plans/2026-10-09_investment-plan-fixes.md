@@ -160,3 +160,11 @@
 - **검증:** harness 전체 테스트 통과, ruff 41(main과 같음), mypy 30. pia 전체 444개(harness 브랜치 소스 얹음, DynamoDB Local 포함, 옮긴 7개 제외).
 - 브랜치: harness `fac9f2f`, pia `claude/investment-plan-fixes`.
 - 다음: 유료 시나리오 `--set plan`을 `openai/gpt-6-luna`와 `anthropic/claude-haiku-5.5`(`--context-limit 1000000`)로 각 1회(승인 후) → 결과 기록 → Codex 구현 검토.
+
+## 시나리오 결과와 추가 수정 (Claude, 2026-10-09)
+
+기록: `tests/manual/records/2026-10-09_investment-plan.md`.
+
+- 1차에서 두 가지를 고쳤다(b9b53bc): `PLAN_PROMPT` 처음 채우기는 정한 것부터 `plan`으로 저장 제안하고 미정 칸만 안으로 묻는다. `plan_history`는 `as_of` 하나(날짜 또는 목록의 `YYYY-MM-DD HH:MM`, 비면 목록)로 줄여 `version` 인자·"둘 다 금지" 규칙·목록의 `(version n)`을 없앴다. `PlanStore.get_plan`은 최신만 읽는다(pia 저장소의 버전 지정 읽기 제거, 33f3ede05).
+- 2차: `gpt-6-luna` 판정 12개 모두 PASS. Haiku는 자기 말로 먼저 묻는 습관으로 확인이 두 번.
+- **#10 결과(사용자 결정): 대화 모델은 `openai/gpt-6-luna` 유지.** 설정 변경 없음.
