@@ -296,3 +296,18 @@ PIA dev 배포는 별도 사용자 승인을 받은 뒤 진행한다.
 ## 재검토 대응 (Claude, 2026-10-09)
 
 판정 조건이 있는데 모델 단계가 하나도 없으면(첫 호출 실패 등) `CHECK`. 조건이 없을 때만 `OBSERVE`. 가짜 Record로 확인.
+
+## Codex 최종 재검토·v0.7.8 릴리스 준비 (2026-10-09)
+
+- 대상 `88f85d9`(PIA는 `33f3ede05`로 변경 없음). **남은 P2 반영을 확인했고 blocker 없음.**
+- MockTransport가 첫 요청에 ReadTimeout을 내는 실제 adapter·Harness 경로에서
+  `GENERATION_FAILED`·모델 단계 0개를 재현했고, 조건 있는 p3는 이제 CHECK였다.
+  조건 없는 기록은 OBSERVE, p1·p4·p11·p14의 정상 Record는 PASS·위반은 CHECK였다.
+  같은 초에서 마이크로초만 다른 이력 두 항목의 정확한 조회, 날짜·분 끝 조회도 유지된다.
+- 사용자 지정 버전 **v0.7.8**로 pyproject 버전을 변경한다. README 6.4.2절의 이력 시각 설명을
+  정확한 저장 시각·분 끝·날짜 끝이라는 현재 계약에 맞춘다. 제품 Python 코드는 추가로 바꾸지 않는다.
+- 순서: 검증된 Harness를 main에 병합하고 v0.7.8 태그로 wheel 발행 → 발행 wheel의 해시·소스 확인 →
+  PIA의 requirements·lock·README 핀 갱신과 실제 wheel 검증 → PIA main 병합·CI 확인.
+  PIA dev 배포는 **별도 사용자 승인 후** 진행한다.
+- 실제 모델·Broker·KIS 호출이나 사용자 데이터 조회는 하지 않는다. 대화 모델은 gpt-6-luna 유지.
+- 릴리스 준비 후 전체 단위 테스트 **212개·건너뜀 0**과 `git diff --check` 통과.
