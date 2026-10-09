@@ -78,9 +78,9 @@ PLAN_TOOL_DESCRIPTION = (
 HISTORY_TOOL_DESCRIPTION = (
     "Read earlier versions of the user's investment plan. Without as_of, lists the "
     "latest changes (date and time, changed sections, reason). With as_of, returns "
-    "the whole plan as it was then: a date YYYY-MM-DD (end of that day, KST) or a "
-    "listed date and time YYYY-MM-DD HH:MM. The current plan is already in the "
-    "context."
+    "the whole plan as it was then: a date YYYY-MM-DD (end of that day, KST), a "
+    "time YYYY-MM-DD HH:MM (end of that minute), or a listed time copied exactly "
+    "(that change). The current plan is already in the context."
 )
 
 
@@ -156,7 +156,7 @@ class InvestmentPlan:
                 "properties": {
                     "as_of": {
                         "type": "string",
-                        "description": "YYYY-MM-DD or YYYY-MM-DD HH:MM (KST)",
+                        "description": "YYYY-MM-DD, YYYY-MM-DD HH:MM, or a listed time",
                     },
                 },
                 "additionalProperties": False,
@@ -232,7 +232,7 @@ class InvestmentPlan:
             end = _end_of(str(as_of))
             if end is None:
                 return ReadToolResult(
-                    "Not read: as_of must be YYYY-MM-DD or YYYY-MM-DD HH:MM."
+                    "Not read: as_of must be a date, a time, or a listed time."
                 )
             plans = await asyncio.to_thread(
                 self._store.list_plans, user_key, limit=1, saved_through=end
@@ -247,7 +247,7 @@ class InvestmentPlan:
             return ReadToolResult("투자 계획 기록이 없습니다.")
         return ReadToolResult(
             "\n".join(
-                f"{_kst_time(plan.created_at)} [{_labels(plan.changed)}] {plan.reason}"
+                f"{_listed_time(plan.created_at)} [{_labels(plan.changed)}] {plan.reason}"
                 for plan in plans
             )
         )
@@ -266,14 +266,19 @@ def render(plan: PlanVersion) -> str:
 
 
 def _end_of(value: str) -> datetime | None:
-    """The last moment of a KST day, or of a listed minute."""
+    """The last moment a KST date or minute covers; a listed time is exact, so
+    two changes saved in the same minute stay apart."""
     try:
         if len(value) == len("YYYY-MM-DD"):
             return datetime.combine(date.fromisoformat(value), time.max, _KST)
-        minute = datetime.strptime(value, "%Y-%m-%d %H:%M").replace(tzinfo=_KST)
+        moment = datetime.fromisoformat(value)
     except ValueError:
         return None
-    return minute + timedelta(minutes=1) - timedelta(microseconds=1)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=_KST)
+    if len(value) == len("YYYY-MM-DD HH:MM"):
+        return moment + timedelta(minutes=1) - timedelta(microseconds=1)
+    return moment
 
 
 def _change_request(arguments_json: str) -> tuple[dict[str, str], str] | str:
@@ -320,6 +325,10 @@ def _size_problem(sections: Mapping[str, str]) -> str | None:
 
 def _labels(names: tuple[str, ...]) -> str:
     return ", ".join(LABELS.get(name, name) for name in names)
+
+
+def _listed_time(value: datetime) -> str:
+    return value.astimezone(_KST).strftime("%Y-%m-%d %H:%M:%S.%f")
 
 
 def _kst_time(value: datetime) -> str:

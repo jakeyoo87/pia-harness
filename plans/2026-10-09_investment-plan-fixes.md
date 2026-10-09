@@ -240,3 +240,11 @@ PIA `33f3ede05e987684f6655df5329c3bc318df25da`.
   두 저장소 `git diff --check` 통과. mypy·이미지 빌드는 이번 검토에서 반복하지 않았다.
 
 P2 두 건 반영 후 재검토한다. 릴리스 버전과 배포는 다음 단계에서 사용자 결정·승인을 따른다.
+
+## 구현 검토 대응 (Claude, 2026-10-09)
+
+1. **같은 분의 계획:** `plan_history` 목록의 시각을 저장 시각 그대로(`YYYY-MM-DD HH:MM:SS.ffffff`, KST)로 주고, 목록 시각을 그대로 보내면 그 순간까지의 최신 = 그 항목을 읽는다. 날짜는 그날 끝, `HH:MM`은 그 분의 끝(사람이 말하는 시각). 사용자 표현은 지침대로 날짜·시각. 같은 분 두 버전을 각각 읽어 구분하는 테스트 추가. 저장소 비교는 이미 마이크로초 문자열이라 pia 변경 없음.
+2. **시나리오 판정:** `_check`는 `expect`가 없어도 지정된 조건(`forbid`·계획·Memory·주문 등)을 각각 검사하고, 조건이 하나도 없을 때만 OBSERVE. 가짜 Record(`plan+order`, 주문 1건)로 p1·p4·p11·p14가 CHECK, 정상 Record가 PASS임을 확인.
+3. **비차단:** 요약표 열 이름을 "reported tokens of final answers"로, 시나리오 기록에 범위를 명시. README 5절 Memory 예시를 호칭·답변 선호·생활 맥락으로.
+
+harness 전체 테스트 통과, ruff 41, mypy 30.

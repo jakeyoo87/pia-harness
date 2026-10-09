@@ -611,15 +611,31 @@ def _filled(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return filled
 
 
+# Scenario keys that make a step checked; a step with none of them is observed.
+_CHECK_KEYS = frozenset(
+    {
+        "expect",
+        "forbid",
+        "plan_versions",
+        "expect_plan",
+        "same_as_version",
+        "memory_excludes",
+        "expect_memory",
+        "then",
+    }
+)
+
+
 def _check(scenario: dict[str, Any], record: Record) -> str:
+    """Each condition the scenario names is checked on its own."""
     expect = scenario.get("expect")
-    if not expect or not record.steps:
+    if not _CHECK_KEYS & set(scenario) or not record.steps:
         return "OBSERVE"
     # The first step's tools, without the memory tool that may come with them.
     first = [
         name for name in record.steps[0].split("+") if name != "memory"
     ] or record.steps[0].split("+")
-    ok = expect in first or (expect == "answer" and first == ["memory"])
+    ok = not expect or expect in first or (expect == "answer" and first == ["memory"])
     if "expect_args" in scenario:
         wanted = scenario["expect_args"].items()
         ok = ok and any(
@@ -831,7 +847,8 @@ async def run(
 
     print(
         "\n===== summary (id | expect | model steps | check | time"
-        " | max input tokens (estimate) | reported tokens | calls model/search/page/notes)"
+        " | max input tokens (estimate) | reported tokens of final answers"
+        " | calls model/search/page/notes)"
     )
     for row in rows:
         print(" | ".join(str(value) for value in row))

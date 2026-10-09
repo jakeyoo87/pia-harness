@@ -125,10 +125,11 @@ class InvestmentPlanTest(unittest.TestCase):
         self.apply({"market": "강세"}, "첫 판단")  # 2026-10-09 16:13 KST
         self.apply({"market": "약세"}, "금리 상승")  # 2026-10-10 16:13 KST
         self.assertEqual(
-            "2026-10-10 16:13 [시장 판단] 금리 상승\n2026-10-09 16:13 [시장 판단] 첫 판단",
+            "2026-10-10 16:13:00.000000 [시장 판단] 금리 상승\n"
+            "2026-10-09 16:13:00.000000 [시장 판단] 첫 판단",
             self.history(),
         )
-        # A listed time reads that version; an empty as_of is the list.
+        # A minute reads its end; an empty as_of is the list.
         self.assertIn("[시장 판단]\n강세", self.history(as_of="2026-10-09 16:13"))
         self.assertIn(
             "16:12 이전의 투자 계획이 없습니다", self.history(as_of="2026-10-09 16:12")
@@ -141,6 +142,33 @@ class InvestmentPlanTest(unittest.TestCase):
             "2026-10-08 이전의 투자 계획이 없습니다.", self.history(as_of="2026-10-08")
         )
         self.assertIn("Not read", self.history(as_of="10/9"))
+
+
+class SameMinuteTest(unittest.TestCase):
+    def test_two_changes_in_one_minute_are_read_apart_by_their_listed_time(
+        self,
+    ) -> None:
+        times = iter((NOW + timedelta(seconds=10), NOW + timedelta(seconds=40)))
+        plan = InvestmentPlan(InMemoryPlanStore(), now=lambda: next(times))
+        tool = plan.plan_tool()
+        for text in ("first-synthetic-value", "second-synthetic-value"):
+            prepared = asyncio.run(tool.prepare("user", call({"portfolio": text})))
+            asyncio.run(tool.execute("user", prepared.action))
+        history = plan.history_tool()
+
+        def read(as_of):
+            arguments = json.dumps({"as_of": as_of})
+            result = asyncio.run(
+                history.execute("user", ToolCall("plan_history", arguments), ())
+            )
+            return result.observation_text
+
+        listed = [line.split(" [", 1)[0] for line in read("").splitlines()]
+        self.assertEqual(
+            ["2026-10-09 16:13:40.000000", "2026-10-09 16:13:10.000000"], listed
+        )
+        self.assertIn("second-synthetic-value", read(listed[0]))
+        self.assertIn("first-synthetic-value", read(listed[1]))
 
 
 if __name__ == "__main__":
