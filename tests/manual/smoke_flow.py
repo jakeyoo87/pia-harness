@@ -8,7 +8,12 @@ replies; no real order or account lookup is ever sent.
 
     OPENROUTER_API_KEY=... EXA_API_KEY=... NAVER_API_HUB_CLIENT_ID=... \\
     NAVER_API_HUB_CLIENT_SECRET=... python -m tests.manual.smoke_flow \\
-        [--set read|execution|broker|plan] [--only 1,2] [--model ID] [--context-limit N]
+        [--set read|execution|broker|plan|onboarding] [--only 1,2] [--model ID]
+        [--context-limit N] [--extra-prompt-file PATH]
+
+The plan and onboarding sets take the host's own instructions (pia-agent
+ONBOARDING_PROMPT) through --extra-prompt-file, not a copy. A scenario entry with
+"seed" instead of "message" puts earlier Turns, Memory or a plan in place first.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,16 +43,26 @@ from pia_harness import (
     ModelTokenBudget,
     NaverNewsSearch,
     OpenRouterModelAdapter,
+    PlanVersion,
     ReadToolDefinition,
 )
 from pia_harness.broker_read import _ArgumentProblem, _resolve
 from pia_harness.compaction import TokenCompactor
 from pia_harness.context import PromptContextAssembler
 from pia_harness.memory import MemoryReviewer
+from pia_harness.session import MemoryDocument, new_turn_id
 from pia_harness.testing import InMemoryConversationStore, InMemoryPlanStore
 
 SCENARIOS = Path(__file__).with_name("scenarios")
-SCENARIO_SETS = ("read", "execution", "broker", "plan")
+SCENARIO_SETS = (
+    "read",
+    "execution",
+    "broker",
+    "plan",
+    "onboarding",
+    "onboarding_reset",
+)
+_PLAN_SETS = frozenset({"plan", "onboarding", "onboarding_reset"})
 # name: (code, market, current price). The fake order reply is UNKNOWN for 005935
 # so one scenario sees the "check the broker app" result. US codes are exchange:ticker
 # and found by ticker too; "마이크론" matches two names, as in the real list.
@@ -239,6 +254,11 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
 
     def handle(request: httpx.Request) -> httpx.Response:
         path = request.url.path
+        # A scenario may set broker_not_connected: member routes answer 409.
+        if started.get("broker_not_connected") and path.startswith(
+            "/internal/members/"
+        ):
+            return httpx.Response(409, json={"code": "BROKER_NOT_CONNECTED"})
         if path == "/internal/instruments":
             query = "".join(request.url.params["query"].split()).casefold()
             exact = [
@@ -682,6 +702,7 @@ async def run(
     environ: dict[str, str],
     scenario_set: str = "read",
     context_limit: int = 1_050_000,
+    extra_prompt: str = "",
 ) -> int:
     budget = ModelTokenBudget(context_limit=context_limit, response_tokens=4_096)
     key = environ["OPENROUTER_API_KEY"]
@@ -725,17 +746,17 @@ async def run(
     plan_store = InMemoryPlanStore()
     plan = InvestmentPlan(plan_store)
     plan_tools = ()
-    if scenario_set in ("execution", "broker", "plan"):
+    if scenario_set in ("execution", "broker", *_PLAN_SETS):
         broker_client = _fake_broker(state, orders)
         execution_tools = (
             BrokerOrderTool(
                 base_url="https://broker.invalid", client=broker_client
             ).tool(),
         )
-    if scenario_set == "plan":
+    if scenario_set in _PLAN_SETS:
         execution_tools = (*execution_tools, plan.plan_tool())
         plan_tools = (logged_result(plan.history_tool()),)
-    if scenario_set in ("broker", "plan"):
+    if scenario_set in ("broker", *_PLAN_SETS):
         broker_tools = (
             logged_result(
                 BrokerReadTool(
@@ -754,28 +775,34 @@ async def run(
             store,
             model.review_memory,
             instruction=PLAN_MEMORY_INSTRUCTION
-            if scenario_set == "plan"
+            if scenario_set in _PLAN_SETS
             else MEMORY_INSTRUCTION,
         ),
         compactor=TokenCompactor(store, model.summarize),
         generate_reply=model.generate_reply,
         deliver=deliver,
         system_prompt=SYSTEM_PROMPT
-        + (BROKER_PROMPT if scenario_set in ("broker", "plan") else "")
-        + (f" {PLAN_PROMPT}" if scenario_set == "plan" else ""),
+        + (BROKER_PROMPT if scenario_set in ("broker", *_PLAN_SETS) else "")
+        + (f" {PLAN_PROMPT}" if scenario_set in _PLAN_SETS else "")
+        + (f"\n\n{extra_prompt}" if extra_prompt else ""),
         token_budget=budget,
         model_id=model_id,
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
         read_tools=(*search_tools, extractor.tool(), *broker_tools, *plan_tools),
         execution_tools=execution_tools,
-        context_document=plan.document if scenario_set == "plan" else None,
+        context_document=plan.document if scenario_set in _PLAN_SETS else None,
     )
     rows = []
     try:
         for scenario in scenarios:
+            if "seed" in scenario:
+                _seed(store, plan_store, scenario["seed"])
+                print(f"\n===== {scenario['id']}: seeded {sorted(scenario['seed'])}")
+                continue
             print(f"\n===== {scenario['id']}: {scenario['message']}", flush=True)
             state["record"], state["started"] = Record(), time.monotonic()
             state["broker_us_error"] = scenario.get("broker_us_error")
+            state["broker_not_connected"] = scenario.get("broker_not_connected")
             first = asyncio.create_task(
                 orchestrator.submit(user_key=USER, message=scenario["message"])
             )
@@ -795,7 +822,7 @@ async def run(
             record.memory_text = memory.memory_text if memory else ""
             record.orders_sent = len(orders) - sent_before
             record.plan_versions = list(plan_store.plans.get(USER, []))
-            if scenario_set == "plan":
+            if scenario_set in _PLAN_SETS:
                 latest = record.plan_versions[-1] if record.plan_versions else None
                 _log(
                     state["started"],
@@ -823,7 +850,7 @@ async def run(
                 )
             if any(result.compaction_failed for result in results):
                 _log(state["started"], "COMPACTION", "failed")
-            if scenario_set in ("execution", "broker", "plan"):
+            if scenario_set in ("execution", "broker", *_PLAN_SETS):
                 _log(state["started"], "ORDERS SENT", str(len(orders)))
             rows.append(
                 (
@@ -857,11 +884,41 @@ async def run(
     return 0 if all(row[3] != "CHECK" for row in rows) else 1
 
 
+def _seed(store: Any, plan_store: Any, seed: dict[str, Any]) -> None:
+    """Earlier Turns, Memory and a plan, as a host would have them already."""
+    now = datetime.now(UTC)
+    session = store.get_or_create_active_session(USER, now=now)
+    turn_id = None
+    for index, turn in enumerate(seed.get("turns", ())):
+        created = now - timedelta(minutes=10 - index)
+        turn_id = new_turn_id(created)
+        store.append_completed_turn(
+            user_key=USER,
+            session_id=session.session_id,
+            turn_id=turn_id,
+            user_message=turn["user"],
+            assistant_message=turn["assistant"],
+            created_at=created,
+        )
+    if "memory" in seed:
+        reviewed = turn_id or new_turn_id(now - timedelta(minutes=11))
+        store.replace_memory(
+            MemoryDocument(USER, seed["memory"], reviewed, now),
+            expected_last_reviewed_turn_id=None,
+        )
+    if "plan" in seed:
+        sections = dict(seed["plan"])
+        plan_store.save_plan(
+            USER, PlanVersion(1, sections, tuple(sections), "합성 시드", now)
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default="openai/gpt-6-luna")
     parser.add_argument("--set", default="read", choices=SCENARIO_SETS)
     parser.add_argument("--context-limit", type=int, default=1_050_000)
+    parser.add_argument("--extra-prompt-file", help="host instructions to append")
     parser.add_argument("--only", help="comma-separated scenario ids, in file order")
     args = parser.parse_args()
     scenarios = json.loads((SCENARIOS / f"{args.set}.json").read_text(encoding="utf-8"))
@@ -883,7 +940,16 @@ def main() -> None:
         raise SystemExit(2)
     raise SystemExit(
         asyncio.run(
-            run(scenarios, args.model, dict(os.environ), args.set, args.context_limit)
+            run(
+                scenarios,
+                args.model,
+                dict(os.environ),
+                args.set,
+                args.context_limit,
+                Path(args.extra_prompt_file).read_text(encoding="utf-8")
+                if args.extra_prompt_file
+                else "",
+            )
         )
     )
 

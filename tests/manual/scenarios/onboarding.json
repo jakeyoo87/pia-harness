@@ -1,0 +1,12 @@
+[
+  {"id": "o0", "seed": {"turns": [{"user": "[가입 완료]", "assistant": "가입이 완료됐어요. PIA에 오신 걸 환영해요! 👋\n앞으로 어떻게 불러드리면 될까요?"}]}},
+  {"id": "o1", "message": "제이크라고 불러줘", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0},
+  {"id": "o2", "message": "삼성전자 요즘 어때?", "broker_not_connected": true, "forbid": ["plan", "order"], "plan_versions": 0},
+  {"id": "o3", "message": "계좌 연결은 나중에 할게", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0},
+  {"id": "o4", "message": "응 투자 계획 세워보자", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0},
+  {"id": "o5", "message": "자산 증식, 5년, -20%까지 괜찮아, 매달 100만원, 국내랑 미국 ETF", "broker_not_connected": true, "forbid": ["plan", "confirm"], "plan_versions": 0},
+  {"id": "o6", "message": "두 번째로 할게", "broker_not_connected": true, "expect": "plan", "plan_versions": 0},
+  {"id": "o7", "message": "응", "broker_not_connected": true, "expect": "confirm", "plan_versions": 1, "expect_plan": {"goal": "5년", "portfolio": "%"}},
+  {"id": "o8", "message": "계좌 완료", "broker_not_connected": true, "expect": "broker", "forbid": ["plan"], "plan_versions": 1},
+  {"id": "o9", "message": "이제 진짜 연결했어", "expect": "broker", "forbid": ["plan"], "plan_versions": 1}
+]

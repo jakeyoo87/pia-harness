@@ -51,11 +51,7 @@ PLAN_PROMPT = (
     "you offered; a question or a passing remark gets an answer, not a plan "
     "change. When the user asks how to set weights or a strategy, offer two or "
     "three options with their trade-offs and let the user choose; never decide "
-    "for the user. When the plan is empty and the user wants to make one, first "
-    "ask a few short questions (goal, horizon, risk profile, how they invest now; "
-    "read holdings with the broker tool instead of asking); once they answer, "
-    "propose saving what they decided with the plan tool, leaving undecided "
-    "sections empty, and offer options only for what is still open. When showing the plan, keep its section names as written. Refer "
+    "for the user. When showing the plan, keep its section names as written. Refer "
     "to plan versions by their date and time, never by version number."
 )
 PLAN_MEMORY_RULE = (
