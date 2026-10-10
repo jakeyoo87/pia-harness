@@ -1592,6 +1592,115 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn(CONFIRMATION_EXPIRED_NOTICE, late.final_text)
         self.assertEqual([], executed)
 
+    # --- Clearing a conversation -----------------------------------------------
+
+    async def test_clearing_drops_waiting_actions_of_that_user_only(self) -> None:
+        executed: list[str] = []
+        contexts = []
+        orchestrator = self.orchestrator(
+            self.script(
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                [("order", {"name": "Hynix"})],
+                "준비했어요.",
+                "누구신가요?",
+                self.confirm_waiting,
+                "주문했어요.",
+                contexts=contexts,
+            ),
+            execution_tools=(self.order_tool(executed=executed),),
+        )
+        for user in ("user", "other"):
+            await orchestrator.submit(
+                user_key=user, message="buy", accepted_at=self.now
+            )
+
+        self.assertTrue(await orchestrator.clear_if_idle("user"))
+        later = self.now + timedelta(minutes=1)
+        await orchestrator.submit(user_key="user", message="응", accepted_at=later)
+        self.assertNotIn("confirm", [tool.name for tool in contexts[4].tools])
+        await orchestrator.submit(user_key="other", message="응", accepted_at=later)
+        self.assertEqual(['{"name": "Hynix"}'], executed)
+
+    async def test_clearing_waits_while_a_confirmation_is_being_judged(self) -> None:
+        executed: list[str] = []
+        judging = asyncio.Event()
+        release = asyncio.Event()
+        steps = iter(
+            (
+                [("order", {"name": "Samsung"})],
+                "준비했어요.",
+                "wait",
+                self.confirm_waiting,
+                "주문했어요.",
+            )
+        )
+        ids = itertools.count(1)
+
+        async def generate(context):
+            step = next(steps)
+            if step == "wait":
+                judging.set()
+                await release.wait()
+                step = next(steps)
+            if callable(step):
+                step = step(context)
+            if isinstance(step, str):
+                return GeneratedAnswer(step, "model", 10)
+            return ModelReply(
+                tool_calls=tuple(
+                    ToolCall(name, json.dumps(arguments), f"c{next(ids)}")
+                    for name, arguments in step
+                )
+            )
+
+        orchestrator = self.orchestrator(
+            generate, execution_tools=(self.order_tool(executed=executed),)
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        answer = asyncio.create_task(
+            orchestrator.submit(
+                user_key="user",
+                message="응",
+                accepted_at=self.now + timedelta(minutes=1),
+            )
+        )
+        await judging.wait()
+        self.assertFalse(await orchestrator.clear_if_idle("user"))
+        release.set()
+        self.assertEqual(OrchestratorStatus.DELIVERED, (await answer).status)
+        # The user's own "응" runs the order once; clearing comes after it.
+        self.assertEqual(['{"name": "Samsung"}'], executed)
+        self.assertTrue(await orchestrator.clear_if_idle("user"))
+
+    async def test_clearing_drops_input_kept_after_a_failed_answer(self) -> None:
+        contexts = []
+        calls = itertools.count(1)
+
+        async def generate(context):
+            if next(calls) == 1:
+                raise RuntimeError("model unavailable")
+            contexts.append(context)
+            return GeneratedAnswer("answer", "model", 10)
+
+        orchestrator = self.orchestrator(generate)
+        failed = await orchestrator.submit(
+            user_key="user", message="old question", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.GENERATION_FAILED, failed.status)
+
+        self.assertTrue(await orchestrator.clear_if_idle("user"))
+        await orchestrator.submit(
+            user_key="user", message="new", accepted_at=self.now + timedelta(minutes=1)
+        )
+        current = [
+            part.content
+            for part in contexts[0].parts
+            if part.kind.value == "CURRENT_USER"
+        ]
+        self.assertNotIn("old question", "\n".join(current))
+        self.assertEqual("new", _message(contexts[0]))
+
     def note_tool(self, *, executed=None, execute=None):
         """An execution tool whose actions need no confirmation."""
         executed = executed if executed is not None else []

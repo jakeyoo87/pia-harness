@@ -464,6 +464,20 @@ class ConversationOrchestrator:
 
         return await future
 
+    async def clear_if_idle(self, user_key: str) -> bool:
+        """Drop what this user's conversation holds in memory (actions waiting
+        for confirmation, input kept after a failed answer) when nothing is
+        running; False while an answer or an execution is in progress, so the
+        host tries again later. The host clears its stored conversation after."""
+        state = await self._state_for(user_key)
+        async with state.state_lock:
+            if state.phase is not _Phase.IDLE:
+                return False
+            state.pending.clear()
+            self._pending_actions.pop(user_key, None)
+        await self._remove_if_idle(user_key, state)
+        return True
+
     async def _state_for(self, user_key: str) -> _UserState:
         async with self._states_lock:
             state = self._states.get(user_key)
