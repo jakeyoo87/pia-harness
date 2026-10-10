@@ -126,6 +126,8 @@ class Record:
     plan_versions: list[Any] = field(default_factory=list)
     memory_text: str = ""
     orders_sent: int = 0
+    # The options delivered under the answer, if any.
+    choices: Choices | None = None
     # Provider calls besides the loop model, for the cost of one question.
     calls: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(("search", "page", "notes"), 0)
@@ -642,9 +644,28 @@ _CHECK_KEYS = frozenset(
         "same_as_version",
         "memory_excludes",
         "expect_memory",
+        "expect_choices",
         "then",
     }
 )
+
+
+def _choices_ok(scenario: dict[str, Any], choices: Choices | None) -> bool:
+    """expect_choices: true (any), an option that must be offered, or the exact
+    list; expect_multiple: whether several may be picked."""
+    wanted = scenario["expect_choices"]
+    if choices is None:
+        return wanted is False
+    if (
+        "expect_multiple" in scenario
+        and choices.multiple != scenario["expect_multiple"]
+    ):
+        return False
+    if isinstance(wanted, str):
+        return wanted in choices.options
+    if isinstance(wanted, list):
+        return list(choices.options) == wanted
+    return wanted is True
 
 
 def _check(scenario: dict[str, Any], record: Record) -> str:
@@ -671,6 +692,8 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
         ok = ok and not _EXECUTION_TOOLS & used
     if "expect_memory" in scenario:
         ok = ok and record.memory == scenario["expect_memory"]
+    if "expect_choices" in scenario:
+        ok = ok and _choices_ok(scenario, record.choices)
     if "then" in scenario:
         ok = ok and scenario["then"] in record.current_user
     used = {name for step in record.steps for name in step.split("+")}
@@ -768,6 +791,7 @@ async def run(
 
     async def deliver(user_key: str, text: str, choices: Choices | None) -> None:
         print("  ----- answer -----\n" + text + "\n  ------------------", flush=True)
+        state["record"].choices = choices
         if choices is not None:
             kind = "여러 개" if choices.multiple else "하나"
             print(f"  [buttons/{kind}] " + " | ".join(choices.options), flush=True)

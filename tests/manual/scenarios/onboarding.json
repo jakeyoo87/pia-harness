@@ -1,12 +1,20 @@
 [
   {"id": "o0", "seed": {"turns": [{"user": "[처음 시작]", "assistant": "안녕하세요! PIA에 오신 걸 환영해요 👋\n앞으로 어떻게 불러드리면 될까요?"}]}},
-  {"id": "o1", "message": "제이크라고 불러줘", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0},
+  {"id": "o1", "message": "제이크라고 불러줘", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": true},
   {"id": "o2", "message": "삼성전자 요즘 어때?", "broker_not_connected": true, "forbid": ["plan", "order"], "plan_versions": 0},
-  {"id": "o3", "message": "계좌 연결은 나중에 할게", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0},
-  {"id": "o4", "message": "응 투자 계획 세워보자", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0},
-  {"id": "o5", "message": "자산 증식, 5년, -20%까지 괜찮아, 매달 100만원, 국내랑 미국 ETF", "broker_not_connected": true, "forbid": ["plan", "confirm"], "plan_versions": 0},
-  {"id": "o6", "message": "두 번째로 할게", "broker_not_connected": true, "expect": "plan", "plan_versions": 0},
-  {"id": "o7", "message": "응", "broker_not_connected": true, "expect": "confirm", "plan_versions": 1, "expect_plan": {"goal": "5년", "portfolio": "%"}},
-  {"id": "o8", "message": "계좌 완료", "broker_not_connected": true, "expect": "broker", "forbid": ["plan"], "plan_versions": 1},
-  {"id": "o9", "message": "이제 진짜 연결했어", "expect": "broker", "forbid": ["plan"], "plan_versions": 1}
+  {"id": "o3", "message": "계좌 연결 안내", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": ["계좌 연결 완료"]},
+  {"id": "o4", "message": "계좌 연결은 나중에 할게", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": true},
+  {"id": "o5", "message": "계획 시작", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": ["6개월 이내", "6개월~1년", "1~3년", "3~5년", "5년 이상"]},
+  {"id": "o6", "message": "3~5년", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": ["-5%까지 (원금 지키기가 중요해요)", "-10%까지", "-20%까지", "-30% 이상도 괜찮아요 (오래 기다릴 수 있어요)"]},
+  {"id": "o7", "message": "-20%까지", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": ["1천만 원 미만", "1천만~5천만 원", "5천만~1억 원", "1억 원 이상"]},
+  {"id": "o8", "message": "1천만~5천만 원", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": ["국내 주식", "미국 주식", "국내·미국 둘 다"]},
+  {"id": "o9", "message": "국내·미국 둘 다", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": ["했어요", "아직이에요", "잘 모르겠어요"]},
+  {"id": "o10", "message": "아직이에요", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": ["반도체·IT", "2차전지·전기차", "바이오·헬스케어", "금융", "소비재·플랫폼", "에너지·방산·산업재", "특별히 없어요"], "expect_multiple": true},
+  {"id": "o11", "message": "반도체·IT, 금융", "broker_not_connected": true, "forbid": ["plan"], "plan_versions": 0, "expect_choices": ["성장주 (실적이 빠르게 크는 기업)", "안정형 (배당·우량 대형주)", "ETF 중심 (지수·테마에 나눠 담기)", "골고루 섞어서"]},
+  {"id": "o12", "message": "ETF 중심 (지수·테마에 나눠 담기)", "broker_not_connected": true, "forbid": ["plan", "confirm"], "plan_versions": 0, "expect_choices": "직접 입력"},
+  {"id": "o13", "message": "직접 입력", "broker_not_connected": true, "forbid": ["plan", "confirm"], "plan_versions": 0},
+  {"id": "o14", "message": "국내 30%, 미국 40%, 현금 30%", "broker_not_connected": true, "expect": "plan", "plan_versions": 0, "expect_choices": ["확인", "취소"]},
+  {"id": "o15", "message": "확인", "broker_not_connected": true, "expect": "confirm", "plan_versions": 1, "expect_plan": {"goal": "3~5", "portfolio": "%"}},
+  {"id": "o16", "message": "계좌 연결 완료", "broker_not_connected": true, "expect": "broker", "forbid": ["plan"], "plan_versions": 1},
+  {"id": "o17", "message": "이제 진짜 연결했어", "expect": "broker", "forbid": ["plan"], "plan_versions": 1}
 ]
