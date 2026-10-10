@@ -48,8 +48,10 @@ from .openrouter import (
 )
 from .orchestrator import (
     APPLIED_ACTION_FAILED_NOTICE,
+    CONFIRMATION_CHOICES,
     CONFIRMATION_EXPIRED_NOTICE,
     MESSAGE_SEPARATOR,
+    Choices,
     ConversationInput,
     ConversationOrchestrator,
     ConversationResult,
@@ -88,6 +90,7 @@ from .web_extract import JinaPageExtractor, PageExcerpt, PageReadError
 
 __all__ = [
     "APPLIED_ACTION_FAILED_NOTICE",
+    "CONFIRMATION_CHOICES",
     "CONFIRMATION_EXPIRED_NOTICE",
     "DEFAULT_MAX_RESPONSE_TOKENS",
     "PLAN_MEMORY_RULE",
@@ -109,6 +112,7 @@ __all__ = [
     "ConversationAbandoned",
     "ConversationContext",
     "ConversationInput",
+    "Choices",
     "ConversationOrchestrator",
     "ConversationResult",
     "ConversationStep",

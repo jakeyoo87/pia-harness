@@ -10,9 +10,11 @@ from unittest.mock import patch
 import pia_harness.orchestrator as orchestrator_module
 from pia_harness import (
     APPLIED_ACTION_FAILED_NOTICE,
+    CONFIRMATION_CHOICES,
     CONFIRMATION_EXPIRED_NOTICE,
     MESSAGE_SEPARATOR,
     ActiveSession,
+    Choices,
     ConversationAbandoned,
     ConversationContext,
     ConversationOrchestrator,
@@ -209,6 +211,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.memory = FakeMemoryReviewer()
         self.compactor = FakeCompactor()
         self.delivered = []
+        self.delivered_choices = []
         self.token_budget = ModelTokenBudget(1_000, 100)
 
     def orchestrator(
@@ -230,8 +233,9 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         ModelReply. memory_action makes the model call the memory tool first."""
         counter = counter or (lambda parts: sum(len(part.content) for part in parts))
 
-        async def default_deliver(user_key, text):
+        async def default_deliver(user_key, text, choices):
             self.delivered.append((user_key, text))
+            self.delivered_choices.append(choices)
 
         async def reply(context):
             if memory_action is not MemoryAction.NONE and not _results(context):
@@ -459,7 +463,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             generated.append(current)
             return GeneratedAnswer(f"answer:{current}", "model", 10)
 
-        async def deliver(user_key, text):
+        async def deliver(user_key, text, choices):
             self.delivered.append((user_key, text))
             if len(self.delivered) == 1:
                 delivering.set()
@@ -585,7 +589,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         delivery_calls = 0
 
-        async def fail_once(user_key, text):
+        async def fail_once(user_key, text, choices):
             nonlocal delivery_calls
             delivery_calls += 1
             if delivery_calls == 1:
@@ -687,7 +691,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             seen.append(_message(context))
             return GeneratedAnswer("answer", "model", 10)
 
-        async def abandon_once(user_key, text):
+        async def abandon_once(user_key, text, choices):
             nonlocal delivery_calls
             delivery_calls += 1
             if delivery_calls == 1:
@@ -725,7 +729,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def generate(context):
             return GeneratedAnswer("answer", "model", 10)
 
-        async def deliver(user_key, text):
+        async def deliver(user_key, text, choices):
             delivery_started.set()
             await release_delivery.wait()
             self.delivered.append((user_key, text))
@@ -759,7 +763,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def generate(context):
             return GeneratedAnswer(text, "model", 10)
 
-        async def deliver(user_key, text):
+        async def deliver(user_key, text, choices):
             delivered.append(text)
 
         await self.orchestrator(generate, deliver=deliver).submit(
@@ -846,7 +850,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         async def progress(user_key, progress_id, step):
             ordered.append(("progress", user_key, progress_id, step))
 
-        async def deliver(user_key, text):
+        async def deliver(user_key, text, choices):
             ordered.append(("deliver", user_key, text))
 
         result = await self.orchestrator(
@@ -1363,7 +1367,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             return GeneratedAnswer("answer", "model", 10)
 
         tool = self.order_tool()
-        for name in ("confirm", "memory", "bad name"):
+        for name in ("confirm", "memory", "choices", "bad name"):
             reserved = ExecutionToolDefinition(
                 name, "x", {"type": "object"}, tool.prepare, tool.execute
             )
@@ -1591,6 +1595,69 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("confirm", [tool.name for tool in contexts[-1].tools])
         self.assertIn(CONFIRMATION_EXPIRED_NOTICE, late.final_text)
         self.assertEqual([], executed)
+
+    # --- Choices -------------------------------------------------------------------
+
+    async def test_choices_go_to_the_host_with_the_answer(self) -> None:
+        contexts = []
+        orchestrator = self.orchestrator(
+            self.script(
+                [("choices", {"options": ["1~3년", "3~5년"]})],
+                [
+                    ("choices", {"options": ["only one"]}),
+                    ("choices", {"options": ["a", "a"]}),
+                    ("choices", {"options": ["x" * 31, "b"]}),
+                    (
+                        "choices",
+                        {"options": [" 반도체·IT ", "금융"], "multiple": True},
+                    ),
+                ],
+                "1. 관심 섹터: 관심 있는 분야가 있으세요?",
+                "다음 질문",
+                contexts=contexts,
+            )
+        )
+        await orchestrator.submit(user_key="user", message="시작", accepted_at=self.now)
+        self.assertIn("choices", [tool.name for tool in contexts[0].tools])
+        results = _results(contexts[2])
+        self.assertEqual(
+            "Noted. The options are shown as buttons under your answer.", results[0]
+        )
+        self.assertTrue(all(text.startswith("Not run") for text in results[1:4]))
+        # The last valid call counts.
+        self.assertEqual(
+            [Choices(("반도체·IT", "금융"), multiple=True)], self.delivered_choices
+        )
+        self.assertEqual(
+            "1. 관심 섹터: 관심 있는 분야가 있으세요?",
+            self.store.turns[-1].assistant_message,
+        )
+        # No separate field: the call stays in the tool record like any other.
+        self.assertIn(
+            "choices", [o.name for o in self.store.turns[-1].tool_observations]
+        )
+
+        await orchestrator.submit(
+            user_key="user", message="금융", accepted_at=self.now + timedelta(minutes=1)
+        )
+        self.assertEqual(None, self.delivered_choices[-1])
+
+    async def test_a_confirmation_question_always_offers_confirm_and_cancel(
+        self,
+    ) -> None:
+        orchestrator = self.orchestrator(
+            self.script(
+                [
+                    ("choices", {"options": ["삼성전자", "SK하이닉스"]}),
+                    ("order", {"name": "Samsung"}),
+                ],
+                "주문을 준비했어요.",
+            ),
+            execution_tools=(self.order_tool(),),
+        )
+        await orchestrator.submit(user_key="user", message="buy", accepted_at=self.now)
+        self.assertEqual([CONFIRMATION_CHOICES], self.delivered_choices)
+        self.assertEqual(Choices(("확인", "취소")), CONFIRMATION_CHOICES)
 
     # --- Clearing a conversation -----------------------------------------------
 

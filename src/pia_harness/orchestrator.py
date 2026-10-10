@@ -70,7 +70,10 @@ CONFIRMATION_APPENDED_NOTE = (
 MAX_PENDING_ACTIONS = 5
 CONFIRM_TOOL = "confirm"
 MEMORY_TOOL = "memory"
-_RESERVED_TOOLS = frozenset({CONFIRM_TOOL, MEMORY_TOOL})
+CHOICES_TOOL = "choices"
+_RESERVED_TOOLS = frozenset({CONFIRM_TOOL, MEMORY_TOOL, CHOICES_TOOL})
+MAX_CHOICES = 8
+MAX_CHOICE_CHARS = 30
 _TOOL_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _MESSAGE_URL = re.compile(r"https?://[^\s<>\"'()\[\]{}]+", re.IGNORECASE)
 _URL_TRAILING = ".,;:!?…。，、"
@@ -210,6 +213,20 @@ class ModelReply:
 
 
 @dataclass(frozen=True, slots=True)
+class Choices:
+    """Options the host shows under the answer, for example as buttons. Picking
+    one is the same as the user sending its text (plans in pia
+    plans/2026-10-10_choice-buttons.md)."""
+
+    options: tuple[str, ...]
+    multiple: bool = False
+
+
+# An answer that asks to confirm a waiting action always offers these.
+CONFIRMATION_CHOICES = Choices(("확인", "취소"))
+
+
+@dataclass(frozen=True, slots=True)
 class _BuiltinTool:
     name: str
     description: str
@@ -233,6 +250,37 @@ MEMORY_TOOL_SPEC = _BuiltinTool(
             }
         },
         "required": ["action"],
+        "additionalProperties": False,
+    },
+)
+CHOICES_TOOL_SPEC = _BuiltinTool(
+    CHOICES_TOOL,
+    "Show options under your answer for the user to pick, as buttons. Use when "
+    "your answer asks the user to choose from a few fixed options. Write the "
+    "question in your answer; do not list the options again as text unless each "
+    "needs an explanation. Add an option such as 직접 입력 when the user may want "
+    "to write their own. Picking an option sends its text as the user's next "
+    "message.",
+    {
+        "type": "object",
+        "properties": {
+            "options": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": MAX_CHOICE_CHARS,
+                },
+                "minItems": 2,
+                "maxItems": MAX_CHOICES,
+                "description": "Short option texts in the user's language.",
+            },
+            "multiple": {
+                "type": "boolean",
+                "description": "true when the user may pick several.",
+            },
+        },
+        "required": ["options"],
         "additionalProperties": False,
     },
 )
@@ -310,6 +358,7 @@ class _Round:
     kept_results: dict[int, str] = field(default_factory=dict)
     read_calls: int = 0
     memory_action: MemoryAction | None = None
+    choices: Choices | None = None
     prepared: list[_PendingAction] = field(default_factory=list)
     # Waiting actions the user confirmed; they run after the execution claim.
     confirmed: tuple[_PendingAction, ...] = ()
@@ -341,7 +390,7 @@ class ConversationOrchestrator:
         compactor: TokenCompactor,
         # One model step over the context and the tools it offers.
         generate_reply: Callable[[AssembledPromptContext], Awaitable[ModelReply]],
-        deliver: Callable[[str, str], Awaitable[None]],
+        deliver: Callable[[str, str, Choices | None], Awaitable[None]],
         system_prompt: str,
         token_budget: ModelTokenBudget,
         model_id: str,
@@ -541,6 +590,7 @@ class ConversationOrchestrator:
             # The same calls as kept with the Turn (see _tool_result_text).
             kept_observations: tuple[ToolObservation, ...] = ()
             memory_action = MemoryAction.NONE
+            choices: Choices | None = None
             # Search links already listed this Turn, so repeated searches show
             # only new ones.
             listed_urls: set[str] = set()
@@ -674,6 +724,8 @@ class ConversationOrchestrator:
                 read_calls += outcome.read_calls
                 if outcome.memory_action is not None:
                     memory_action = outcome.memory_action
+                if outcome.choices is not None:
+                    choices = outcome.choices
                 prepared.extend(outcome.prepared)
                 if outcome.limit_hit:
                     answer_only, closing_note = True, RESEARCH_LIMIT_NOTICE
@@ -700,6 +752,7 @@ class ConversationOrchestrator:
                     compaction_failed=compaction_failed,
                     prepared=tuple(prepared),
                     applied=tuple(applied),
+                    choices=choices,
                     confirmation_expired=confirmation_expired,
                     tool_observations=kept_observations,
                 ),
@@ -767,6 +820,7 @@ class ConversationOrchestrator:
             *self._read_tools,
             *self._execution_tools,
             MEMORY_TOOL_SPEC,
+            CHOICES_TOOL_SPEC,
         ]
         if offered:
             tools.append(CONFIRM_TOOL_SPEC)
@@ -817,6 +871,18 @@ class ConversationOrchestrator:
                     outcome.memory_action = action
                     outcome.results[index] = (
                         "Noted. Memory is changed from this request after the answer."
+                    )
+            elif call.name == CHOICES_TOOL:
+                offered_choices = _choices(parsed)
+                if offered_choices is None:
+                    outcome.results[index] = (
+                        f"Not run: options must be 2 to {MAX_CHOICES} different "
+                        f"texts of at most {MAX_CHOICE_CHARS} characters."
+                    )
+                else:
+                    outcome.choices = offered_choices
+                    outcome.results[index] = (
+                        "Noted. The options are shown as buttons under your answer."
                     )
             elif call.name in execution_tools:
                 if len(drafts) >= MAX_PENDING_ACTIONS:
@@ -1148,6 +1214,7 @@ class ConversationOrchestrator:
         applied: tuple[tuple[int, _PendingAction], ...] = (),
         confirmation_expired: bool = False,
         tool_observations: tuple[ToolObservation, ...] = (),
+        choices: Choices | None = None,
     ) -> tuple[ConversationResult, bool]:
         changes: list[str] = []
         explicit_memory_failed = False
@@ -1211,8 +1278,11 @@ class ConversationOrchestrator:
                 final_text = "\n\n".join(
                     (final_text, *(item.action.confirmation for item in prepared))
                 )
+                # The answer ends with the confirmation question, so it offers
+                # its two answers whatever else the model offered.
+                choices = CONFIRMATION_CHOICES
             try:
-                await self._deliver(user_key, final_text)
+                await self._deliver(user_key, final_text, choices)
             except ConversationAbandoned:
                 raise
             except Exception:
@@ -1345,6 +1415,24 @@ class ConversationOrchestrator:
                     and not state.pending
                 ):
                     del self._states[user_key]
+
+
+def _choices(arguments: Mapping[str, Any]) -> Choices | None:
+    options = arguments.get("options")
+    multiple = arguments.get("multiple", False)
+    if (
+        not isinstance(options, list)
+        or not 2 <= len(options) <= MAX_CHOICES
+        or not isinstance(multiple, bool)
+        or not all(isinstance(option, str) for option in options)
+    ):
+        return None
+    texts = tuple(option.strip() for option in options)
+    if not all(0 < len(text) <= MAX_CHOICE_CHARS for text in texts) or len(
+        set(texts)
+    ) != len(texts):
+        return None
+    return Choices(texts, multiple)
 
 
 def _conversation_input(

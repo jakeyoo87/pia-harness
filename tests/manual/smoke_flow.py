@@ -36,6 +36,7 @@ from pia_harness import (
     PLAN_PROMPT,
     BrokerOrderTool,
     BrokerReadTool,
+    Choices,
     ConversationOrchestrator,
     ExaWebSearch,
     InvestmentPlan,
@@ -765,8 +766,11 @@ async def run(
             ),
         )
 
-    async def deliver(user_key: str, text: str) -> None:
+    async def deliver(user_key: str, text: str, choices: Choices | None) -> None:
         print("  ----- answer -----\n" + text + "\n  ------------------", flush=True)
+        if choices is not None:
+            kind = "여러 개" if choices.multiple else "하나"
+            print(f"  [buttons/{kind}] " + " | ".join(choices.options), flush=True)
 
     orchestrator = ConversationOrchestrator(
         store=store,
