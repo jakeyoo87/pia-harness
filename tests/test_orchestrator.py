@@ -1602,9 +1602,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         contexts = []
         orchestrator = self.orchestrator(
             self.script(
-                [("choices", {"options": ["1~3년", "3~5년"]})],
+                # One option is a valid start button.
+                [("choices", {"options": ["계획 시작"]})],
                 [
-                    ("choices", {"options": ["only one"]}),
+                    ("choices", {"options": []}),
                     ("choices", {"options": ["a", "a"]}),
                     ("choices", {"options": ["x" * 31, "b"]}),
                     (

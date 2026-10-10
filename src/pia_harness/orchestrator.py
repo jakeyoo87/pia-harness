@@ -271,7 +271,7 @@ CHOICES_TOOL_SPEC = _BuiltinTool(
                     "minLength": 1,
                     "maxLength": MAX_CHOICE_CHARS,
                 },
-                "minItems": 2,
+                "minItems": 1,
                 "maxItems": MAX_CHOICES,
                 "description": "Short option texts in the user's language.",
             },
@@ -876,7 +876,7 @@ class ConversationOrchestrator:
                 offered_choices = _choices(parsed)
                 if offered_choices is None:
                     outcome.results[index] = (
-                        f"Not run: options must be 2 to {MAX_CHOICES} different "
+                        f"Not run: options must be 1 to {MAX_CHOICES} different "
                         f"texts of at most {MAX_CHOICE_CHARS} characters."
                     )
                 else:
@@ -1422,7 +1422,7 @@ def _choices(arguments: Mapping[str, Any]) -> Choices | None:
     multiple = arguments.get("multiple", False)
     if (
         not isinstance(options, list)
-        or not 2 <= len(options) <= MAX_CHOICES
+        or not 1 <= len(options) <= MAX_CHOICES
         or not isinstance(multiple, bool)
         or not all(isinstance(option, str) for option in options)
     ):
