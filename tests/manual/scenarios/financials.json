@@ -1,0 +1,11 @@
+[
+  {"id": "f1", "message": "삼성전자 최근 5년 매출이랑 영업이익 보여줘", "expect": "past_financials", "expect_args": {"country": "kr"}, "forbid": ["order", "confirm"]},
+  {"id": "f2", "message": "엔비디아 최근 4개 분기 실적 알려줘", "expect": "past_financials", "expect_args": {"country": "us", "frequency": "quarterly"}, "forbid": ["order", "confirm"]},
+  {"id": "f3", "message": "SK하이닉스 부채랑 현금흐름도 같이 보여줘", "expect": "past_financials", "expect_args": {"country": "kr"}, "forbid": ["order", "confirm"]},
+  {"id": "f4", "message": "삼성전자 내년 실적 전망은 어때?", "expect": "web_search", "forbid": ["order", "confirm"]},
+  {"id": "f5", "message": "엔비디아 지금 주가 얼마야?", "expect": "broker", "expect_args": {"action": "quote"}},
+  {"id": "f6", "message": "삼성전자 과거 5년 PER 추이 보여줘"},
+  {"id": "f7", "message": "애플 배당 내역 알려줘"},
+  {"id": "f8", "message": "SK하이닉스 작년 설비투자(유형자산 취득)는 얼마였어?"},
+  {"id": "f9", "message": "삼성전자 이번 분기 실적 어땠어?"}
+]

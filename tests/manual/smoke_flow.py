@@ -4,11 +4,12 @@ Manual only: it calls paid APIs and model decisions vary, so it is not part of p
 or CI. Scenarios run in order in one conversation, so later ones can refer to earlier
 answers. Keys come from the environment and are never printed; Jina is called
 without a key. The execution and broker sets use a fake pia-broker with fixed
-replies; no real order or account lookup is ever sent.
+replies; no real order or account lookup is ever sent. The financials set adds
+past_financials with fake OpenDART and SEC replies (tests/manual/fake_financials.py).
 
     OPENROUTER_API_KEY=... EXA_API_KEY=... NAVER_API_HUB_CLIENT_ID=... \\
     NAVER_API_HUB_CLIENT_SECRET=... python -m tests.manual.smoke_flow \\
-        [--set read|execution|broker|plan|onboarding] [--only 1,2] [--model ID]
+        [--set read|execution|broker|plan|onboarding|financials] [--only 1,2] [--model ID]
         [--context-limit N] [--extra-prompt-file PATH]
 
 The plan and onboarding sets take the host's own instructions (pia-agent
@@ -44,6 +45,7 @@ from pia_harness import (
     ModelTokenBudget,
     NaverNewsSearch,
     OpenRouterModelAdapter,
+    PastFinancialsTool,
     PlanVersion,
     ReadToolDefinition,
 )
@@ -54,6 +56,8 @@ from pia_harness.memory import MemoryReviewer
 from pia_harness.session import MemoryDocument, new_turn_id
 from pia_harness.testing import InMemoryConversationStore, InMemoryPlanStore
 
+from .fake_financials import client as fake_financials_client
+
 SCENARIOS = Path(__file__).with_name("scenarios")
 SCENARIO_SETS = (
     "read",
@@ -62,8 +66,11 @@ SCENARIO_SETS = (
     "plan",
     "onboarding",
     "onboarding_reset",
+    "financials",
 )
 _PLAN_SETS = frozenset({"plan", "onboarding", "onboarding_reset"})
+# Sets that run with the fake pia-broker and the broker prompt, as PIA does.
+_BROKER_SETS = frozenset({"broker", "financials", *_PLAN_SETS})
 # name: (code, market, current price). The fake order reply is UNKNOWN for 005935
 # so one scenario sees the "check the broker app" result. US codes are exchange:ticker
 # and found by ticker too; "마이크론" matches two names, as in the real list.
@@ -770,7 +777,7 @@ async def run(
     plan_store = InMemoryPlanStore()
     plan = InvestmentPlan(plan_store)
     plan_tools = ()
-    if scenario_set in ("execution", "broker", *_PLAN_SETS):
+    if scenario_set in ("execution", *_BROKER_SETS):
         broker_client = _fake_broker(state, orders)
         execution_tools = (
             BrokerOrderTool(
@@ -780,11 +787,25 @@ async def run(
     if scenario_set in _PLAN_SETS:
         execution_tools = (*execution_tools, plan.plan_tool())
         plan_tools = (logged_result(plan.history_tool()),)
-    if scenario_set in ("broker", *_PLAN_SETS):
+    if scenario_set in _BROKER_SETS:
         broker_tools = (
             logged_result(
                 BrokerReadTool(
                     base_url="https://broker.invalid", client=broker_client
+                ).tool()
+            ),
+        )
+
+    financials_client = None
+    financial_tools = ()
+    if scenario_set == "financials":
+        financials_client = fake_financials_client()
+        financial_tools = (
+            logged_result(
+                PastFinancialsTool(
+                    dart_api_key="FAKE-OPENDART-KEY",
+                    sec_user_agent="PIA smoke test@example.invalid",
+                    async_client=financials_client,
                 ).tool()
             ),
         )
@@ -810,13 +831,19 @@ async def run(
         generate_reply=model.generate_reply,
         deliver=deliver,
         system_prompt=SYSTEM_PROMPT
-        + (BROKER_PROMPT if scenario_set in ("broker", *_PLAN_SETS) else "")
+        + (BROKER_PROMPT if scenario_set in _BROKER_SETS else "")
         + (f" {PLAN_PROMPT}" if scenario_set in _PLAN_SETS else "")
         + (f"\n\n{extra_prompt}" if extra_prompt else ""),
         token_budget=budget,
         model_id=model_id,
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
-        read_tools=(*search_tools, extractor.tool(), *broker_tools, *plan_tools),
+        read_tools=(
+            *search_tools,
+            extractor.tool(),
+            *broker_tools,
+            *plan_tools,
+            *financial_tools,
+        ),
         execution_tools=execution_tools,
         context_document=plan.document if scenario_set in _PLAN_SETS else None,
     )
@@ -878,7 +905,7 @@ async def run(
                 )
             if any(result.compaction_failed for result in results):
                 _log(state["started"], "COMPACTION", "failed")
-            if scenario_set in ("execution", "broker", *_PLAN_SETS):
+            if scenario_set in ("execution", *_BROKER_SETS):
                 _log(state["started"], "ORDERS SENT", str(len(orders)))
             rows.append(
                 (
@@ -901,6 +928,8 @@ async def run(
         await model.aclose()
         if broker_client is not None:
             await broker_client.aclose()
+        if financials_client is not None:
+            await financials_client.aclose()
 
     print(
         "\n===== summary (id | expect | model steps | check | time"
