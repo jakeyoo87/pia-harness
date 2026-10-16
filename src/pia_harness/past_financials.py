@@ -64,16 +64,16 @@ ARGUMENTS: dict[str, Any] = {
         },
         "country": {"type": "string", "enum": ["kr", "us"]},
         "frequency": {
-            "type": "string",
-            "enum": list(FREQUENCIES),
+            "type": ["string", "null"],
+            "enum": [*FREQUENCIES, None],
             "description": "Default annual. Cash flow may be cumulative, not a standalone quarter.",
         },
         "end_year": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "description": "Upper bound: Korean DART business year, or US value period-end calendar year. Not an as-known-at date. Omit for the latest filed periods.",
         },
         "count": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "minimum": 1,
             "maximum": 10,
             "description": "Annual: default 5, max 10. Quarterly: default 4, max 8.",
@@ -261,10 +261,15 @@ def render(
                 lines.append(f"  {metric} ({label}): 미제공 (not available)")
             for fact in values:
                 ref = source_number(fact.source)
-                suffix = f" [{ref}]" if ref != default else ""
+                suffix = f" [{ref}]" if ref != default and not fact.inputs else ""
+                kind = (
+                    f"{fact.kind} (계산값: 연간 − 3분기 누적)"
+                    if fact.inputs
+                    else fact.kind
+                )
                 lines.append(
                     f"  {metric} ({label}): {fact.value:f} {fact.unit}; "
-                    f"{fact.basis}; {fact.kind}; {fact.span}; {fact.account}{suffix}"
+                    f"{fact.basis}; {kind}; {fact.span}; {fact.account}{suffix}"
                 )
                 if fact.inputs:
                     annual, nine = fact.inputs
@@ -324,6 +329,9 @@ class PastFinancialsTool:
     ) -> ReadToolResult:
         del user_key, inputs
         args = json.loads(call.arguments_json)
+        for optional in ("frequency", "count", "end_year"):
+            if args.get(optional) is None:
+                args.pop(optional, None)
         name, country = args.get("name"), args.get("country")
         frequency = args.get("frequency", "annual")
         default_count, maximum = (

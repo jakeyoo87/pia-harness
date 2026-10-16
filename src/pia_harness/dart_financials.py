@@ -83,6 +83,7 @@ class DartFinancials:
                         row.findtext("corp_name", ""),
                     )
                     for row in root.findall("list")
+                    if row.findtext("stock_code", "").strip()
                 ]
                 if not self._companies or any(
                     not re.fullmatch(r"\d{8}", row[0]) for row in self._companies

@@ -19,7 +19,11 @@ NOW = datetime(2026, 10, 16, tzinfo=UTC)
 
 def companies_zip() -> bytes:
     xml = b"""<result><list><corp_code>00126380</corp_code><corp_name>Samsung</corp_name>
-    <stock_code>005930</stock_code></list></result>"""
+    <stock_code>005930</stock_code></list>
+    <list><corp_code>00999998</corp_code><corp_name>Samsung</corp_name>
+    <stock_code> </stock_code></list>
+    <list><corp_code>00999999</corp_code><corp_name>Private Company</corp_name>
+    <stock_code></stock_code></list></result>"""
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as zipped:
         zipped.writestr("CORPCODE.xml", xml)
@@ -236,12 +240,51 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
             {"count": True},
             {"count": 11},
             {"frequency": "quarterly", "count": 9},
-            {"count": None},
+            {"frequency": ""},
+            {"count": 0},
+            {"count": "5"},
+            {"end_year": False},
         ):
             args = {"name": "005930", "country": "kr", **overrides}
             result = await self.read(**args)
             self.assertIn("not run", result.observation_text)
         self.assertEqual([], self.requests)
+
+    async def test_optional_null_arguments_are_the_same_as_omitted(self):
+        self.make_tool(self.us_handler)
+        properties = self.tool.tool().arguments_schema["properties"]
+        for key, value_type in (
+            ("frequency", "string"),
+            ("count", "integer"),
+            ("end_year", "integer"),
+        ):
+            self.assertEqual([value_type, "null"], properties[key]["type"])
+        self.assertIn(None, properties["frequency"]["enum"])
+        for frequency in ("annual", "quarterly"):
+            base = {"name": "NVDA", "country": "us", "frequency": frequency}
+            expected = (await self.read(**base)).observation_text
+            cases = [
+                {"count": None},
+                {"end_year": None},
+                {"count": None, "end_year": None},
+            ]
+            if frequency == "annual":
+                cases.extend(
+                    [
+                        {"frequency": None},
+                        {"frequency": None, "count": None, "end_year": None},
+                    ]
+                )
+            for overrides in cases:
+                with self.subTest(frequency=frequency, overrides=overrides):
+                    actual = (await self.read(**{**base, **overrides})).observation_text
+                    self.assertEqual(expected, actual)
+
+    async def test_unlisted_dart_companies_do_not_match(self):
+        self.make_tool(self.kr_handler)
+        result = await self.read(name="Private Company", country="kr")
+        self.assertIn("Company not found", result.observation_text)
+        self.assertEqual(1, len(self.requests))
 
     async def test_kr_all_statements_ids_and_latest_comparison_columns(self):
         self.make_tool(self.kr_handler)
@@ -270,6 +313,11 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("계산값(연간 − 3분기 누적)", text)
         self.assertIn("revenue (매출): 300", text)
         self.assertIn("net_income_parent (지배주주 순이익): 30", text)
+        revenue, calculation = text.split("Period 2025-Q4", 1)[1].splitlines()[1:3]
+        self.assertIn("quarter (계산값: 연간 − 3분기 누적)", revenue)
+        self.assertNotIn("[", revenue)
+        self.assertIn("[1]", calculation)
+        self.assertIn("[2]", calculation)
         self.assertIn("operating_cashflow (영업활동 현금흐름): 54", text)
         self.assertIn("누적", text)
         self.assertIn("eps_basic (기본 EPS): 미제공", text)
@@ -337,6 +385,11 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2024-10-27", text)
         self.assertIn("revenue (매출): 300", text)
         self.assertIn("revenue (매출): 400", text)
+        revenue, calculation = text.split("Period 2025-01-26", 1)[1].splitlines()[1:3]
+        self.assertIn("quarter (계산값: 연간 − 3분기 누적)", revenue)
+        self.assertNotIn("[", revenue)
+        self.assertIn("[1]", calculation)
+        self.assertIn("[2]", calculation)
         self.assertNotIn("revenue (매출): 999", text)
         self.assertIn("계산값(연간 − 3분기 누적)", text)
         self.assertIn("2024-10-28", text)
