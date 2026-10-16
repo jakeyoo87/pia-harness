@@ -326,3 +326,41 @@ Claude 재검토·사용자 결정 원문은 위에 그대로 보존하고 현�
 이상 없음. 이름(past_financials / PastFinancialsTool / 결과 머리말), 설명 첫 문장, 확보한 최근 기간 표시, 출처 번호 목록, 시나리오 담당·목록, HTTP client 주입 지점이 재검토 요청과 사용자 결정대로 반영됐다. 출처 처리도 확인했다: Orchestrator의 인용 허용 범위(`_conversation_urls`)는 도구 결과 본문의 URL을 그대로 포함하므로, 본문 번호 목록의 원문 링크만으로 인용이 되고 `links` 중복이나 Orchestrator 변경이 필요 없다(답변에 모델이 베낀 `[n]`은 기존 규칙대로 지워진다).
 
 남은 것은 OpenDART 표본(Local Codex) 결과로 국내 절(§5 국내, 계정 ID, 비교 열 기간, 분기 누적·CF, 호출 수)을 확정하는 것뿐이다. 그 반영을 확인하면 계획 확정으로 보고 Codex 도구 구현으로 넘어간다. 시나리오(financials.json·가짜 제공기관·smoke_flow 연결)는 도구 구현 뒤 Claude가 만든다.
+
+## OpenDART 표본 결과와 사용자 결정 (2026-10-16, Local Codex 조회 → Claude 정리)
+
+Local Codex가 사용자 승인으로 삼성전자(00126380) 2025 CFS 1분기(11013)·반기(11012)·3분기(11014)·사업보고서(11011) 4건과, 연결 없는 회사(진양제약) 2025 사업보고서 CFS·OFS 각 1건을 조회했다. 키·키 포함 URL은 남기지 않았다.
+
+**확인된 사실 (국내 절 확정용)**
+- 네 응답 모두 status 000(223·223·225·229행). **4분기 단독 금액 필드는 어디에도 없다** → 국내도 Q4 손익은 연간(11011 `thstrm_amount`) − 3분기 누적(11014 `thstrm_add_amount`) 계산값.
+- 손익(IS/CIS): 분기 보고서에 `thstrm_amount`(3개월)와 `thstrm_add_amount`(누적)가 모두 있다(예: 3분기 매출 3개월 약 86.06조, 누적 약 239.77조).
+- **현금흐름(CF): `thstrm_add_amount`는 비어 있고 누적 금액이 `thstrm_amount`에 들어온다**(3분기 영업CF 약 56.52조 = 누적). 손익과 칸 쓰임이 다르므로 CF는 `thstrm_amount`를 누적으로 표시한다.
+- 사업보고서 한 응답에 당기·전기·전전기(`thstrm`·`frmtrm`·`bfefrmtrm`)가 함께 온다. `rcept_no`는 모든 행에 있다.
+- **연결 없는 회사:** CFS 호출이 status 013(조회된 데이타가 없습니다, 0행)이면 OFS 호출이 000으로 정상 응답했다 → "CFS 013이면 OFS로 한 번 더, 기준을 별도로 표시" 경로 확정(013 뜻은 공식 가이드에 있음).
+- 계정은 **`account_id`로만** 찾는다. 같은 이름이 다른 표에 있다(CIS의 "지배기업 소유주지분"은 `ifrs-full_ComprehensiveIncomeAttributableToOwnersOfParent`, 포괄이익). 손익 계정은 IS·CIS 중 어디에 있든 ID로 찾는다.
+
+**국내 대표 계정 ID (표본 확인)**
+
+| 항목 | account_id | 표 |
+|---|---|---|
+| 매출 | `ifrs-full_Revenue` | IS |
+| 매출원가 | `ifrs-full_CostOfSales` | IS |
+| 매출총이익 | `ifrs-full_GrossProfit` | IS |
+| 영업이익 | `dart_OperatingIncomeLoss` | IS |
+| 순이익(지배주주) | `ifrs-full_ProfitLossAttributableToOwnersOfParent` | IS |
+| 기본 EPS | `ifrs-full_BasicEarningsLossPerShare` | IS |
+| 희석 EPS | `ifrs-full_DilutedEarningsLossPerShare` | IS |
+| 자산총계 | `ifrs-full_Assets` | BS |
+| 부채총계 | `ifrs-full_Liabilities` | BS |
+| 자본총계 | (표본 미확인, 구현 때 같은 응답에서 확인 — `ifrs-full_Equity` 예상) | BS |
+| 현금및현금성자산 | `ifrs-full_CashAndCashEquivalents` | BS |
+| 영업활동 현금흐름 | `ifrs-full_CashFlowsFromUsedInOperatingActivities` | CF |
+| 투자활동 현금흐름 | `ifrs-full_CashFlowsFromUsedInInvestingActivities` | CF |
+| 재무활동 현금흐름 | `ifrs-full_CashFlowsFromUsedInFinancingActivities` | CF |
+| 유형자산의 취득 | `ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities` | CF |
+
+**사용자 결정**
+- **순이익 = 지배주주 순이익**(국내 `ifrs-full_ProfitLossAttributableToOwnersOfParent`, 미국 `NetIncomeLoss`). 국내·미국 기준과 EPS 기준이 같아진다. 전체 순이익(`ifrs-full_ProfitLoss`)은 쓰지 않는다. Q4 계산의 "순이익"도 이 계정이다.
+- **차입금 항목은 대표 계정에서 뺀다.** 단기차입금은 표본에서 표준 ID가 없었고("표준계정코드 미사용"), 장기차입금·사채는 따로 오며 회사마다 구성이 달라 표준 ID 규칙 하나로 맞출 수 없다. 부채는 부채총계만 보여 준다(세부는 원문 출처로). §4의 balance 행에서 "공시된 단기·장기 차입금 항목"을 지우고, 미국도 같은 범위로 맞춘다.
+
+**Codex에게:** 위 내용으로 §4(balance 행), §5 국내 절(Local Codex 대기 문구를 확정 내용으로), Q4 국내 입력 필드, 대응표를 고쳐 주세요. 자본총계 ID만 구현 때 같은 표본에서 확인하면 된다. 이 반영을 확인하면 계획 확정이다.
