@@ -7,5 +7,6 @@
   {"id": "f6", "message": "삼성전자 과거 5년 PER 추이 보여줘"},
   {"id": "f7", "message": "애플 배당 내역 알려줘"},
   {"id": "f8", "message": "SK하이닉스 작년 설비투자(유형자산 취득)는 얼마였어?"},
-  {"id": "f9", "message": "삼성전자 이번 분기 실적 어땠어?"}
+  {"id": "f9", "message": "삼성전자 이번 분기 실적 어땠어?"},
+  {"id": "f10", "message": "SK하이닉스 2023년 실적 알려줘", "expect": "past_financials", "expect_args": {"country": "kr", "end_year": 2023}, "forbid": ["order", "confirm"]}
 ]
