@@ -68,6 +68,7 @@ from .orchestrator import (
     ToolCall,
     ToolLink,
 )
+from .past_financials import PastFinancialsTool
 from .persistence import (
     ConversationAbandoned,
     ConversationStore,
@@ -141,6 +142,7 @@ __all__ = [
     "OrchestratorStatus",
     "PageExcerpt",
     "PageReadError",
+    "PastFinancialsTool",
     "PreparationResult",
     "PreparedAction",
     "PromptContextAssembler",
