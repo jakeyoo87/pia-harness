@@ -1,0 +1,17 @@
+[
+  {"id": "m15", "message": "요즘 반도체 소식 어때?", "feed_down": true, "uses": ["news_search"], "forbid": ["order", "confirm"]},
+  {"id": "m1", "message": "요즘 반도체 분위기 어때?", "expect": "market_feed_search", "forbid": ["order", "confirm"]},
+  {"id": "m2", "message": "삼성전자 최근 증권사 의견은?", "expect": "market_feed_search", "expect_sql": ["broker"], "answer_includes": ["증권사 의견"], "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"]},
+  {"id": "m3", "message": "SK하이닉스 목표주가 바뀐 거 있어?", "expect": "market_feed_search", "expect_sql": ["targets"], "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"]},
+  {"id": "m4", "message": "이번 주 실적 발표 일정 알려줘", "expect": "market_feed_search", "expect_sql": ["events"]},
+  {"id": "m5", "message": "오늘 마이크론 소식 있어?", "expect": "market_feed_search", "expect_sql": ["message_stocks"]},
+  {"id": "m6", "message": "그 소식 자세히 알려줘", "expect": "market_feed_search", "expect_sql": ["body"]},
+  {"id": "m7", "message": "KODEX 200 구성 종목 비중 알려줘", "expect": "web_search", "forbid": ["market_feed_search"]},
+  {"id": "m8", "message": "작년 3월에 삼성전자 무슨 일 있었어?", "forbid": ["market_feed_search"]},
+  {"id": "m9", "message": "일본 반도체 장비 수출 규제 관련 소식 있어?", "expect": "market_feed_search", "uses": ["news_search"]},
+  {"id": "m10", "message": "엔비디아 지금 주가 얼마야?", "expect": "broker", "expect_args": {"action": "quote"}, "forbid": ["market_feed_search"]},
+  {"id": "m11", "message": "내 보유 종목 관련 소식 있어?", "expect": "broker", "uses": ["market_feed_search"]},
+  {"id": "m12", "message": "삼성전자 잠정실적 나왔어?", "expect": "market_feed_search", "forbid": ["past_financials"]},
+  {"id": "m13", "message": "최근 한 달 미국 주식 소식 다 정리해줘", "expect": "market_feed_search"},
+  {"id": "m14", "message": "대한전선 목표가 어떻게 됐어?", "expect": "market_feed_search", "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"]}
+]

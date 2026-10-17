@@ -68,6 +68,7 @@ from .orchestrator import (
     ToolCall,
     ToolLink,
 )
+from .market_feed import MarketFeedSearchTool
 from .past_financials import PastFinancialsTool
 from .persistence import (
     ConversationAbandoned,
@@ -142,6 +143,7 @@ __all__ = [
     "OrchestratorStatus",
     "PageExcerpt",
     "PageReadError",
+    "MarketFeedSearchTool",
     "PastFinancialsTool",
     "PreparationResult",
     "PreparedAction",

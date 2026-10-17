@@ -163,3 +163,11 @@ DB의 KST 시각은 Mac 적용이 끝났고 S3에는 다음 업로드(2026-10-18
 - System 한 줄에 "when it applies"(30일 이전 자료는 바로 웹이라는 설명과 부딪히지 않게).
 - 도구 설명에 섹터 8개 값과 `keywords` 형식(TEXT).
 - m8을 "30일보다 오래된 일 → 바로 웹" 검사로 바꿈.
+
+## 구현 (2026-10-17, Claude)
+
+- `src/pia_harness/market_feed.py`: `MarketFeedSearchTool(fetch=..., clock=...)`, 도구 설명·출처 규칙·인자, 확인과 교체(Lock), 조회만 허용(authorizer), 값 1MB, 약 2초, 50행·20,000자, `t.me`·`@아이디` 제거. `__init__`에서 내보냄.
+- `tests/test_market_feed.py` 9개: 처음 받기·같으면 다시 받지 않기·바뀌면 교체, 동시 3개는 확인 3번·받기 1번, 확인 실패(사본 있음/없음), 50행·20,000자, 조회만 허용(SELECT·CTE·재귀 CTE·날짜 함수 통과, VACUUM INTO·ATTACH·PRAGMA·INSERT·두 문장·없는 칸 거절, 파일이 생기지 않음), 큰 값·긴 실행 중단, 이름 지우기, 결과·설명의 규칙, 빈 SQL.
+- 시나리오: `tests/manual/fake_market_feed.py`(지어낸 71건, 실행 시각 기준), `scenarios/market_feed.json`(15개, m15를 맨 앞에 둬 받아 둔 사본이 없을 때를 본다), `smoke_flow --set market_feed`(broker·주문·과거 실적 도구와 PIA System 한 줄 사본, 새 판정 `expect_sql`·`uses`·`answer_includes`·`answer_excludes`).
+- README: 구조 목록, 6.0 표, 새 절 6.2.5.
+- 확인: Python 3.12 개발 이미지에서 pytest 253개 통과. 새·바꾼 파일 ruff check·format 통과. mypy 새 오류 없음(orchestrator의 기존 4개는 그대로).

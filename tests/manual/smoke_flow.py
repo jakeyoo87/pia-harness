@@ -6,10 +6,13 @@ answers. Keys come from the environment and are never printed; Jina is called
 without a key. The execution and broker sets use a fake pia-broker with fixed
 replies; no real order or account lookup is ever sent. The financials set adds
 past_financials with fake OpenDART and SEC replies (tests/manual/fake_financials.py).
+The market_feed set adds market_feed_search over a fake feed DB
+(tests/manual/fake_market_feed.py) next to the broker and financials tools.
 
     OPENROUTER_API_KEY=... EXA_API_KEY=... NAVER_API_HUB_CLIENT_ID=... \\
     NAVER_API_HUB_CLIENT_SECRET=... python -m tests.manual.smoke_flow \\
-        [--set read|execution|broker|plan|onboarding|financials] [--only 1,2] [--model ID]
+        [--set read|execution|broker|plan|onboarding|financials|market_feed] [--only 1,2]
+        [--model ID]
         [--context-limit N] [--extra-prompt-file PATH]
 
 The plan and onboarding sets take the host's own instructions (pia-agent
@@ -42,6 +45,7 @@ from pia_harness import (
     ExaWebSearch,
     InvestmentPlan,
     JinaPageExtractor,
+    MarketFeedSearchTool,
     ModelTokenBudget,
     NaverNewsSearch,
     OpenRouterModelAdapter,
@@ -57,6 +61,7 @@ from pia_harness.session import MemoryDocument, new_turn_id
 from pia_harness.testing import InMemoryConversationStore, InMemoryPlanStore
 
 from .fake_financials import client as fake_financials_client
+from .fake_market_feed import fetch as fake_feed_fetch
 
 SCENARIOS = Path(__file__).with_name("scenarios")
 SCENARIO_SETS = (
@@ -67,10 +72,11 @@ SCENARIO_SETS = (
     "onboarding",
     "onboarding_reset",
     "financials",
+    "market_feed",
 )
 _PLAN_SETS = frozenset({"plan", "onboarding", "onboarding_reset"})
 # Sets that run with the fake pia-broker and the broker prompt, as PIA does.
-_BROKER_SETS = frozenset({"broker", "financials", *_PLAN_SETS})
+_BROKER_SETS = frozenset({"broker", "financials", "market_feed", *_PLAN_SETS})
 # name: (code, market, current price). The fake order reply is UNKNOWN for 005935
 # so one scenario sees the "check the broker app" result. US codes are exchange:ticker
 # and found by ticker too; "마이크론" matches two names, as in the real list.
@@ -111,6 +117,12 @@ BROKER_READ_PROMPT = (
     " For the user's own account and the market figures the broker tool offers, "
     "use the broker tool rather than web search."
 )
+# The line PIA adds when it registers market_feed_search (plan
+# plans/2026-10-17_market-feed-search.md), word for word.
+MARKET_FEED_PROMPT = (
+    " For recent news and opinions on markets, sectors or stocks, use "
+    "market_feed_search first when it applies, before news_search and web_search."
+)
 # The plan set keeps what PIA keeps out of Memory (pia-agent app/core.py).
 PLAN_MEMORY_INSTRUCTION = (
     "Keep durable facts a financial investment agent should remember about the user. "
@@ -130,6 +142,9 @@ class Record:
     steps: list[str] = field(default_factory=list)
     # The first step's tool calls with their arguments, for expect_args.
     first_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    # Every tool call with its arguments, and the delivered answer.
+    all_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    answer: str = ""
     memory: str = "NONE"
     current_user: str = ""
     tokens: list[int] = field(default_factory=list)
@@ -180,8 +195,9 @@ def _instrument(model: OpenRouterModelAdapter):
             names = []
             for call in result.tool_calls:
                 names.append(call.name)
+                arguments = json.loads(call.arguments_json or "{}")
+                record.all_calls.append((call.name, arguments))
                 if not record.steps:
-                    arguments = json.loads(call.arguments_json or "{}")
                     record.first_calls.append((call.name, arguments))
                 _log(state["started"], "CALL", f"{call.name} {call.arguments_json}")
                 if call.name == "memory":
@@ -659,6 +675,10 @@ _CHECK_KEYS = frozenset(
         "expect_memory",
         "expect_choices",
         "then",
+        "expect_sql",
+        "uses",
+        "answer_includes",
+        "answer_excludes",
     }
 )
 
@@ -711,6 +731,20 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
         ok = ok and scenario["then"] in record.current_user
     used = {name for step in record.steps for name in step.split("+")}
     ok = ok and not set(scenario.get("forbid", ())) & used
+    ok = ok and set(scenario.get("uses", ())) <= used
+    # market_feed: each named word appears in some query the model wrote.
+    queries = " ".join(
+        str(arguments.get("sql", "")).lower()
+        for name, arguments in record.all_calls
+        if name == "market_feed_search"
+    )
+    ok = ok and all(word.lower() in queries for word in scenario.get("expect_sql", ()))
+    ok = ok and all(
+        text in record.answer for text in scenario.get("answer_includes", ())
+    )
+    ok = ok and not any(
+        text in record.answer for text in scenario.get("answer_excludes", ())
+    )
     return "PASS" if ok and _plan_ok(scenario, record) else "CHECK"
 
 
@@ -804,7 +838,7 @@ async def run(
 
     financials_client = None
     financial_tools = ()
-    if scenario_set == "financials":
+    if scenario_set in ("financials", "market_feed"):
         financials_client = fake_financials_client()
         financial_tools = (
             logged_result(
@@ -816,8 +850,15 @@ async def run(
             ),
         )
 
+    feed = None
+    feed_tools = ()
+    if scenario_set == "market_feed":
+        feed = MarketFeedSearchTool(fetch=fake_feed_fetch(state))
+        feed_tools = (logged_result(feed.tool()),)
+
     async def deliver(user_key: str, text: str, choices: Choices | None) -> None:
         print("  ----- answer -----\n" + text + "\n  ------------------", flush=True)
+        state["record"].answer = text
         state["record"].choices = choices
         if choices is not None:
             kind = "여러 개" if choices.multiple else "하나"
@@ -839,12 +880,15 @@ async def run(
         system_prompt=SYSTEM_PROMPT
         + (ORDER_PROMPT if scenario_set in ("execution", *_BROKER_SETS) else "")
         + (BROKER_READ_PROMPT if scenario_set in _BROKER_SETS else "")
+        + (MARKET_FEED_PROMPT if scenario_set == "market_feed" else "")
         + (f" {PLAN_PROMPT}" if scenario_set in _PLAN_SETS else "")
         + (f"\n\n{extra_prompt}" if extra_prompt else ""),
         token_budget=budget,
         model_id=model_id,
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
         read_tools=(
+            # PIA's order: the feed comes before the search tools.
+            *feed_tools,
             *search_tools,
             extractor.tool(),
             *broker_tools,
@@ -865,6 +909,7 @@ async def run(
             state["record"], state["started"] = Record(), time.monotonic()
             state["broker_us_error"] = scenario.get("broker_us_error")
             state["broker_not_connected"] = scenario.get("broker_not_connected")
+            state["feed_down"] = scenario.get("feed_down", False)
             first = asyncio.create_task(
                 orchestrator.submit(user_key=USER, message=scenario["message"])
             )
@@ -937,6 +982,8 @@ async def run(
             await broker_client.aclose()
         if financials_client is not None:
             await financials_client.aclose()
+        if feed is not None:
+            await feed.aclose()
 
     print(
         "\n===== summary (id | expect | model steps | check | time"
