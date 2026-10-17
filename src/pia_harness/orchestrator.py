@@ -262,7 +262,7 @@ CHOICES_TOOL_SPEC = _BuiltinTool(
     "to write their own. Picking an option sends its text as the user's next "
     "message. Buttons appear only when you call this tool before your answer, "
     "even when the answer text is given word for word; whenever your answer "
-    "offers a choice or mentions a button, call it.",
+    "asks the user to pick from fixed options or mentions a button, call it.",
     {
         "type": "object",
         "properties": {

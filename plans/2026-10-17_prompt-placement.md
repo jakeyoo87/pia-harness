@@ -38,7 +38,7 @@
 | 1 | pia-agent BROKER_READ_PROMPT: broker가 조회하는 항목 목록(계좌·시세·지수·금리·환율·상품·투자자 동향·순위) | 한 줄로 바꾼다: `For the user's own account and for live market figures (quotes, indices, rates, exchange rates, commodities, investor flows, rankings), use the broker tool rather than web search.` | 목록은 broker 설명과 인자 설명(`action`·`market`·`macro`·`commodity`)에 이미 있다. System에는 broker와 web_search 사이의 선택만 남긴다. broker가 등록될 때만 붙는 지금 방식은 그대로다. |
 | 2 | pia-agent ORDER_PROMPT 첫 문장의 `(US: limit orders only)` | 삭제한다 | order 인자 설명(`order_type`: "US stocks take limit orders only")에 있고, 코드도 막는다(`broker_order.py` prepare). |
 | 3 | pia-agent SYSTEM_PROMPT의 `Never claim a new order was placed without an order tool result.` | 삭제한다 | ORDER_PROMPT에 같은 규칙이 더 정확하게 있다("Report a new order as accepted or rejected only from an order tool result; results already in the conversation may be explained again"). broker가 없으면 order 도구도 없어서 주문 자체가 불가능하다. |
-| 4 | pia-agent ONBOARDING_PROMPT의 `A button exists only when you call the choices tool before your answer, including after text you send exactly: whenever a reply offers the next step or mentions a button, call it.` | 초기 안내에서 지우고, harness choices 설명(`CHOICES_TOOL_SPEC`)에 사양으로 넣는다: `Buttons appear only when you call this tool before your answer, even when the answer text is given word for word; whenever your answer offers a choice or mentions a button, call it.` | 버튼이 생기는 조건은 choices 도구의 사양이다. 초기 안내뿐 아니라 버튼을 쓰는 모든 답변에 해당한다. |
+| 4 | pia-agent ONBOARDING_PROMPT의 `A button exists only when you call the choices tool before your answer, including after text you send exactly: whenever a reply offers the next step or mentions a button, call it.` | 초기 안내에서 지우고, harness choices 설명(`CHOICES_TOOL_SPEC`)에 사양으로 넣는다: `Buttons appear only when you call this tool before your answer, even when the answer text is given word for word; whenever your answer asks the user to pick from fixed options or mentions a button, call it.` | 버튼이 생기는 조건은 choices 도구의 사양이다. 초기 안내뿐 아니라 버튼을 쓰는 모든 답변에 해당한다. |
 | 5 | harness AGENT_INSTRUCTION 끝의 `Do not claim that a Memory change has already persisted; the application adds success or failure information after the durable write.` | 삭제한다 | memory 도구 설명에 같은 규칙이 있다("The change is made from this request after your answer; do not say it is already saved."). memory는 항상 등록되는 기본 도구다. |
 
 그대로 두는 것과 이유:
@@ -142,3 +142,19 @@
 - `app/core.py`: 1·2·3(반영안)·4
 - `tests/test_core.py`: 문장 검사를 새 자리에 맞춘다
 - harness pin은 v0.7.15 릴리스 뒤 같은 브랜치에서 올린다. 4번에서 지운 문장이 harness choices 설명으로 가므로, pin과 함께 나가야 둘 다 없는 시점이 생기지 않는다.
+
+## 다른 세션 검토 (f3ad06f, pia-agent 526281be0, 2026-10-17)
+
+방향과 5곳 판단 모두 동의. 차단 없음, 고칠 점 1건.
+
+**고칠 점 (반영):** 4번 choices 문장이 뜻을 넓혔다.
+- 원래 온보딩 문장은 "offers the next step"이었는데, choices 설명으로 옮기며 "offers a choice"가 되어 모든 답변에서 선택지를 말할 때마다 버튼을 부르라는 뜻이 됐다.
+- choices 설명 앞의 사용 조건("asks the user to choose from a few fixed options")과 같은 말로 맞췄다: `whenever your answer asks the user to pick from fixed options or mentions a button, call it.`
+- 온보딩의 다음 단계 버튼은 ONBOARDING_PROMPT의 "offer one button that starts it with the choices tool"로 남는다.
+
+**확인, 문제 없음:**
+- 주문 진실성: SYSTEM_PROMPT는 broker_enabled 두 경우 모두 들어간다. US limit only는 order 인자 설명과 prepare가 막는다.
+- Memory 문장 삭제: 도구 없는 마지막 호출에서도 memory 결과의 APPLIED_AFTER_ANSWER_NOTE가 같은 규칙을 지킨다.
+- smoke_flow 사본은 PIA 문장과 글자 그대로 같다.
+- broker 한 줄: 정보 손실 없음. 시나리오에서 지수·환율 질문이 broker로 가는지 본다.
+- harness 0.7.15 고정과 PIA 변경을 같은 배포로 내는 순서가 맞다.
