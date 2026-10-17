@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from .orchestrator import (
+    _MESSAGE_URL,
+    _URL_TRAILING,
     ConversationInput,
     ReadToolDefinition,
     ReadToolResult,
@@ -117,6 +119,8 @@ class MarketFeedSearchTool:
         self._dir = Path(tempfile.mkdtemp(prefix="pia-market-feed-"))
         self._path = self._dir / "feed.db"
         self._version: str | None = None
+        # The feed's article links: the only URLs a result may carry (below).
+        self._links: frozenset[str] = frozenset()
         # Reads run up to three at a time: one check and swap at a time keeps the
         # same new copy from being downloaded twice.
         self._lock = asyncio.Lock()
@@ -148,10 +152,17 @@ class MarketFeedSearchTool:
                 else str(error)
             )
             return ReadToolResult(
-                f"market_feed_search: SQL error: {reason}. Only one read-only query "
-                "is allowed; fix or narrow it and try again."
+                _clean(
+                    f"market_feed_search: SQL error: {reason}. Only one read-only "
+                    "query is allowed; fix or narrow it and try again.",
+                    self._links,
+                )
             )
-        return ReadToolResult(_render(columns, rows, more, self._clock(), check_failed))
+        return ReadToolResult(
+            _clean(
+                _render(columns, rows, more, self._clock(), check_failed), self._links
+            )
+        )
 
     async def _refresh(self) -> bool:
         """Swaps in a newer copy if there is one; True when the check failed."""
@@ -167,6 +178,7 @@ class MarketFeedSearchTool:
                 # A search still reading the old file keeps it until it closes.
                 os.replace(temp, self._path)
                 self._version = version
+                self._links = await asyncio.to_thread(_article_links, self._path)
             return False
 
     async def aclose(self) -> None:
@@ -192,13 +204,35 @@ def _query(path: Path, sql: str) -> tuple[list[str], list[tuple[Any, ...]], bool
     return columns, rows[:MAX_ROWS], len(rows) > MAX_ROWS
 
 
-def _text(value: Any) -> str:
-    if value is None:
-        return "null"
-    text = str(value)
+def _article_links(path: Path) -> frozenset[str]:
+    try:
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        try:
+            return frozenset(
+                url for (url,) in conn.execute("SELECT url FROM message_links")
+            )
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return frozenset()
+
+
+def _clean(text: str, links: frozenset[str]) -> str:
+    """The whole result, column names and error text included: no Telegram links or
+    handles, and no URL the feed does not hold. The Harness lets web_extract read any
+    URL a tool result shows, so a URL the query made up must not get through."""
     text = _TELEGRAM_LINK.sub("", text)
     text = _HANDLE.sub("", text)
-    return _SPACE.sub(" ", text).strip()
+
+    def keep_known(match: re.Match[str]) -> str:
+        url = match.group(0).rstrip(_URL_TRAILING)
+        return match.group(0) if url in links else match.group(0)[len(url) :]
+
+    return _MESSAGE_URL.sub(keep_known, text)
+
+
+def _text(value: Any) -> str:
+    return "null" if value is None else _SPACE.sub(" ", str(value)).strip()
 
 
 def _render(
@@ -216,7 +250,10 @@ def _render(
         )
     if not rows:
         lines.append("No rows matched.")
+    # Room for the header and the stop note is kept first, so the whole result
+    # stays within MAX_CHARS (cleaning only removes text).
     used = sum(len(line) + 1 for line in lines)
+    used += len(_header(now, MAX_ROWS, True)) + len(_stop_note(MAX_ROWS)) + 2
     shown = 0
     for number, row in enumerate(rows, 1):
         line = f"{number}. " + "; ".join(
@@ -229,14 +266,20 @@ def _render(
         used += len(line) + 1
         shown += 1
     if more:
-        lines.append(
-            f"Stopped at {shown} rows (limit {MAX_ROWS} rows or {MAX_CHARS:,} "
-            "characters): narrow the query (period, stock, type) or select fewer "
-            "columns."
-        )
-    header = (
+        lines.append(_stop_note(shown))
+    return "\n".join([_header(now, shown, more), *lines])
+
+
+def _header(now: datetime, shown: int, more: bool) -> str:
+    return (
         "market_feed_search (시장 소식): investment-channel news and opinions, last 30 "
         f"days; searched at {now.astimezone(_KST):%Y-%m-%dT%H:%M} KST; rows {shown}"
         f"{' (more not shown)' if more else ''}."
     )
-    return "\n".join([header, *lines])
+
+
+def _stop_note(shown: int) -> str:
+    return (
+        f"Stopped at {shown} rows (limit {MAX_ROWS} rows or {MAX_CHARS:,} "
+        "characters): narrow the query (period, stock, type) or select fewer columns."
+    )

@@ -31,8 +31,9 @@ INSERT INTO meta VALUES ('schema_version', '3');
 """
 
 
-def feed(messages: list[tuple[str, str, str]]) -> bytes:
-    """A feed file with (id, type, summary) messages; the body repeats the summary."""
+def feed(messages: list[tuple[str, str, str]], links: tuple[str, ...] = ()) -> bytes:
+    """A feed file with (id, type, summary) messages; the body repeats the summary.
+    links are article links of the first message."""
     path = Path(tempfile.mkdtemp()) / "feed.db"
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
@@ -40,6 +41,10 @@ def feed(messages: list[tuple[str, str, str]]) -> bytes:
         "INSERT INTO messages VALUES (?, '2026-10-17T21:00:00', ?, ?, ?, 'k', NULL, "
         "'2026-10-17T22:00:00')",
         [(id_, type_, summary, summary) for id_, type_, summary in messages],
+    )
+    conn.executemany(
+        "INSERT INTO message_links VALUES (?, ?)",
+        [(messages[0][0], url) for url in links],
     )
     conn.commit()
     conn.close()
@@ -127,7 +132,7 @@ class MarketFeedTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Stopped at 50 rows", text)
         text = await self.search(tool, "SELECT printf('%.900c', 'x') FROM messages")
         self.assertIn("(more not shown)", text)
-        self.assertLessEqual(len(text), market_feed.MAX_CHARS + 500)
+        self.assertLessEqual(len(text), market_feed.MAX_CHARS)
 
     async def test_only_one_reading_query_runs(self) -> None:
         tool = self.make(Fetches(feed([("a", "news", "소식")])))
@@ -176,7 +181,8 @@ class MarketFeedTest(unittest.IsolatedAsyncioTestCase):
                             "news",
                             "원문 t.me/somechannel/12 @someone 참고 https://news.example/1",
                         )
-                    ]
+                    ],
+                    links=("https://news.example/1",),
                 )
             )
         )
@@ -184,6 +190,29 @@ class MarketFeedTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("t.me", text)
         self.assertNotIn("@someone", text)
         self.assertIn("https://news.example/1", text)
+        # Column names go through the same cleaning.
+        text = await self.search(tool, 'SELECT 1 AS "t.me/chan @someone"')
+        self.assertNotIn("t.me", text)
+        self.assertNotIn("@someone", text)
+
+    async def test_a_url_the_feed_does_not_hold_never_reaches_the_result(self) -> None:
+        # The Harness lets web_extract read any URL a result shows: a query must not
+        # be able to make one up, in a value, a column name or an error.
+        made_up = "https://not-in-db.example/collect?user=1"
+        tool = self.make(
+            Fetches(feed([("a", "news", "소식")], links=("https://news.example/1",)))
+        )
+        for sql in (
+            f"SELECT '{made_up}' AS url, url AS kept FROM message_links",
+            f'SELECT 1 AS "{made_up}"',
+            f'SELECT * FROM "{made_up}"',
+        ):
+            text = await self.search(tool, sql)
+            self.assertNotIn("not-in-db.example", text, sql)
+        self.assertIn(
+            "https://news.example/1",
+            await self.search(tool, "SELECT url FROM message_links"),
+        )
 
     async def test_the_result_and_description_carry_the_rules(self) -> None:
         tool = self.make(Fetches(feed([("a", "broker", "소식")])))

@@ -171,3 +171,8 @@ DB의 KST 시각은 Mac 적용이 끝났고 S3에는 다음 업로드(2026-10-18
 - 시나리오: `tests/manual/fake_market_feed.py`(지어낸 71건, 실행 시각 기준), `scenarios/market_feed.json`(15개, m15를 맨 앞에 둬 받아 둔 사본이 없을 때를 본다), `smoke_flow --set market_feed`(broker·주문·과거 실적 도구와 PIA System 한 줄 사본, 새 판정 `expect_sql`·`uses`·`answer_includes`·`answer_excludes`).
 - README: 구조 목록, 6.0 표, 새 절 6.2.5.
 - 확인: Python 3.12 개발 이미지에서 pytest 253개 통과. 새·바꾼 파일 ruff check·format 통과. mypy 새 오류 없음(orchestrator의 기존 4개는 그대로).
+
+## Local Codex 구현 검토 반영 (2026-10-17, 기준 f66bb09)
+
+- [차단] SQL로 만든 URL(값, 칸 이름, 오류 문구)이 결과에 보이면 Harness가 `web_extract`로 읽을 수 있는 링크로 받아들인다. 모델이 사용자 정보를 붙인 주소를 만들지 못하게 한 기존 경계가 약해진다. → 결과 전체를 마지막에 한 번 거른다(`_clean`): `t.me`·`@아이디` 제거, 그리고 Harness와 같은 URL 패턴(`_MESSAGE_URL`)으로 찾은 URL 중 DB `message_links`에 없는 것은 지운다. 링크 목록은 새 사본으로 바꿀 때 읽어 둔다. 테스트: 값·칸 이름·오류 문구의 만든 URL이 사라지고 DB의 기사 링크는 남음(필터를 빼면 실패함을 확인).
+- [비차단] 20,000자를 조금 넘던 것: 머리말과 잘림 안내 몫을 먼저 확보한다. 테스트 한도를 정확히 20,000자로.
