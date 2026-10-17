@@ -39,9 +39,8 @@ from .session import ActiveSession, as_utc, new_turn_id
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
 RESEARCH_TIMEOUT_SECONDS = 90.0
 PROGRESS_TIMEOUT_SECONDS = 5.0
-# Research stops at whichever comes first: this many read-tool uses, the
-# research deadline, or a request too large to send with tools. All of them
-# answer from what was gathered.
+# Research stops at whichever comes first: this many read-tool uses or the
+# research deadline. Both answer from what was gathered.
 MAX_READ_TOOL_CALLS = 20
 # Reads of one response run at most this many at a time, so a burst of
 # searches does not trip the search service's rate limit. The rest wait.
@@ -693,7 +692,6 @@ class ConversationOrchestrator:
                             round_index=round_index,
                             tool_observations=observations,
                             kept_observations=kept_observations,
-                            note=note,
                             memory_failed=memory_failed,
                             compaction_failed=compaction_failed,
                             host_document=document,
@@ -1106,7 +1104,6 @@ class ConversationOrchestrator:
         round_index: int,
         tool_observations: tuple[ToolObservation, ...],
         kept_observations: tuple[ToolObservation, ...],
-        note: str | None,
         memory_failed: bool,
         compaction_failed: bool,
         host_document: str | None,
@@ -1141,7 +1138,6 @@ class ConversationOrchestrator:
             batch,
             session,
             observations,
-            note,
             executed_text,
             host_document,
         )
@@ -1163,18 +1159,18 @@ class ConversationOrchestrator:
         batch: tuple[_Submission, ...],
         session: ActiveSession,
         tool_observations: tuple[ToolObservation, ...],
-        note: str | None,
         executed_text: str,
         host_document: str | None,
     ) -> GeneratedAnswer:
         fixed = GeneratedAnswer(executed_text, "fixed-text", 0)
         try:
+            # No waiting note: the confirmed actions already ran and the others
+            # were dropped when execution was claimed.
             assembled = await self._assemble_context(
                 user_key,
                 batch,
                 session,
                 tool_observations,
-                note=note,
                 host_document=host_document,
             )
             reply = await self._generate_reply(assembled)

@@ -1429,6 +1429,8 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(['{"name": "Samsung"}'], executed)
         self.assertEqual("주문했어요.", second.final_text)
         self.assertEqual("Order accepted: Samsung.", _results(contexts[3])[0])
+        # The answer after execution is not told the order is still waiting.
+        self.assertEqual([], _notes(contexts[3]))
 
         await orchestrator.submit(
             user_key="user", message="응", accepted_at=self.now + timedelta(minutes=2)
