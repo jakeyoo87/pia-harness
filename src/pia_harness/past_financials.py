@@ -51,9 +51,12 @@ DESCRIPTION = (
     "consensus, guidance, price targets, recommendations, quotes, historical P/E or "
     "P/B, or dividend-history service. Use broker for quotes/accounts and web search "
     "for forecasts or guidance. Missing is not zero. Preserve each value's period, "
-    "basis, unit, reported/computed label and sources. Never call older results the "
-    "quarter the user just asked about. Source numbers are local to this tool result: "
-    "cite their URLs in the answer using the normal citation rules."
+    "basis, unit and reported/computed label. Never call older results the quarter "
+    "the user just asked about. These are the filed figures: do not re-check them "
+    "with web search; search the web only for what this result lacks. Source numbers "
+    "are local to this tool result: in the answer cite at most two of their URLs "
+    "(the newest report, and the annual report behind a computed Q4) using the normal "
+    "citation rules; the rest stay in this result."
 )
 ARGUMENTS: dict[str, Any] = {
     "type": "object",
@@ -239,8 +242,9 @@ def render(
         ),
         (
             "Filed periodic reports, not forecasts or just-announced earnings. Missing is not zero. "
-            "Do not treat cumulative cash flows as standalone quarters. Local source numbers below map to URLs; "
-            "cite those URLs in your answer, not bare local numbers."
+            "Do not treat cumulative cash flows as standalone quarters. These are the filed figures; "
+            "do not re-check them with web search. Local source numbers below map to URLs; "
+            "cite at most two of those URLs in your answer, not bare local numbers."
         ),
     ]
     sources: dict[str, tuple[int, Source]] = {}

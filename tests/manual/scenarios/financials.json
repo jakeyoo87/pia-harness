@@ -8,5 +8,6 @@
   {"id": "f7", "message": "애플 배당 내역 알려줘"},
   {"id": "f8", "message": "SK하이닉스 작년 설비투자(유형자산 취득)는 얼마였어?"},
   {"id": "f9", "message": "삼성전자 이번 분기 실적 어땠어?"},
-  {"id": "f10", "message": "SK하이닉스 2023년 실적 알려줘", "expect": "past_financials", "expect_args": {"country": "kr", "end_year": 2023}, "forbid": ["order", "confirm"]}
+  {"id": "f10", "message": "SK하이닉스 2023년 실적 알려줘", "expect": "past_financials", "expect_args": {"country": "kr", "end_year": 2023}, "forbid": ["order", "confirm"]},
+  {"id": "f11", "message": "애플 최근 4개 분기 실적 알려줘", "expect": "past_financials", "expect_args": {"country": "us", "frequency": "quarterly"}, "forbid": ["order", "confirm", "web_search", "news_search", "web_extract"]}
 ]

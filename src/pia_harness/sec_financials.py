@@ -47,7 +47,12 @@ ACCOUNTS = {
     "operating_cashflow": ("NetCashProvidedByUsedInOperatingActivities",),
     "investing_cashflow": ("NetCashProvidedByUsedInInvestingActivities",),
     "financing_cashflow": ("NetCashProvidedByUsedInFinancingActivities",),
-    "capex": ("PaymentsToAcquirePropertyPlantAndEquipment",),
+    # Some filers (NVIDIA since 2020) report capex as ProductiveAssets, which also
+    # covers intangible assets; the result names the tag it came from.
+    "capex": (
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsToAcquireProductiveAssets",
+    ),
 }
 
 

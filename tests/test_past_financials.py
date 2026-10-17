@@ -165,6 +165,10 @@ def sec_facts():
                     }
                 },
                 "Assets": {"units": {"USD": [fact(None, annual[1], 400)]}},
+                # NVIDIA-style capex tag (the PropertyPlantAndEquipment one is absent).
+                "PaymentsToAcquireProductiveAssets": {
+                    "units": {"USD": [fact(*annual, 33)]}
+                },
                 "EarningsPerShareBasic": {
                     "units": {"USD/shares": [fact(*annual, 4.25)]}
                 },
@@ -647,3 +651,21 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
         ).observation_text
         self.assertIn("latest filed period: 2026-Q4", text)
         self.assertIn("기말 2026-03", text)
+
+    async def test_capex_falls_back_to_productive_assets(self):
+        self.make_tool(self.us_handler)
+        text = (await self.read(name="NVDA", country="us")).observation_text
+        capex = [line for line in text.splitlines() if line.strip().startswith("capex")]
+        self.assertTrue(any("33 USD" in line for line in capex), capex)
+        self.assertTrue(
+            any("us-gaap:PaymentsToAcquireProductiveAssets" in line for line in capex)
+        )
+
+    async def test_answers_cite_two_sources_and_do_not_recheck_on_the_web(self):
+        tool = self.make_tool(self.us_handler).tool()
+        for text in (
+            tool.description,
+            (await self.read(name="NVDA", country="us")).observation_text,
+        ):
+            self.assertIn("do not re-check", text)
+            self.assertIn("at most two", text)
