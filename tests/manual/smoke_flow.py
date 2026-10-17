@@ -120,8 +120,9 @@ BROKER_READ_PROMPT = (
 # The line PIA adds when it registers market_feed_search (plan
 # plans/2026-10-17_market-feed-search.md), word for word.
 MARKET_FEED_PROMPT = (
-    " For recent news and opinions on markets, sectors or stocks, use "
-    "market_feed_search first when it applies, before news_search and web_search."
+    " For recent news, opinions, price targets or scheduled events on markets, "
+    "sectors or stocks, use market_feed_search first when it applies, before "
+    "news_search and web_search."
 )
 # The plan set keeps what PIA keeps out of Memory (pia-agent app/core.py).
 PLAN_MEMORY_INSTRUCTION = (

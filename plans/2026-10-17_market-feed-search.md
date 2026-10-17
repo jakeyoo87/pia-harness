@@ -130,7 +130,7 @@ class MarketFeedSearchTool:
   - 권한은 이미 있는 GetObject 하나다.
 - 설정: 버킷 이름(필수 설정 하나, 다른 설정과 같은 방식), 키는 고정 `telegram/research.db.gz`.
 - 등록: 읽기 도구 목록에서 `news_search` 앞. 종료 때 `aclose()`.
-- System 한 줄(도구를 등록할 때만, BROKER_READ_PROMPT와 같은 방식): "For recent news and opinions on markets, sectors or stocks, use market_feed_search first when it applies, before news_search and web_search."
+- System 한 줄(도구를 등록할 때만, BROKER_READ_PROMPT와 같은 방식): "For recent news, opinions, price targets or scheduled events on markets, sectors or stocks, use market_feed_search first when it applies, before news_search and web_search."
 - Telegram 진행 표시: `"market_feed_search": "시장 소식 검색"`.
 - harness 고정 0.7.17, README, 테스트, bot-only 배포.
 

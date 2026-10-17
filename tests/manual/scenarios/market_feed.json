@@ -5,7 +5,7 @@
   {"id": "m3", "message": "SK하이닉스 목표주가 바뀐 거 있어?", "expect": "market_feed_search", "expect_sql": ["targets"], "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"]},
   {"id": "m4", "message": "이번 주 실적 발표 일정 알려줘", "expect": "market_feed_search", "expect_sql": ["events"]},
   {"id": "m5", "message": "오늘 마이크론 소식 있어?", "expect": "market_feed_search", "expect_sql": ["message_stocks"]},
-  {"id": "m6", "message": "그 소식 자세히 알려줘", "expect": "market_feed_search", "expect_sql": ["body"]},
+  {"id": "m6", "message": "아까 SK하이닉스 목표가 올린 근거 자세히 알려줘", "expect": "market_feed_search", "expect_sql": ["body"]},
   {"id": "m7", "message": "KODEX 200 구성 종목 비중 알려줘", "expect": "web_search", "forbid": ["market_feed_search"]},
   {"id": "m8", "message": "작년 3월에 삼성전자 무슨 일 있었어?", "forbid": ["market_feed_search"]},
   {"id": "m9", "message": "일본 반도체 장비 수출 규제 관련 소식 있어?", "expect": "market_feed_search", "uses": ["news_search"]},

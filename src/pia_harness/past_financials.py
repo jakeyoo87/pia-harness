@@ -48,7 +48,7 @@ DESCRIPTION = (
     "Past results: financial statements filed in periodic reports (Korean annual, "
     "quarterly and half-year reports; US 10-K/10-Q and amendments), not forecasts. "
     "The latest quarter appears only after its report is filed; for just-announced "
-    "or preliminary earnings use news_search or web_search. For a company's past revenue, "
+    "or preliminary earnings search recent news instead. For a company's past revenue, "
     "profit, balance sheet or cash flow, call this tool first, even when earlier turns "
     "answered such questions with web search. Returns 15 representative "
     "income, balance-sheet and cash-flow accounts together, without a brokerage connection. "

@@ -346,7 +346,7 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
 
 #### 6.2.4 과거 실적
 
-`past_financials`는 국내 OpenDART·미국 SEC 정기보고서의 **과거 실적**을 읽는다. 막 발표된 잠정실적·실적 발표와 전망치는 `news_search`·`web_search`로 확인한다. 결과 숫자는 공시 원문 값이라 웹으로 다시 확인하지 않고, 답에는 대표 출처 두 개까지만(가장 최근 보고서, 계산된 Q4의 사업보고서) 인용한다(`plans/2026-10-17_financials-followups.md`). 미국 기간은 도구가 **기간 가운데 날짜의 달력 분기·연도**(종료일에서 분기 45일, 연간 180일 전; 7월~6월처럼 반반이면 끝나는 해; 비교한 세 회사 표본에서 SEC frame과 일치)로 이름을 붙이고(`2026-Q3`, 회계연도 이름은 쓰지 않음), `end_year`도 그 이름의 연도로 거른다(`plans/2026-10-17_financials-quarter-label.md`). 계좌 연결은 필요 없다. 계획은 `plans/2026-10-16_past-financials.md`다.
+`past_financials`는 국내 OpenDART·미국 SEC 정기보고서의 **과거 실적**을 읽는다. 막 발표된 잠정실적·실적 발표와 전망치는 최근 소식 검색으로 확인한다(도구 설명은 검색 도구 이름을 적지 않고, 소식 검색 순서는 6.2.5를 따른다). 결과 숫자는 공시 원문 값이라 웹으로 다시 확인하지 않고, 답에는 대표 출처 두 개까지만(가장 최근 보고서, 계산된 Q4의 사업보고서) 인용한다(`plans/2026-10-17_financials-followups.md`). 미국 기간은 도구가 **기간 가운데 날짜의 달력 분기·연도**(종료일에서 분기 45일, 연간 180일 전; 7월~6월처럼 반반이면 끝나는 해; 비교한 세 회사 표본에서 SEC frame과 일치)로 이름을 붙이고(`2026-Q3`, 회계연도 이름은 쓰지 않음), `end_year`도 그 이름의 연도로 거른다(`plans/2026-10-17_financials-quarter-label.md`). 계좌 연결은 필요 없다. 계획은 `plans/2026-10-16_past-financials.md`다.
 
 - host가 `PastFinancialsTool(dart_api_key=..., sec_user_agent=...)`을 만들고 `.tool()`을 읽기 도구에 등록한다. 국가별 설정이 없으면 해당 국가 조회는 설정되지 않았다는 결과를 준다. 키·SEC 식별용 User-Agent는 host가 주입하고 Harness는 환경변수·AWS를 읽지 않는다. `async_client`와 `clock`도 주입할 수 있어 테스트·모델 시나리오는 가짜 응답만 사용한다. 생성한 client만 `.aclose()`에서 닫는다.
 - 인자: `name`·`country`(`kr`/`us`) 필수. 이름은 공식 이름 정확 일치, 국내 종목코드 또는 미국 티커로 찾으며 여러 후보면 되묻는다. 국내 회사 목록은 `stock_code`가 있는 상장사만 사용한다. `frequency`는 annual(기본)/quarterly, `count`는 연간 기본 5·상한 10, 분기 기본 4·상한 8이다. `end_year`는 국내 DART 사업연도·미국 기간 가운데 날짜의 달력연도 상한이며 결과에도 그 기준을 적는다. 생략하면 공개된 최근 보고기간부터 선택한다. 선택 인자(`frequency`·`count`·`end_year`)의 null은 생략과 같고 기본값을 적용한다. 그 밖의 잘못된 값·미지원 인자에는 요청을 보내지 않는다.
@@ -360,7 +360,7 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
 
 #### 6.2.5 시장 소식
 
-`market_feed_search`는 투자 Telegram 채널 18개에서 모은 **최근 30일 소식·의견** DB(SQLite)를 검색한다. 내용은 뉴스 공유, 증권사 코멘트, 커뮤니티 의견, 시장 알림이다. DB는 사용자 Mac의 수집기가 만들고(pia-collector, 2시간마다), 채널·증권사·사람 이름은 수집기가 지운다. 시장·섹터·종목의 소식과 의견은 이 도구를 `news_search`·`web_search`보다 먼저 쓰고, 부족하면 뉴스, 그다음 웹으로 간다. 답이 특정 문서나 페이지에 있는 자료(ETF 구성 종목, 공식 페이지·공시 원문, 30일보다 오래된 일 등)는 바로 웹으로 간다. 계획은 `plans/2026-10-17_market-feed-search.md`, DB 약속은 pia-collector `docs/research-db-spec.md`(schema_version 3)다.
+`market_feed_search`는 투자 Telegram 채널 18개에서 모은 **최근 30일 소식·의견** DB(SQLite)를 검색한다. 내용은 뉴스 공유, 증권사 코멘트, 커뮤니티 의견, 시장 알림이다. DB는 사용자 Mac의 수집기가 만들고(pia-collector, 2시간마다), 채널·증권사·사람 이름은 수집기가 지운다. 시장·섹터·종목의 소식·의견·목표주가·일정은 이 도구를 `news_search`·`web_search`보다 먼저 쓰고, 부족하면 뉴스, 그다음 웹으로 간다. 답이 특정 문서나 페이지에 있는 자료(ETF 구성 종목, 공식 페이지·공시 원문, 30일보다 오래된 일 등)는 바로 웹으로 간다. 계획은 `plans/2026-10-17_market-feed-search.md`, DB 약속은 pia-collector `docs/research-db-spec.md`(schema_version 3)다.
 
 - **모델이 SQL을 직접 쓴다.** 인자는 `sql` 하나다. 도구 설명에 표 6개(`messages`, `message_stocks`, `message_sectors`, `message_links`, `targets`, `events`)와 칸·값, 시각 형식(오프셋 없는 KST, 오늘은 `date('now', '+9 hours')`), 찾는 법을 적는다. 찾는 법은 OR로 넓게(본문·키워드 LIKE, 종목은 종목 표에서 정확히, 짧은 티커는 종목 표만), 요약을 먼저 보고 본문은 필요한 글만 읽는 것이다. 조건 칸을 따로 만들지 않아서 목표주가·일정 질문도 같은 방식으로 답한다.
 - **가져오기:** host가 `MarketFeedSearchTool(fetch=...)`을 만들고 `.tool()`을 읽기 도구에 등록한다. `fetch(version)`은 마지막 버전(None이면 처음)을 받아 바뀌었으면 `(새 버전, SQLite 파일 내용)`, 같으면 None을 돌려준다. S3 같은 저장소 접근과 압축 풀기는 host가 맡고, Harness는 AWS를 모른다. 검색할 때마다 확인하고 바뀌었을 때만 임시 폴더의 파일을 바꿔 끼운다(Lock 하나, 이미 열린 검색은 옛 파일을 끝까지 읽음). 확인이 실패하면 받아 둔 사본으로 검색하고 그 사실을 적는다. 사본이 없으면 뉴스·웹을 쓰라는 결과를 준다. `.aclose()`가 임시 폴더를 지운다.
