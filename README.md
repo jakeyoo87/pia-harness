@@ -333,7 +333,7 @@ URL별 상태 줄 + 페이지별 요약·검증된 근거(합계 약 2,000자)�
 
 #### 6.2.4 과거 실적
 
-`past_financials`는 국내 OpenDART·미국 SEC 정기보고서의 **과거 실적**을 읽는다. 막 발표된 잠정실적·실적 발표와 전망치는 `news_search`·`web_search`로 확인한다. 결과 숫자는 공시 원문 값이라 웹으로 다시 확인하지 않고, 답에는 대표 출처 두 개까지만(가장 최근 보고서, 계산된 Q4의 사업보고서) 인용한다(`plans/2026-10-17_financials-followups.md`). 미국 기간은 도구가 **기간 가운데 날짜의 달력 분기·연도**(종료일에서 분기 45일, 연간 182일 전)로 이름을 붙이고(`2026-Q3`, 회계연도 이름은 쓰지 않음), `end_year`도 그 이름의 연도로 거른다(`plans/2026-10-17_financials-quarter-label.md`). 계좌 연결은 필요 없다. 계획은 `plans/2026-10-16_past-financials.md`다.
+`past_financials`는 국내 OpenDART·미국 SEC 정기보고서의 **과거 실적**을 읽는다. 막 발표된 잠정실적·실적 발표와 전망치는 `news_search`·`web_search`로 확인한다. 결과 숫자는 공시 원문 값이라 웹으로 다시 확인하지 않고, 답에는 대표 출처 두 개까지만(가장 최근 보고서, 계산된 Q4의 사업보고서) 인용한다(`plans/2026-10-17_financials-followups.md`). 미국 기간은 도구가 **기간 가운데 날짜의 달력 분기·연도**(종료일에서 분기 45일, 연간 180일 전; 7월~6월처럼 반반이면 끝나는 해, SEC frame과 같음)로 이름을 붙이고(`2026-Q3`, 회계연도 이름은 쓰지 않음), `end_year`도 그 이름의 연도로 거른다(`plans/2026-10-17_financials-quarter-label.md`). 계좌 연결은 필요 없다. 계획은 `plans/2026-10-16_past-financials.md`다.
 
 - host가 `PastFinancialsTool(dart_api_key=..., sec_user_agent=...)`을 만들고 `.tool()`을 읽기 도구에 등록한다. 국가별 설정이 없으면 해당 국가 조회는 설정되지 않았다는 결과를 준다. 키·SEC 식별용 User-Agent는 host가 주입하고 Harness는 환경변수·AWS를 읽지 않는다. `async_client`와 `clock`도 주입할 수 있어 테스트·모델 시나리오는 가짜 응답만 사용한다. 생성한 client만 `.aclose()`에서 닫는다.
 - 인자: `name`·`country`(`kr`/`us`) 필수. 이름은 공식 이름 정확 일치, 국내 종목코드 또는 미국 티커로 찾으며 여러 후보면 되묻는다. 국내 회사 목록은 `stock_code`가 있는 상장사만 사용한다. `frequency`는 annual(기본)/quarterly, `count`는 연간 기본 5·상한 10, 분기 기본 4·상한 8이다. `end_year`는 국내 DART 사업연도·미국 기간 가운데 날짜의 달력연도 상한이며 결과에도 그 기준을 적는다. 생략하면 공개된 최근 보고기간부터 선택한다. 선택 인자(`frequency`·`count`·`end_year`)의 null은 생략과 같고 기본값을 적용한다. 그 밖의 잘못된 값·미지원 인자에는 요청을 보내지 않는다.

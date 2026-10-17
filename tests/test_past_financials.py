@@ -689,8 +689,9 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
     async def test_us_end_year_uses_the_period_name(self):
         payload = sec_facts()
         revenue = payload["facts"]["us-gaap"]["Revenues"]["units"]["USD"]
-        # 2026-07-01 - 182 days = 2025-12-31, so this year is named 2025.
-        revenue.append(fact("2025-07-02", "2026-07-01", 2000, filed="2026-08-01"))
+        # July-June years split evenly; ties go to the end year (as SEC frames).
+        revenue.append(fact("2024-07-01", "2025-06-30", 2000, filed="2025-08-01"))
+        revenue.append(fact("2025-07-01", "2026-06-30", 3000, filed="2026-08-01"))
         # A next-year quarter must not take a slot from the requested year.
         revenue.append(
             fact("2025-01-27", "2025-04-27", 500, filed="2025-05-30", form="10-Q")
@@ -705,8 +706,9 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
         annual = (
             await self.read(name="NVDA", country="us", end_year=2025, count=1)
         ).observation_text
-        self.assertIn("Period 2025 (ends 2026-07-01)", annual)
+        self.assertIn("Period 2025 (ends 2025-06-30)", annual)
         self.assertIn("revenue (매출): 2000", annual)
+        self.assertNotIn("revenue (매출): 3000", annual)
         quarterly = (
             await self.read(
                 name="NVDA", country="us", frequency="quarterly", end_year=2024, count=2

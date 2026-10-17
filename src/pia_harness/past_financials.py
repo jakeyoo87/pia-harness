@@ -140,9 +140,12 @@ def number(value: Any) -> Decimal:
 
 
 def us_label(period: str, frequency: str) -> str:
-    """US period name: the calendar quarter/year holding the period's middle."""
+    """US period name: the calendar quarter/year holding the period's middle.
+
+    180 days, not half a year: a July-June year is split evenly, and ties go to the
+    end year, as SEC frames do (Microsoft 2025-07..2026-06 is 2026)."""
     quarterly = frequency == "quarterly"
-    middle = date.fromisoformat(period) - timedelta(days=45 if quarterly else 182)
+    middle = date.fromisoformat(period) - timedelta(days=45 if quarterly else 180)
     return (
         f"{middle.year}-Q{(middle.month + 2) // 3}" if quarterly else str(middle.year)
     )
