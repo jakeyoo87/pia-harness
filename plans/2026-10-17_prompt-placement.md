@@ -115,3 +115,30 @@
 - 배경의 "매 호출에 도구 전부가 들어간다"는 고쳐야 한다. 조사 한도 뒤나 실행 뒤의 최종 답변 호출에는 도구가 없다.
 - 시나리오 세트는 더 늘릴 필요가 없다. 주문 지침 주입만 맞추고, Memory는 검색과 함께 쓰는 기존 23번도 넣는다.
 - 공식 가이드는 도구 설명을 명확히 하고 System에서 사용 시점을 안내하는 방향을 뒷받침한다. "같은 사양을 두 곳에 쓰지 않는다"는 가이드가 금지한 것이 아니라 프로젝트의 설계 선택이므로, 그렇게 구분해 적는다.
+
+### 반영 (2026-10-17, 사용자 결정: 계획 재검토 없이 구현으로)
+
+- **3번을 반대로 한다.** "주문 도구 결과 없이 주문을 말하지 않는다"는 늘 들어가는 SYSTEM_PROMPT 한 곳에 둔다. ORDER_PROMPT 쪽 같은 규칙("Report a new order as accepted or rejected only from an order tool result; results already in the conversation may be explained again")은 SYSTEM_PROMPT 문장으로 합쳐 지운다.
+  - SYSTEM_PROMPT 새 문장: `Never claim a new order was placed, accepted or rejected without an order tool result; results already in the conversation may be explained again.`
+  - ORDER_PROMPT에는 확인 흐름만 남는다: `PIA can place Korean and US stock buy and sell orders, but only after the user agrees to the confirmation question in the very next message. If a confirmation has lapsed or there is none, ask the user to request the order again; never say that PIA cannot place orders.`(2번의 `(US: limit orders only)` 삭제 포함)
+- **1번 문장을 줄인다:** `For the user's own account and the market figures the broker tool offers, use the broker tool rather than web search.` 실시간이라는 오해와, 지원하지 않는 지수까지 포함되는 혼동이 없게 했다.
+- **실측 주입:** `smoke_flow.py`가 PIA 문장을 글자 그대로 넣는다.
+  - 주문 도구가 있는 세트(`execution`과 broker 세트)에는 SYSTEM_PROMPT의 주문 문장과 ORDER_PROMPT를 넣는다.
+  - broker 세트에는 BROKER_READ_PROMPT를 넣는다.
+- **README §3:** "매 호출"을 "도구를 쓸 수 있는 호출마다"로 고쳤다(병합된 `0ad215d`의 표현 정정). 도구 없이 부르는 마지막 답변 호출은 세 경우다: 조사 한도 뒤, 실행 도구가 준비를 마친 뒤, 실행 뒤(`orchestrator.py` `answer_only`·`_answer_after_execution`).
+- **README §6.0:** "같은 사양을 두 곳에 쓰지 않는다"는 가이드의 요구가 아니라 이 프로젝트의 설계 선택이라고 구분해 적었다.
+- **시나리오:** `read`의 Memory 확인에 23번(검색과 함께 Memory)을 더한다. 세트는 broker·execution·onboarding·read(4·4-1·10·22·23)다.
+
+## 구현 (Claude, 2026-10-17)
+
+**pia-harness** (이 브랜치)
+- `orchestrator.py` `CHOICES_TOOL_SPEC`: 4번 문장 추가
+- `openrouter.py` `AGENT_INSTRUCTION`: 5번 문장 삭제
+- `tests/manual/smoke_flow.py`: PIA 문장 사본(`ORDER_PROMPT`, `BROKER_READ_PROMPT`)과 주입 조건
+- README §3·§6.0
+- 확인: 단위 테스트 244개 통과(이 두 문장을 고정한 테스트는 없었다)
+
+**pia-agent** (브랜치 `claude/prompt-placement`)
+- `app/core.py`: 1·2·3(반영안)·4
+- `tests/test_core.py`: 문장 검사를 새 자리에 맞춘다
+- harness pin은 v0.7.15 릴리스 뒤 같은 브랜치에서 올린다. 4번에서 지운 문장이 harness choices 설명으로 가므로, pin과 함께 나가야 둘 다 없는 시점이 생기지 않는다.

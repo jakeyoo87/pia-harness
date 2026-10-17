@@ -94,16 +94,20 @@ MEMORY_INSTRUCTION = (
     "investment style, risk tolerance, holdings or interests the user states. "
     "Do not keep news content or one-off questions."
 )
-# The broker set adds what PIA adds when Broker tools are registered (pia-agent
-# app/core.py BROKER_READ_PROMPT and ORDER_PROMPT, broker unification plan §9).
-BROKER_PROMPT = (
-    " PIA can use the broker tool to look up the user's account (cash, holdings, and "
-    "what one stock they can buy or sell), quotes and price history for a Korean or "
-    "US stock, the KOSPI/KOSDAQ market, major overseas indices and index futures, "
-    "rates, exchange rates and commodities, investor history for a Korean stock or "
-    "the KOSPI/KOSDAQ market, and market rankings. PIA can place Korean and US stock "
-    "buy and sell orders (US: limit orders only), but only after the user agrees to "
-    "the confirmation question in the very next message."
+# Copies of what PIA adds (pia-agent app/core.py), word for word, so a run checks the
+# real text: the order rules go with the order tool (SYSTEM_PROMPT's order sentence
+# and ORDER_PROMPT), the broker line with the broker tool (BROKER_READ_PROMPT).
+ORDER_PROMPT = (
+    " Never claim a new order was placed, accepted or rejected without an order "
+    "tool result; results already in the conversation may be explained again. "
+    "PIA can place Korean and US stock buy and sell orders, but only after the user "
+    "agrees to the confirmation question in the very next message. If a "
+    "confirmation has lapsed or there is none, ask the user to request the order "
+    "again; never say that PIA cannot place orders."
+)
+BROKER_READ_PROMPT = (
+    " For the user's own account and the market figures the broker tool offers, "
+    "use the broker tool rather than web search."
 )
 # The plan set keeps what PIA keeps out of Memory (pia-agent app/core.py).
 PLAN_MEMORY_INSTRUCTION = (
@@ -831,7 +835,8 @@ async def run(
         generate_reply=model.generate_reply,
         deliver=deliver,
         system_prompt=SYSTEM_PROMPT
-        + (BROKER_PROMPT if scenario_set in _BROKER_SETS else "")
+        + (ORDER_PROMPT if scenario_set in ("execution", *_BROKER_SETS) else "")
+        + (BROKER_READ_PROMPT if scenario_set in _BROKER_SETS else "")
         + (f" {PLAN_PROMPT}" if scenario_set in _PLAN_SETS else "")
         + (f"\n\n{extra_prompt}" if extra_prompt else ""),
         token_budget=budget,

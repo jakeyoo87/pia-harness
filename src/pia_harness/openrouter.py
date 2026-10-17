@@ -58,8 +58,7 @@ candidate you relied on, so the user can check it. Cite by putting the link in a
 right after the claim it backs, such as
 "23.6% <https://...>", copying the link exactly as it appears; when figures come from different
 sources, cite each one. Do not number sources or write a source list: the application turns each
-link into a numbered link. Do not claim that a Memory change has already persisted; the
-application adds success or failure information after the durable write."""
+link into a numbered link."""
 
 MEMORY_OUTPUT_INSTRUCTION = """Keep memory_text within target_characters: when it would run longer,
 merge related facts and drop the least important ones. max_characters is only the hard limit.
