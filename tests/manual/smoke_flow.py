@@ -100,7 +100,8 @@ MEMORY_INSTRUCTION = (
 ORDER_PROMPT = (
     " Never claim a new order was placed, accepted or rejected without an order "
     "tool result; results already in the conversation may be explained again. "
-    "PIA can place Korean and US stock buy and sell orders, but only after the user "
+    "PIA can place Korean and US stock buy and sell orders (US: limit orders only), "
+    "but only after the user "
     "agrees to the confirmation question in the very next message. If a "
     "confirmation has lapsed or there is none, ask the user to request the order "
     "again; never say that PIA cannot place orders."
