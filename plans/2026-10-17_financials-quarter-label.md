@@ -1,6 +1,6 @@
-# past_financials 0.7.14: 미국 분기에 달력 분기 이름, "도구 먼저" 한 줄
+# past_financials 0.7.14: 미국 기간에 달력 이름(가운데 날짜), "도구 먼저" 한 줄
 
-- 작성: 2026-10-17, Claude (EC2). 구현: Claude / 검토: Codex(계획 → 구현).
+- 작성: 2026-10-17, Claude (EC2). 구현: Claude / 검토: Local Codex(계획 → 구현).
 - 저장소: pia-harness. 다음 릴리스 v0.7.14, 그 뒤 PIA 고정 버전 올리기·Bot 배포.
 - 앞선 계획: `plans/2026-10-17_financials-followups.md`(v0.7.13, PIA dev Bot 배포 2026-10-17).
 
@@ -18,22 +18,24 @@
 1. 회계연도·회계 분기 이름(FY2027 Q1)은 쓰지 않는다. 대부분 사람에게 익숙하지 않다.
 2. 기간은 **달력 분기 이름**으로 쓴다(답에서는 '26.3Q처럼). 이름은 모델이 짓지 않고 **도구가 붙여서** 준다(모델에게 맡기면 확인하러 다시 웹에 갈 수 있음).
 3. 이름 규칙은 SEC `frame` 대신 **우리 규칙 하나**(권고대로): `frame`은 같은 기간이 여러 공시에 있으면 하나에만 붙고, 계산한 Q4에는 없어서 빈 곳을 채우는 규칙이 따로 필요하다.
+4. 같은 규칙을 **미국 연간과 연도 지정(`end_year`)에도** 적용한다(권고대로, 사용자 동의). 분기만 바꾸면 분기는 가운데 날짜, 연간은 종료일로 규칙이 둘이 되어, 1월에 끝나는 회사(엔비디아 등)에서 "2025년"이 거의 1년 전 자료를 가리킨다(엔비디아 2024-02..2025-01).
 
 ## 변경
 
-- `past_financials.py` `render`, 미국 분기(`country == "us"`, `frequency == "quarterly"`)만:
-  - 기간 이름 = **종료일 45일 전(분기의 가운데)이 속한 달력 분기**, 형식은 국내와 같은 `YYYY-Qn`.
-    - 마이크로소프트 2026-07-01..2026-09-30 → `2026-Q3`
-    - 엔비디아 2026-04-27..2026-07-26 → `2026-Q2`
-    - 애플 2026-03-29..2026-06-27 → `2026-Q2`
-  - 기간 줄: `Period 2026-Q3 (ends 2026-09-30)`. 값 줄의 실제 기간(span)은 그대로 둔다. 머리말 `latest filed period`도 같은 이름.
-  - 머리말 `year basis`를 미국 분기에서는 `calendar quarter of each period's middle` 로 적는다.
-  - 기간을 고르고 정렬하는 기준은 지금처럼 종료일이다(이름만 붙임). 미국 연간과 국내는 바꾸지 않는다.
+- **기간 이름 규칙(미국만, 하나)**: 기간의 가운데 날짜 = 종료일에서 기간 길이의 절반 전(분기 45일, 연간 182일). 이름은 그 날짜의 달력 분기 `YYYY-Qn`(분기) 또는 달력 연도 `YYYY`(연간). 국내와 같은 형식.
+  - 마이크로소프트 2026-07-01..2026-09-30 → `2026-Q3`
+  - 엔비디아 2026-04-27..2026-07-26 → `2026-Q2`, 연간 2025-01-27..2026-01-25 → `2025`
+  - 애플 2026-03-29..2026-06-27 → `2026-Q2`, 연간 2024-09-29..2025-09-27 → `2025`
+- `past_financials.py` `render`:
+  - 미국 기간 줄: `Period 2026-Q3 (ends 2026-09-30)`. 같은 기간의 잔액(instant) 값도 그 이름 아래에 그대로 묶인다. 값 줄의 실제 기간(span)은 그대로. 머리말 `latest filed period`도 같은 이름.
+  - 머리말 `year basis`를 미국에서는 `calendar year/quarter of each period's middle`로 적는다.
+  - 기간 정렬·개수 자르기는 지금처럼 종료일 순서(이름만 붙임).
+- `end_year`(미국): 기간 이름의 연도가 `end_year` 이하인 기간만 남긴다. 그래서 SEC 조회 상한을 `end_year` 다음 해 6월 30일(연간 가운데 날짜가 `end_year` 안에 드는 가장 늦은 종료일)과 오늘 중 이른 날로 넓히고, 이름으로 거른다. 인자 설명을 "US: calendar year of the period's middle"로 바꾼다.
 - 도구 설명에 두 줄:
   - "For a company's past revenue, profit, balance sheet or cash flow, call this tool first, even when earlier turns answered such questions with web search."
-  - "US quarters come labeled with their calendar quarter (e.g. 2026-Q3); use these labels with the dates and do not look up fiscal-quarter names."
-- README 6.2.4 한 줄(미국 분기 이름 규칙).
-- 단위 테스트: 가짜 SEC 자료(엔비디아·애플, 달력과 어긋난 분기)에서 기간 이름과 `latest filed period`, 설명의 두 줄.
+  - "US periods come labeled with the calendar year/quarter of their middle (e.g. 2026-Q3); use these labels with the dates and do not look up fiscal-year or fiscal-quarter names."
+- README 6.2.4 한 줄(미국 기간 이름 규칙).
+- 단위 테스트: 가짜 SEC 자료(엔비디아·애플, 달력과 어긋난 기간)에서 분기·연간 이름, `latest filed period`, `end_year`로 1월 종료 기간이 전년도로 잡히는지, 설명의 두 줄.
 
 ## 검증
 
@@ -44,6 +46,5 @@
 
 ## 범위 밖
 
-- 국내 기간 이름(이미 `YYYY-Qn`, 사업연도 기준).
-- 미국 연간 기간 이름, `end_year` 인자의 뜻(그대로 종료일의 달력 연도).
+- 국내 기간 이름과 `end_year`(이미 `YYYY-Qn`, DART 사업연도 기준).
 - 시스템 지침 변경(재현에서 효과 없음).
