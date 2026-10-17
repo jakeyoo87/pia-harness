@@ -143,7 +143,8 @@ def us_label(period: str, frequency: str) -> str:
     """US period name: the calendar quarter/year holding the period's middle.
 
     180 days, not half a year: a July-June year is split evenly, and ties go to the
-    end year, as SEC frames do (Microsoft 2025-07..2026-06 is 2026)."""
+    end year (Microsoft 2025-07..2026-06 is 2026), matching SEC frames in the sampled
+    companies."""
     quarterly = frequency == "quarterly"
     middle = date.fromisoformat(period) - timedelta(days=45 if quarterly else 180)
     return (
