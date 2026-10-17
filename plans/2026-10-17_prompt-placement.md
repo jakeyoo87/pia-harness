@@ -166,3 +166,11 @@
 - README §6.0: 도구 없이 부르는 마지막 답변 호출에 필요한 사양은 System에도 둔다.
 - b28 다우: broker를 빈 인자로 한 번 부른 뒤 웹으로 맞게 답한다(3번 모두). 답은 맞아 관찰로 둔다.
 - 나머지(지수·환율 broker 선택, 온보딩 버튼, Memory)는 이전과 같다.
+
+## 미국 시장가 요청 (사용자 결정, 2026-10-17)
+
+- 한국투자증권 Open API에 미국 시장가가 없다. 시장가 요청을 되묻지 않고 현재가 지정가로 준비한다(바로 체결을 위한 ±% 여유폭은 두지 않는다. 사용자가 단순한 쪽을 골랐다).
+- `broker_order.py`: 미국 MARKET → LIMIT(현재가), 확인 문장 앞 안내, 준비 결과에 한 문장. order 인자 설명도 같은 뜻으로.
+- PIA ORDER_PROMPT·사본: "(a US market order is placed as a limit order at the current price)". 준비 뒤 답변 호출에는 도구가 없어 System에도 둔다(README §6.0).
+- README §6.4.1, `tests/test_broker_order.py`, `scenarios/execution.json` u2.
+- execution 세트 30개 모두 PASS(기록 참고).

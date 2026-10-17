@@ -48,7 +48,7 @@ ORDER_ARGUMENTS_SCHEMA: dict[str, Any] = {
             "type": ["string", "null"],
             "enum": ["LIMIT", "MARKET", None],
             "description": "LIMIT unless the user explicitly asks for a market order. "
-            "US stocks take limit orders only.",
+            "A US market order is placed as a limit order at the current price.",
         },
         "price": {
             "type": ["number", "null"],
@@ -147,12 +147,10 @@ class BrokerOrderTool:
         current = quote["price"]
         currency = quote["currency"]
         at = _kst_clock(str(quote["observed_at"]))
-        if currency == "USD" and order_type == "MARKET":
-            return PreparationResult(
-                "Order not prepared. US stocks take limit orders only. Ask the user "
-                f"whether to place a limit order at the current price "
-                f"{_amount(current, currency)} instead."
-            )
+        # KIS takes no US market order; it goes as a limit order at the current price.
+        us_market = currency == "USD" and order_type == "MARKET"
+        if us_market:
+            order_type = "LIMIT"
         if currency == "KRW" and price is not None and price != int(price):
             return PreparationResult(
                 "Order not prepared. A Korean stock's price is whole won. Ask the user."
@@ -170,6 +168,11 @@ class BrokerOrderTool:
                 f"{label}를 {_amount(limit, currency)} 지정가로 {action_word}할까요? "
                 f"({at} 기준 현재가 {now})"
             )
+            if us_market:
+                confirmation = (
+                    "미국 주식은 시장가 주문이 안 돼서 현재가 지정가로 준비했어요. "
+                    + confirmation
+                )
         else:
             limit = None
             summary = f"{label} 시장가 {action_word}"
@@ -186,9 +189,15 @@ class BrokerOrderTool:
             "price": limit,
             "summary": summary,
         }
+        note = (
+            " US stocks take no market orders, so it is a limit order at the current "
+            "price."
+            if us_market
+            else ""
+        )
         return PreparationResult(
-            f"Order prepared and waiting for the user's confirmation: {summary}. Do "
-            "not say the order was placed.",
+            f"Order prepared and waiting for the user's confirmation: {summary}.{note} "
+            "Do not say the order was placed.",
             PreparedAction(
                 summary, confirmation, json.dumps(stored, ensure_ascii=False)
             ),

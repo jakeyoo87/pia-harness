@@ -147,3 +147,45 @@ b28 | web_search | broker > web_search > web_extract > answer | CHECK | 14.3s | 
 ===== summary (id | expect | model steps | check | time | max input tokens (estimate) | reported tokens of final answers | calls model/search/page/notes)
 b28 | web_search | broker > web_search > web_extract > answer | CHECK | 12.5s | 18926 | 4867 | 4/1/2/0
 ```
+
+## 미국 시장가 요청 → 현재가 지정가 (사용자 결정, 2026-10-17)
+
+한국투자증권 Open API에는 미국 시장가 주문이 없다. 그래서 미국 주식에 시장가를 요청하면 되묻지 않고 현재가 지정가로 준비한다. 확인 문장 앞에 "미국 주식은 시장가 주문이 안 돼서 현재가 지정가로 준비했어요."를 붙인다. u2 시나리오는 "응"으로 바로 확인하게 바꾸고 execution 세트 전체를 다시 돌렸다.
+
+- 30개 모두 PASS(o6-2 관찰). o21-1도 이번에는 `web_search`를 같이 불러 PASS.
+- u2 "테슬라 시장가로 1주 사줘": `order` MARKET → 251.30달러 지정가로 준비, 답변이 "미국 주식은 시장가 대신 현재가 지정가로 주문하며, 아직 접수되지 않았습니다"라고 맞게 안내. u2-1 "응" → LIMIT 251.3으로 접수.
+- 모델 답변과 확인 문장이 같은 안내를 한 번씩 해서 두 번 나온다. 국내 주문도 답변과 확인 문장이 겹치는 모양이라 그대로 둔다.
+
+```text
+===== summary (id | expect | model steps | check | time | max input tokens (estimate) | reported tokens of final answers | calls model/search/page/notes)
+o0 | answer | answer | PASS | 2.9s | 8368 | 1731 | 1/0/0/0
+o1 | order | order > answer | PASS | 4.5s | 8678 | 841 | 2/0/0/0
+o1-1 | confirm | confirm > answer | PASS | 2.9s | 10443 | 1016 | 2/0/0/0
+o3 | order | order > answer | PASS | 3.0s | 10368 | 1147 | 2/0/0/0
+o3-1 | order | order > answer | PASS | 4.1s | 12145 | 1396 | 2/0/0/0
+o3-2 | answer | answer | PASS | 2.3s | 13117 | 2700 | 1/0/0/0
+o6 | order | order > answer | PASS | 4.0s | 12427 | 1493 | 2/0/0/0
+o6-1 | order | order > answer | PASS | 3.5s | 13044 | 1681 | 2/0/0/0
+o6-2 | - | news_search+web_search > web_extract+web_extract > answer | OBSERVE | 22.9s | 29439 | 7229 | 3/2/5/5
+o9 | order | order > answer | PASS | 4.3s | 26899 | 5242 | 2/0/0/0
+o9-1 | order | order > answer | PASS | 6.3s | 28646 | 5679 | 2/0/0/0
+o9-2 | order | order > answer | PASS | 7.5s | 29638 | 6130 | 2/0/0/0
+o9-3 | confirm | confirm > answer | PASS | 3.1s | 30545 | 5828 | 2/0/0/0
+o13 | order | order > answer | PASS | 4.5s | 30527 | 5954 | 2/0/0/0
+o13-1 | answer | answer | PASS | 2.9s | 32264 | 7271 | 1/0/0/0
+o13-2 | answer | answer | PASS | 5.0s | 31571 | 7408 | 1/0/0/0
+o16 | order | order > answer | PASS | 4.1s | 31911 | 6257 | 2/0/0/0
+o16-1 | order | order > answer | PASS | 6.7s | 33712 | 6914 | 2/0/0/0
+o16-2 | confirm | confirm > answer | PASS | 2.9s | 34694 | 6692 | 2/0/0/0
+o19 | order | order+order > answer | PASS | 5.0s | 34634 | 7038 | 2/0/0/0
+o19-1 | confirm | confirm > answer | PASS | 3.5s | 37136 | 7307 | 2/0/0/0
+o20 | order | order+order > answer | PASS | 6.8s | 37281 | 7603 | 2/0/0/0
+o20-1 | confirm | confirm > answer | PASS | 3.9s | 39794 | 7832 | 2/0/0/0
+o21 | order | order > answer | PASS | 4.3s | 39700 | 7936 | 2/0/0/0
+o21-1 | web_search | news_search+web_search > web_extract+web_extract > answer | PASS | 28.2s | 53613 | 13504 | 3/2/4/2
+u1 | order | order > answer | PASS | 4.1s | 49848 | 10671 | 2/0/0/0
+u1-1 | confirm | confirm > answer | PASS | 3.5s | 51628 | 10898 | 2/0/0/0
+u2 | order | order > answer | PASS | 4.4s | 51561 | 11059 | 2/0/0/0
+u2-1 | confirm | confirm > answer | PASS | 3.1s | 53450 | 11283 | 2/0/0/0
+u3 | order | order > answer | PASS | 4.2s | 53370 | 11410 | 2/0/0/0
+```
