@@ -10,6 +10,7 @@ stock messages. Nothing about Japanese export controls or 삼성전자 prelimina
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -190,6 +191,70 @@ _TOPICS = [
     "실적 기대",
     "자사주 매입",
 ]
+# More kinds for the second batch (m16-m22): community mood, cut targets, a US target,
+# other sectors today.
+_MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any]]] = [
+    (
+        1,
+        "community",
+        "삼성전자 주가가 너무 더디게 오른다는 불만이 많다는 의견.",
+        "삼성전자 들고 있는데 하이닉스만 가고 삼전은 제자리. 답답하다는 글이 많다.",
+        "삼성전자, 삼전, 커뮤니티, 불만, 주가 정체",
+        ["삼성전자"],
+        ["반도체·IT"],
+        {"sentiment": "negative"},
+    ),
+    (
+        7,
+        "community",
+        "삼성전자 HBM 기대로 지금이 저점이라는 의견.",
+        "삼성전자는 HBM4 납품만 확인되면 재평가될 것. 지금 가격이면 모아갈 만하다는 의견.",
+        "삼성전자, HBM4, 저점 매수, 재평가",
+        ["삼성전자"],
+        ["반도체·IT"],
+        {"sentiment": "positive"},
+    ),
+    (
+        8,
+        "broker",
+        "현대로템 목표주가를 316,000원에서 220,000원으로 하향(매수 유지). 원화 강세와 매출 인식 이연.",
+        "현대로템 3분기 영업이익이 전년 대비 3% 줄 것으로 보고 목표주가를 220,000원으로 낮춘다.",
+        "현대로템, 064350, 목표주가 하향, 방산, 철도",
+        ["현대로템"],
+        ["에너지·방산·산업재"],
+        {"target": ("현대로템", 220000, 316000, "KRW", "buy", "buy")},
+    ),
+    (
+        9,
+        "broker",
+        "마이크론(MU) 목표주가를 150달러에서 170달러로 상향(매수). HBM 점유율 확대.",
+        "마이크론 목표주가를 170달러로 올린다. HBM 점유율 확대와 D램 가격 상승을 반영했다.",
+        "마이크론, MU, 목표주가 상향, HBM",
+        ["MU"],
+        ["반도체·IT"],
+        {"target": ("MU", 170, 150, "USD", "buy", "buy")},
+    ),
+    (
+        1.5,
+        "news",
+        "국내 바이오 기업이 미국 제약사와 1조 원 규모 기술이전 계약을 맺었다.",
+        "국내 바이오 기업이 미국 제약사와 총 1조 원 규모의 신약 후보 기술이전 계약을 체결했다.",
+        "바이오, 기술이전, 신약, 라이선스 아웃",
+        [],
+        ["바이오·헬스케어"],
+        {"link": "https://news.example.com/bio-licensing"},
+    ),
+    (
+        2.5,
+        "news",
+        "시중은행들이 예금 금리를 0.1%포인트 내렸다.",
+        "주요 시중은행이 기준금리 동결 이후 예금 금리를 0.1%포인트 인하했다.",
+        "은행, 예금 금리, 금리 인하, 금융",
+        [],
+        ["금융"],
+        {"link": "https://news.example.com/bank-deposit"},
+    ),
+]
 # (days ahead, what, stock)
 _EVENTS = [
     (2, "미국 9월 CPI 발표", None),
@@ -204,7 +269,7 @@ def build(now: datetime | None = None) -> bytes:
     path = Path(tempfile.mkdtemp()) / "feed.db"
     conn = sqlite3.connect(path)
     conn.executescript(_SCHEMA)
-    rows = list(_MESSAGES)
+    rows = list(_MESSAGES) + _MORE
     # Over 50 US stock messages across the month, for the narrowing scenario.
     for n in range(60):
         ticker, name = _US[n % len(_US)]
@@ -271,8 +336,11 @@ def build(now: datetime | None = None) -> bytes:
 def fetch(
     state: dict[str, Any],
 ) -> Callable[[str | None], Awaitable[tuple[str, bytes] | None]]:
-    """The host's fetch: one fixed copy; fails while state["feed_down"] is set."""
-    content = build()
+    """The host's fetch: one fixed copy; fails while state["feed_down"] is set.
+    MARKET_FEED_FILE, when set, is a real feed file to use instead (a local copy of
+    the S3 object, unzipped)."""
+    real = os.environ.get("MARKET_FEED_FILE")
+    content = Path(real).read_bytes() if real else build()
 
     async def fake_fetch(version: str | None) -> tuple[str, bytes] | None:
         if state.get("feed_down"):
