@@ -90,7 +90,8 @@ _TARGETS: dict[tuple[str, str], dict[str, tuple[str, ...]]] = {
     ("history", "investors"): {"market": _INDEX_MARKETS},
 }
 # What each action offers: data -> (ranking bases, periods). The first value of
-# each list is the default, and the schema, description and checks all use this.
+# each list is the default. The action and data enums and the argument checks
+# use this table; the descriptions are written by hand.
 _ACTIONS: dict[str, dict[str, tuple[tuple[str, ...], tuple[str, ...]]]] = {
     "account": {},
     "quote": {"prices": ((), ())},
