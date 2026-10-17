@@ -174,3 +174,13 @@
 - PIA ORDER_PROMPT·사본: "(a US market order is placed as a limit order at the current price)". 준비 뒤 답변 호출에는 도구가 없어 System에도 둔다(README §6.0).
 - README §6.4.1, `tests/test_broker_order.py`, `scenarios/execution.json` u2.
 - execution 세트 30개 모두 PASS(기록 참고).
+
+## Codex 구현 검토 (harness 5e05d1c, pia-agent e66b950bc, 2026-10-17)
+
+차단·추가 수정 없음.
+- 도구 없는 마지막 답변에 필요한 사양을 System에도 두는 예외는 실제 회귀에 근거해 적절하다. plan·Memory 경로에서 추가 누락은 없다.
+- 미국 MARKET 요청은 현재가 LIMIT으로 저장·확인·전송된다(매수·매도 모두 가짜 Broker로 확인). 준비 중에는 주문을 보내지 않는다.
+- choices 문구는 고정 보기 선택·버튼 안내 범위로 맞다.
+- smoke_flow 주문·Broker 지침 사본은 PIA 문장과 같고 주입 조건도 맞다.
+- 순서: Harness v0.7.15 릴리스 → PIA 같은 브랜치에 핀·해시 추가 → 병합·bot-only 배포.
+- Codex 직접 검증: Harness 244개, PIA core·main 7개 통과, Ruff 기준 대비 새 오류 0, 공백 검사 통과.
