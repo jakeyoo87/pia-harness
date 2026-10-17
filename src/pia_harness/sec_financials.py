@@ -19,6 +19,7 @@ from .past_financials import (
     latest,
     number,
     q4,
+    us_label,
 )
 
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -107,8 +108,11 @@ class SecFinancials:
             raise FinancialsError(
                 "SEC standard financial accounts were not available (10-K/10-Q only)."
             )
-        upper = min(date(end_year, 12, 31), now.date()) if end_year else now.date()
-        facts = latest(_facts(raw_facts, cik, upper))
+        facts = latest(_facts(raw_facts, cik, now.date()))
+        if end_year:
+            facts = [
+                f for f in facts if int(us_label(f.period, frequency)[:4]) <= end_year
+            ]
         annual_ends = {f.period for f in facts if f.kind == "annual"}
         if frequency == "quarterly":
             for annual in tuple(facts):

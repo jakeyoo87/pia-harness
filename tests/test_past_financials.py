@@ -389,7 +389,8 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2024-10-27", text)
         self.assertIn("revenue (매출): 300", text)
         self.assertIn("revenue (매출): 400", text)
-        revenue, calculation = text.split("Period 2025-01-26", 1)[1].splitlines()[1:3]
+        q4_period = text.split("Period 2024-Q4 (ends 2025-01-26)", 1)[1]
+        revenue, calculation = q4_period.splitlines()[1:3]
         self.assertIn("quarter (계산값: 연간 − 3분기 누적)", revenue)
         self.assertNotIn("[", revenue)
         self.assertIn("[1]", calculation)
@@ -672,3 +673,51 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertIn("do not re-check", text)
             self.assertIn("at most two", text)
+
+    async def test_us_periods_are_named_by_their_middle(self):
+        self.make_tool(self.us_handler)
+        quarterly = (
+            await self.read(name="NVDA", country="us", frequency="quarterly", count=2)
+        ).observation_text
+        self.assertIn("latest filed period: 2024-Q4 (ends 2025-01-26)", quarterly)
+        self.assertIn("Period 2024-Q4 (ends 2025-01-26)", quarterly)
+        self.assertIn("Period 2024-Q3 (ends 2024-10-27)", quarterly)
+        annual = (await self.read(name="NVDA", country="us", count=2)).observation_text
+        self.assertIn("Period 2024 (ends 2025-01-26)", annual)
+        self.assertIn("Period 2023 (ends 2024-01-28)", annual)
+
+    async def test_us_end_year_uses_the_period_name(self):
+        payload = sec_facts()
+        revenue = payload["facts"]["us-gaap"]["Revenues"]["units"]["USD"]
+        # 2026-07-01 - 182 days = 2025-12-31, so this year is named 2025.
+        revenue.append(fact("2025-07-02", "2026-07-01", 2000, filed="2026-08-01"))
+        # A next-year quarter must not take a slot from the requested year.
+        revenue.append(
+            fact("2025-01-27", "2025-04-27", 500, filed="2025-05-30", form="10-Q")
+        )
+
+        def handler(request):
+            if request.url.path.endswith("company_tickers.json"):
+                return self.us_handler(request)
+            return httpx.Response(200, json=payload)
+
+        self.make_tool(handler)
+        annual = (
+            await self.read(name="NVDA", country="us", end_year=2025, count=1)
+        ).observation_text
+        self.assertIn("Period 2025 (ends 2026-07-01)", annual)
+        self.assertIn("revenue (매출): 2000", annual)
+        quarterly = (
+            await self.read(
+                name="NVDA", country="us", frequency="quarterly", end_year=2024, count=2
+            )
+        ).observation_text
+        self.assertIn("periods 2/2", quarterly)
+        self.assertIn("Period 2024-Q4 (ends 2025-01-26)", quarterly)
+        self.assertIn("Period 2024-Q3 (ends 2024-10-27)", quarterly)
+        self.assertNotIn("2025-Q1", quarterly)
+
+    async def test_tool_first_and_no_fiscal_name_lookup(self):
+        description = self.make_tool(self.us_handler).tool().description
+        self.assertIn("call this tool first", description)
+        self.assertIn("do not look up fiscal-year or fiscal-quarter names", description)

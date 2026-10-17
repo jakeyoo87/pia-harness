@@ -6,7 +6,7 @@ import json
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -48,14 +48,18 @@ DESCRIPTION = (
     "Past results: financial statements filed in periodic reports (Korean annual, "
     "quarterly and half-year reports; US 10-K/10-Q and amendments), not forecasts. "
     "The latest quarter appears only after its report is filed; for just-announced "
-    "or preliminary earnings use news_search or web_search. Returns 15 representative "
+    "or preliminary earnings use news_search or web_search. For a company's past revenue, "
+    "profit, balance sheet or cash flow, call this tool first, even when earlier turns "
+    "answered such questions with web search. Returns 15 representative "
     "income, balance-sheet and cash-flow accounts together, without a brokerage connection. "
     "Q4 income amounts may be marked computed (annual minus nine-month cumulative); "
     "EPS, balance sheets and cash flows are never computed that way. No estimates, "
     "consensus, guidance, price targets, recommendations, quotes, historical P/E or "
     "P/B, or dividend-history service. Use broker for quotes/accounts and web search "
     "for forecasts or guidance. Missing is not zero. Preserve each value's period, "
-    "basis, unit and reported/computed label. Never call older results the quarter "
+    "basis, unit and reported/computed label. US periods come labeled with the calendar "
+    "year/quarter of their middle (e.g. 2026-Q3); use these labels with the dates and do "
+    "not look up fiscal-year or fiscal-quarter names. Never call older results the quarter "
     "the user just asked about. These are the filed figures: do not re-check them "
     "with web search; search the web only for what this result lacks. Source numbers "
     "are local to this tool result: in the answer cite at most two of their URLs "
@@ -77,7 +81,7 @@ ARGUMENTS: dict[str, Any] = {
         },
         "end_year": {
             "type": ["integer", "null"],
-            "description": "Upper bound: Korean DART business year, or US value period-end calendar year. Not an as-known-at date. Omit for the latest filed periods.",
+            "description": "Upper bound: Korean DART business year, or US calendar year of the period's middle. Not an as-known-at date. Omit for the latest filed periods.",
         },
         "count": {
             "type": ["integer", "null"],
@@ -133,6 +137,15 @@ def number(value: Any) -> Decimal:
     if not result.is_finite():
         raise ValueError("not a finite number")
     return result
+
+
+def us_label(period: str, frequency: str) -> str:
+    """US period name: the calendar quarter/year holding the period's middle."""
+    quarterly = frequency == "quarterly"
+    middle = date.fromisoformat(period) - timedelta(days=45 if quarterly else 182)
+    return (
+        f"{middle.year}-Q{(middle.month + 2) // 3}" if quarterly else str(middle.year)
+    )
 
 
 def latest(facts: list[Fact]) -> list[Fact]:
@@ -237,11 +250,22 @@ def render(
         if old is None or priority[fact.kind] > priority[old.kind]:
             display[key] = fact
     periods = sorted({fact.period for fact in display.values()}, reverse=True)[:count]
+    basis = (
+        "DART 사업연도"
+        if country == "kr"
+        else "calendar year/quarter of each period's middle"
+    )
+
+    def name(period: str) -> str:
+        if country != "us":
+            return period
+        return f"{us_label(period, frequency)} (ends {period})"
+
     lines = [
         (
             f"past_financials (과거 실적): {data.company} ({data.identifier}); {country}; {frequency}; "
-            f"year basis: {'DART 사업연도' if country == 'kr' else 'period-end calendar year'}; "
-            f"periods {len(periods)}/{count}; latest filed period: {periods[0] if periods else 'not available'}; "
+            f"year basis: {basis}; "
+            f"periods {len(periods)}/{count}; latest filed period: {name(periods[0]) if periods else 'not available'}; "
             f"looked up at {now.astimezone(UTC).isoformat()}."
         ),
         (
@@ -262,7 +286,7 @@ def render(
         group = [f for f in display.values() if f.period == period]
         common = Counter(f.source for f in group).most_common(1)[0][0]
         default = source_number(common)
-        lines.append(f"\nPeriod {period} — default source [{default}]")
+        lines.append(f"\nPeriod {name(period)} — default source [{default}]")
         for metric, label in METRICS.items():
             values = [f for f in group if f.metric == metric]
             if not values:

@@ -30,12 +30,12 @@
   - 미국 기간 줄: `Period 2026-Q3 (ends 2026-09-30)`. 같은 기간의 잔액(instant) 값도 그 이름 아래에 그대로 묶인다. 값 줄의 실제 기간(span)은 그대로. 머리말 `latest filed period`도 같은 이름.
   - 머리말 `year basis`를 미국에서는 `calendar year/quarter of each period's middle`로 적는다.
   - 기간 정렬·개수 자르기는 지금처럼 종료일 순서(이름만 붙임).
-- `end_year`(미국): 기간 이름의 연도가 `end_year` 이하인 기간만 남긴다. 그래서 SEC 조회 상한을 `end_year` 다음 해 6월 30일(연간 가운데 날짜가 `end_year` 안에 드는 가장 늦은 종료일)과 오늘 중 이른 날로 넓히고, 이름으로 거른다. 인자 설명을 "US: calendar year of the period's middle"로 바꾼다.
+- `end_year`(미국): SEC 날짜 상한은 오늘만 둔다(`end_year`별 날짜 상한을 없앰). 받은 값 중 기간 이름의 연도가 `end_year` 이하인 것만 남기고, 그 뒤 지금처럼 개수를 자른다. Company Facts는 이미 회사 전체를 한 번에 받으므로 호출 수는 같다. 이름 계산은 결과 표시와 이 거르기가 **같은 함수 하나**를 쓴다. 인자 설명을 "US: calendar year of the period's middle"로 바꾼다.
 - 도구 설명에 두 줄:
   - "For a company's past revenue, profit, balance sheet or cash flow, call this tool first, even when earlier turns answered such questions with web search."
   - "US periods come labeled with the calendar year/quarter of their middle (e.g. 2026-Q3); use these labels with the dates and do not look up fiscal-year or fiscal-quarter names."
 - README 6.2.4 한 줄(미국 기간 이름 규칙).
-- 단위 테스트: 가짜 SEC 자료(엔비디아·애플, 달력과 어긋난 기간)에서 분기·연간 이름, `latest filed period`, `end_year`로 1월 종료 기간이 전년도로 잡히는지, 설명의 두 줄.
+- 단위 테스트: 가짜 SEC 자료(엔비디아·애플, 달력과 어긋난 기간)에서 분기·연간 이름, `latest filed period`, `end_year`로 1월 종료 기간이 전년도로 잡히는지, 7월 1일 종료 연간이 전년도 `end_year`에 들어가는지(경계), 다음 해 분기가 섞여 있어도 거른 뒤 요청한 개수만큼 고르는지, 설명의 두 줄.
 
 ## 검증
 
@@ -48,3 +48,8 @@
 
 - 국내 기간 이름과 `end_year`(이미 `YYYY-Qn`, DART 사업연도 기준).
 - 시스템 지침 변경(재현에서 효과 없음).
+
+## Local Codex 계획 검토 반영 (2026-10-17, 기준 3185d7f)
+
+- [차단] "다음 해 6월 30일" 날짜 상한이 182일 규칙과 하루 어긋남(2026-07-01 종료 연간은 이름이 `2025`인데 상한에서 먼저 버려짐): `end_year`별 날짜 상한을 없애고 이름 하나로만 거른다(위 변경). 규칙이 둘이라 생긴 경계라, 하나를 지워 해결했다.
+- [비차단] 이름 계산은 표시와 거르기에서 같은 함수. 경계와 개수 테스트 추가.
