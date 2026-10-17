@@ -48,7 +48,7 @@ ACCOUNTS = {
     "investing_cashflow": ("NetCashProvidedByUsedInInvestingActivities",),
     "financing_cashflow": ("NetCashProvidedByUsedInFinancingActivities",),
     # Some filers (NVIDIA since 2020) report capex as ProductiveAssets, which also
-    # covers intangible assets; the result names the tag it came from.
+    # covers intangible assets; the result labels it 유형·무형자산 취득.
     "capex": (
         "PaymentsToAcquirePropertyPlantAndEquipment",
         "PaymentsToAcquireProductiveAssets",

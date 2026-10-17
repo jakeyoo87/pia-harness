@@ -658,6 +658,9 @@ class PastFinancialsTest(unittest.IsolatedAsyncioTestCase):
         capex = [line for line in text.splitlines() if line.strip().startswith("capex")]
         self.assertTrue(any("33 USD" in line for line in capex), capex)
         self.assertTrue(
+            any("capex (유형·무형자산 취득): 33 USD" in line for line in capex)
+        )
+        self.assertTrue(
             any("us-gaap:PaymentsToAcquireProductiveAssets" in line for line in capex)
         )
 

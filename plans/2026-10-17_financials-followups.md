@@ -18,7 +18,7 @@
 ## 변경
 
 - `past_financials.py`: 도구 설명과 결과 머리말에 위 두 규칙을 한 줄씩(설명: "These are the filed figures: do not re-check them with web search; search the web only for what this result lacks." / "in the answer cite at most two of their URLs (the newest report, and the annual report behind a computed Q4)"). "각 값의 출처를 유지" 문장에서 sources를 뺀다(출처는 결과에 남음).
-- `sec_financials.py`: `capex` 후보 태그에 `PaymentsToAcquireProductiveAssets`를 둘째로 추가(첫째 PP&E가 없을 때만 쓰임). 이 태그는 무형자산 취득도 포함하지만 결과에 원래 태그가 적혀 구분된다.
+- `sec_financials.py`: `capex` 후보 태그에 `PaymentsToAcquireProductiveAssets`를 추가. 다른 후보처럼 기간마다 최신 정기공시 값을 고른다(같은 공시에 둘 다 있으면 PP&E가 먼저). 이 태그는 무형자산 취득도 포함하므로 결과 이름을 **"유형·무형자산 취득"**으로 바꿔 적는다(`ACCOUNT_LABELS`, 계정 하나의 뜻이 지표 이름보다 넓을 때만).
 - README 6.2.4 한 줄, 단위 테스트 2개(ProductiveAssets로 capex, 설명·머리말의 두 규칙), 시나리오 f11(웹 결과가 쌓인 대화에서 애플 4개 분기 → `past_financials`, 웹 도구 금지).
 
 ## 검증
@@ -26,3 +26,8 @@
 - 단위 테스트 전체 통과, 바꾼 파일 ruff·format 통과.
 - 모델 시나리오 `--set financials`(유료, 사용자 승인 뒤): 기존 f1~f10 유지 + f11 PASS, 답 출처 두 개 이하 관찰.
 - 그 뒤 v0.7.13 릴리스 → PIA 고정 버전 올리기(requirements·lock·README·테스트) → bot-only 배포 → Telegram 재확인(같은 질문).
+
+## Codex 검토 반영 (2026-10-17, 기준 8c82271)
+
+- [P2] ProductiveAssets 값을 "유형자산 취득"으로 보여 주던 문제: 이 태그에서 온 값은 결과에 `capex (유형·무형자산 취득)`으로 적는다(NVIDIA 공시 표현과 같음). 테스트에 이름 확인 추가.
+- [비차단] "첫째 태그가 없을 때만"이라는 계획 설명을 실제 규칙(기간마다 최신 정기공시, 같은 공시면 후보 순서)으로 고쳤다.

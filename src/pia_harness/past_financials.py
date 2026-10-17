@@ -36,6 +36,10 @@ METRICS = {
     "financing_cashflow": "재무활동 현금흐름",
     "capex": "유형자산 취득",
 }
+# An account whose meaning is wider than its metric's name says so in the result.
+ACCOUNT_LABELS = {
+    "us-gaap:PaymentsToAcquireProductiveAssets": "유형·무형자산 취득",
+}
 FREQUENCIES = {"annual": (5, 10), "quarterly": (4, 8)}
 Q4_METRICS = tuple(METRICS)[:5]
 INCOME_METRICS = tuple(METRICS)[:7]
@@ -272,7 +276,8 @@ def render(
                     else fact.kind
                 )
                 lines.append(
-                    f"  {metric} ({label}): {fact.value:f} {fact.unit}; "
+                    f"  {metric} ({ACCOUNT_LABELS.get(fact.account, label)}): "
+                    f"{fact.value:f} {fact.unit}; "
                     f"{fact.basis}; {kind}; {fact.span}; {fact.account}{suffix}"
                 )
                 if fact.inputs:
