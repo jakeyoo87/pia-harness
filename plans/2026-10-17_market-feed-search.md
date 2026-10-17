@@ -41,8 +41,10 @@ class MarketFeedSearchTool:
 - **받아 두기:** 도구가 만든 임시 폴더에 파일 하나를 둔다. 새 내용은 임시 파일에 쓴 뒤 `os.replace`로 바꿔 끼운다(이미 열린 검색은 옛 파일을 끝까지 읽음). 확인·교체는 `asyncio.Lock` 하나로 묶는다. 읽기는 동시에 3개까지 돌 수 있어서, 같은 파일을 두 번 받지 않게 하기 위해서다. Bot을 다시 시작하면 첫 검색에서 다시 받는다(설정할 경로 없음).
 - **확인 실패:** 받아 둔 파일이 있으면 그것으로 검색하고 결과 맨 위에 "최신 확인 실패, 마지막으로 받은 자료"라고 적는다. 받아 둔 파일이 없으면 검색하지 않고 "지금 쓸 수 없음, news_search·web_search로"를 결과로 준다.
 - **실행:** `sqlite3`(표준 라이브러리, 새 의존성 없음)로 `file:...?mode=ro` 읽기 전용 연결을 검색마다 연다. 이벤트 루프를 막지 않게 `asyncio.to_thread`로 돌린다.
-  - 한 번에 한 문장: `sqlite3`의 `execute`가 여러 문장을 거절한다. 쓰기는 읽기 전용 연결이 거절한다. 따라서 SELECT인지 따로 검사하지 않는다.
-  - 시간 한도: `set_progress_handler`로 2초가 지나면 멈춘다.
+  - 한 번에 한 문장: `sqlite3`의 `execute`가 여러 문장을 거절한다.
+  - **조회만 허용(규칙 하나):** `set_authorizer`로 조회 동작(`SQLITE_SELECT`, `SQLITE_READ`, `SQLITE_FUNCTION`, `SQLITE_RECURSIVE`)만 허용하고 나머지는 모두 거절한다. 읽기 전용 연결만으로는 `VACUUM INTO`·`ATTACH`가 새 파일을 만들 수 있다(Codex 재현). SQL 글자를 분석하지 않는다.
+  - **값 크기 한도:** `setlimit(SQLITE_LIMIT_LENGTH, 1_000_000)`. 결과 한도는 계산 중 큰 값(예: `randomblob(8000000)`)을 막지 못한다. 가장 긴 본문이 약 2,500자라 정상 검색에는 영향이 없다.
+  - 시간: `set_progress_handler`로 2초가 지나면 멈춘다. 대략적인 한도이며 엄격한 시간·메모리 격리는 아니다(별도 프로세스는 두지 않는다).
   - 행은 `fetchmany(51)`로 받아 50행을 넘으면 "50행에서 잘림, 좁혀서 다시"라고 적는다. 행을 차례로 적다가 20,000자를 넘으면 거기서 멈추고 같은 안내를 붙인다.
   - SQL 오류는 SQLite 메시지를 그대로 결과로 준다(예상 가능한 실패, 모델이 고쳐 다시 씀). DB 내용은 결과로만 나가고 지침이 아니다.
 - **이름 한 번 더 지우기(2026-10-10 결정):** 결과 글에서 `t.me` 링크와 `@아이디`를 코드로 지운다(수집기가 이미 지우지만 같은 규칙을 한 번 더).
@@ -60,9 +62,9 @@ class MarketFeedSearchTool:
 - **언제:** 시장·섹터·종목의 소식과 의견을 찾을 때 news_search·web_search보다 **먼저**. 부족하면 news_search, 그다음 web_search.
   - 답이 특정 문서나 페이지에 있는 자료라면 바로 web_search: ETF 구성 종목·비중, 회사 공식 페이지·공시 원문, 제품 설명, 표로 된 통계, 30일보다 오래된 일, 사용자가 준 링크.
 - **구조:** 표 6개와 칸, 값.
-  - `messages(id, ts, type, body, summary, keywords, sentiment, stored_at)`, `type` ∈ news/broker/community/alert
+  - `messages(id, ts, type, body, summary, keywords, sentiment, stored_at)`, `type` ∈ news/broker/community/alert. `keywords`는 JSON 배열이 아니라 ", "로 이은 TEXT(`LIKE`로 찾음)
   - `message_stocks(id, stock)`: 국내 공식 종목명, 미국 티커
-  - `message_sectors(id, sector)`: 고정 8개
+  - `message_sectors(id, sector)`: 고정 8개 값 그대로 — 반도체·IT, 2차전지·전기차, 바이오·헬스케어, 금융, 소비재·플랫폼, 에너지·방산·산업재, 매크로, 기타
   - `message_links(id, url)`: 뉴스 기사 링크
   - `targets(id, seq, stock, target_price, previous_target_price, currency, rating, previous_rating)`
   - `events(id, event_date, what, stock)`
@@ -84,11 +86,12 @@ class MarketFeedSearchTool:
 
 **단위(`tests/test_market_feed.py`, 가짜 fetch, 작은 SQLite를 만들어 사용)**
 - 처음 검색에서 받고, 같은 버전이면 다시 받지 않음, 바뀌면 교체
-- 동시에 3개 검색해도 한 번만 받음
+- 동시에 3개 검색: 변경 확인(fetch)은 3번, 같은 파일 받기·교체는 1번
 - 확인 실패: 받아 둔 파일로 검색하고 안내 / 파일이 없으면 쓸 수 없다는 결과
 - 50행·20,000자에서 잘리고 안내
-- SQL 오류 메시지가 결과로, 여러 문장은 거절, 쓰기는 거절
-- 2초 한도
+- SQL 오류 메시지가 결과로, 여러 문장은 거절
+- 조회만 허용: 일반 SELECT·CTE는 통과, `VACUUM INTO`·`ATTACH`·PRAGMA·쓰기는 거절되고 파일이 생기지 않음
+- 값 크기 한도(`randomblob` 큰 값 거절), 2초 한도
 - `t.me`·`@아이디` 제거
 - 결과 맨 위의 출처 규칙
 - 설명에 시각·OR·순서 규칙
@@ -106,7 +109,7 @@ class MarketFeedSearchTool:
 | m5 | 오늘 마이크론 소식 있어? | message_stocks의 MU, 오늘 |
 | m6 | 그 소식 자세히 알려줘 (m5 다음) | body 읽기 |
 | m7 | KODEX 200 구성 종목 비중 알려줘 | market_feed_search 없이 web_search |
-| m8 | 삼성전자 배당 정책 바뀐 거 있어? | 관찰 |
+| m8 | 작년 3월에 삼성전자 무슨 일 있었어? | 30일보다 오래된 일: market_feed_search 없이 web_search(또는 news_search) |
 | m9 | 일본 반도체 장비 수출 규제 소식 있어? (DB에 없음) | DB → news_search → (필요하면) web_search |
 | m10 | 엔비디아 지금 주가 얼마야? | broker, DB 아님 |
 | m11 | 내 보유 종목 관련 소식 있어? | broker 계좌 → 그 종목들로 DB |
@@ -115,19 +118,19 @@ class MarketFeedSearchTool:
 | m14 | 대한전선 목표가 어떻게 됐어? (중복 한 쌍) | 하나로 묶어 답 |
 | m15 | 요즘 반도체 소식 (fetch 실패, 받아 둔 파일 없음) | news_search로 넘어감 |
 
-- 판정: 도구 순서·쓴 표·출처 표시·이름 없음은 자동 PASS/FAIL. m8은 사람이 읽는다.
+- 판정: 도구 순서·쓴 표·출처 표시·이름 없음은 자동 PASS/FAIL. SQL 차단·처음 받기는 단위 테스트에서 본다.
 - 마지막에 실제 DB(S3 사본)로 m1~m4를 한 번 더 확인(승인 뒤).
 
 ## PIA 변경 (harness 출시 뒤, 같은 방향으로 따로 구현·검토)
 
-- `fetch` 함수: boto3 `get_object(Bucket, Key, IfNoneMatch=버전)`
-  - 304(바뀌지 않음)면 `None`
+- `fetch` 함수: boto3 `get_object(Bucket, Key, IfNoneMatch=버전)`. 처음(`fetch(None)`)에는 `IfNoneMatch` 인자를 아예 넣지 않는다(None을 넣으면 SDK가 거절)
+  - 304(바뀌지 않음)는 SDK 오류 응답으로 오므로 잡아서 `None`
   - 아니면 gzip을 풀어 `(ETag, 내용)`
   - `asyncio.to_thread`로 감싼다.
   - 권한은 이미 있는 GetObject 하나다.
 - 설정: 버킷 이름(필수 설정 하나, 다른 설정과 같은 방식), 키는 고정 `telegram/research.db.gz`.
 - 등록: 읽기 도구 목록에서 `news_search` 앞. 종료 때 `aclose()`.
-- System 한 줄(도구를 등록할 때만, BROKER_READ_PROMPT와 같은 방식): "For news and opinions on markets, sectors or stocks, use market_feed_search before news_search and web_search."
+- System 한 줄(도구를 등록할 때만, BROKER_READ_PROMPT와 같은 방식): "For recent news and opinions on markets, sectors or stocks, use market_feed_search first when it applies, before news_search and web_search."
 - Telegram 진행 표시: `"market_feed_search": "시장 소식 검색"`.
 - harness 고정 0.7.17, README, 테스트, bot-only 배포.
 
@@ -150,3 +153,13 @@ DB의 KST 시각은 Mac 적용이 끝났고 S3에는 다음 업로드(2026-10-18
 - 같은 소식 묶기, 의미 검색·전문 검색 색인(쓰면서 부족할 때)
 - 아침 브리핑, 투자 계획 점검에 쓰는 것
 - DB 구조 버전 검사(구조가 바뀌면 이 계획과 도구 설명을 함께 고친다)
+
+## Local Codex 계획 검토 반영 (2026-10-17, 기준 a5ae537)
+
+- [차단] 읽기 전용 연결에서도 `VACUUM INTO`·`ATTACH`가 파일을 만든다 → `set_authorizer`로 조회 동작만 허용(규칙 하나).
+- [차단] 결과 한도는 계산 중 메모리를 막지 못한다 → `SQLITE_LIMIT_LENGTH` 1MB. 2초 progress handler는 대략적 한도로만 설명.
+- 동시 검색 테스트는 확인 3번·받기 1번으로 나눠 본다.
+- PIA `fetch(None)`은 `IfNoneMatch`를 넣지 않고, 304는 None.
+- System 한 줄에 "when it applies"(30일 이전 자료는 바로 웹이라는 설명과 부딪히지 않게).
+- 도구 설명에 섹터 8개 값과 `keywords` 형식(TEXT).
+- m8을 "30일보다 오래된 일 → 바로 웹" 검사로 바꿈.
