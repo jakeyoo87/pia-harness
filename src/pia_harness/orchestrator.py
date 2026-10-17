@@ -260,7 +260,9 @@ CHOICES_TOOL_SPEC = _BuiltinTool(
     "question in your answer; do not list the options again as text unless each "
     "needs an explanation. Add an option such as 직접 입력 when the user may want "
     "to write their own. Picking an option sends its text as the user's next "
-    "message.",
+    "message. Buttons appear only when you call this tool before your answer, "
+    "even when the answer text is given word for word; whenever your answer "
+    "asks the user to pick from fixed options or mentions a button, call it.",
     {
         "type": "object",
         "properties": {

@@ -240,13 +240,19 @@ class UsOrderTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("230.5달러 지정가", action.confirmation)
         self.assertEqual(230.5, self.broker.orders[0]["price"])
 
-    async def test_market_order_is_offered_as_a_limit_order_instead(self) -> None:
-        result = await self.tool.prepare(
-            MEMBER, call(name="엔비디아", quantity=2, order_type="MARKET")
+    async def test_a_market_order_is_a_limit_order_at_the_current_price(self) -> None:
+        action = await self.confirm(order_type="MARKET")
+        self.assertEqual(
+            "미국 주식은 시장가 주문이 안 돼서 현재가 지정가로 준비했어요. "
+            "엔비디아(NAS:NVDA) 2주를 233.95달러 지정가로 매수할까요? "
+            "(09:31 기준 현재가 233.95달러)",
+            action.confirmation,
         )
-        self.assertIsNone(result.action)
-        self.assertIn("US stocks take limit orders only", result.observation_text)
-        self.assertIn("233.95달러", result.observation_text)
+        (sent,) = self.broker.orders
+        self.assertEqual(
+            {"order_type": "LIMIT", "price": 233.95},
+            {key: sent[key] for key in ("order_type", "price")},
+        )
 
     async def test_a_korean_price_with_decimals_is_refused(self) -> None:
         self.broker.search = SAMSUNG
