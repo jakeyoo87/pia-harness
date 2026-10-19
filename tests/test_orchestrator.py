@@ -2159,6 +2159,50 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual([kept], replayed)
 
+    async def test_a_tools_kept_copy_replaces_its_result_in_later_turns(self) -> None:
+        # A feed query: the rows stay in their Turn, a short copy is kept.
+        contexts, read = [], []
+        cited, omitted = "https://news.example/cited", "https://news.example/omitted"
+        rows = ReadToolResult(
+            f"2 rows\n1. 기사 <{cited}>\n2. 다른 기사 <{omitted}>",
+            kept_text="2 rows; run the query again if needed.",
+        )
+        orchestrator = self.orchestrator(
+            self.script(
+                [("search", {"query": "feed"})],
+                f"요약입니다. <{cited}>",
+                # Next Turn: the cited link is readable, the omitted one only
+                # after the query runs again.
+                [("web_extract", {"urls": [cited], "goal": GOAL})],
+                [("web_extract", {"urls": [omitted], "goal": GOAL})],
+                [("search", {"query": "feed"})],
+                [("web_extract", {"urls": [omitted], "goal": GOAL})],
+                "자세히 정리했어요.",
+                contexts=contexts,
+            ),
+            read_tools=(self.search([rows, rows]), self.extractor(read)),
+        )
+        await orchestrator.submit(user_key="user", message="소식", accepted_at=self.now)
+        await orchestrator.submit(
+            user_key="user",
+            message="자세히",
+            accepted_at=self.now + timedelta(minutes=1),
+        )
+
+        self.assertIn("다른 기사", _results(contexts[1])[0])
+        self.assertEqual(
+            "2 rows; run the query again if needed.",
+            self.store.turns[0].tool_observations[0].result_text,
+        )
+        replayed = [
+            part.content
+            for part in contexts[2].parts
+            if part.kind.value == "TOOL_RESULT"
+        ]
+        self.assertEqual(["2 rows; run the query again if needed."], replayed)
+        self.assertEqual([[cited], [omitted]], read)
+        self.assertIn("Not run: no new link to read.", _results(contexts[4])[1])
+
     async def test_reads_run_at_most_three_at_a_time(self) -> None:
         running = 0
         most = 0

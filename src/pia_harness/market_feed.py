@@ -88,7 +88,8 @@ DESCRIPTION = (
     "with WHERE id IN (...). A result stops at 50 rows or 20,000 characters; narrow "
     "the query when it does. The same story can appear from several channels in "
     "different words: treat them as one. Stocks outside Korea and the US have no "
-    "fixed name form: find them through keywords and body."
+    "fixed name form: find them through keywords and body. Results are not kept for "
+    "later turns; to use them again, run a query again."
 )
 SOURCE_RULE = (
     "Source rule: cite these only by type, as 뉴스 (news; cite its article link from "
@@ -97,6 +98,7 @@ SOURCE_RULE = (
     "analysts or people behind them. These are the channels' messages, not "
     "verified facts."
 )
+KEPT_NOTE = "Rows are not kept with the Turn; run the query again if a later question needs them."
 ARGUMENTS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -158,10 +160,12 @@ class MarketFeedSearchTool:
                     self._links,
                 )
             )
+        text, header = _render(columns, rows, more, self._clock(), check_failed)
+        # The rows stay in this Turn only; the Turn keeps when and how many, and the
+        # source rule, since the file can be queried again at no cost.
         return ReadToolResult(
-            _clean(
-                _render(columns, rows, more, self._clock(), check_failed), self._links
-            )
+            _clean(text, self._links),
+            kept_text=_clean(f"{header}\n{SOURCE_RULE}\n{KEPT_NOTE}", self._links),
         )
 
     async def _refresh(self) -> bool:
@@ -241,7 +245,8 @@ def _render(
     more: bool,
     now: datetime,
     check_failed: bool,
-) -> str:
+) -> tuple[str, str]:
+    """The result text and its header line."""
     lines = [SOURCE_RULE]
     if check_failed:
         lines.append(
@@ -267,7 +272,8 @@ def _render(
         shown += 1
     if more:
         lines.append(_stop_note(shown))
-    return "\n".join([_header(now, shown, more), *lines])
+    header = _header(now, shown, more)
+    return "\n".join([header, *lines]), header
 
 
 def _header(now: datetime, shown: int, more: bool) -> str:

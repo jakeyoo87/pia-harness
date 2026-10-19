@@ -147,6 +147,9 @@ class ToolLink:
 class ReadToolResult:
     observation_text: str
     links: tuple[ToolLink, ...] = ()
+    # A shorter copy to keep with the Turn; None follows the usual rule. The
+    # model sees observation_text in this Turn only.
+    kept_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1615,8 +1618,12 @@ def _validate_preparation(result: PreparationResult) -> None:
 
 def _validate_read_tool_result(result: ReadToolResult) -> None:
     # Links become readable URLs, so only http(s) links are accepted.
-    if not result.observation_text.strip() or any(
-        not link.url.startswith(("http://", "https://")) for link in result.links
+    if (
+        not result.observation_text.strip()
+        or (result.kept_text is not None and not result.kept_text.strip())
+        or any(
+            not link.url.startswith(("http://", "https://")) for link in result.links
+        )
     ):
         raise ValueError("read tool result is invalid")
 
@@ -1684,10 +1691,13 @@ def _tool_result_text(result: ReadToolResult, listed_urls: set[str]) -> tuple[st
 
     The kept copy lists found links without their short descriptions: those
     are most of a search's size, and a later Turn that needs more reads the
-    page.
+    page. A tool may give its own shorter kept copy instead.
     """
     if not result.links:
-        return result.observation_text, result.observation_text
+        short = (
+            result.observation_text if result.kept_text is None else result.kept_text
+        )
+        return result.observation_text, short
     lines = [result.observation_text]
     kept = [result.observation_text]
     added = 0

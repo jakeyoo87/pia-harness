@@ -229,8 +229,27 @@ class MarketFeedTest(unittest.IsolatedAsyncioTestCase):
             "반도체·IT, 2차전지·전기차, 바이오·헬스케어, 금융, 소비재·플랫폼",
             "only in message_stocks",
             "50 rows or 20,000 characters",
+            "Results are not kept for later turns",
         ):
             self.assertIn(rule, description)
+
+    async def test_a_successful_query_keeps_a_short_copy_with_the_source_rule(
+        self,
+    ) -> None:
+        tool = self.make(Fetches(feed([("a", "broker", "목표가 상향 소식")])))
+        call = ToolCall(
+            "market_feed_search", json.dumps({"sql": "SELECT summary FROM messages"})
+        )
+        result = await tool.execute("user", call, ())
+        self.assertIn("목표가 상향 소식", result.observation_text)
+        kept = result.kept_text or ""
+        self.assertNotIn("목표가 상향 소식", kept)
+        self.assertIn("2026-10-17T22:00 KST; rows 1", kept)
+        self.assertIn(market_feed.SOURCE_RULE, kept)
+        self.assertIn(market_feed.KEPT_NOTE, kept)
+        # Short results (errors, no feed) are kept as they are.
+        call = ToolCall("market_feed_search", json.dumps({"sql": "SELECT nope"}))
+        self.assertIsNone((await tool.execute("user", call, ())).kept_text)
 
     async def test_an_empty_query_is_not_run(self) -> None:
         fetch = Fetches(feed([("a", "news", "소식")]))
