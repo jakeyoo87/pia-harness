@@ -13,10 +13,12 @@
 
 **규칙 하나: 읽기 도구는 Turn에 남길 짧은 사본을 따로 줄 수 있다.** 지금 검색 후보의 짧은 설명을 Turn에 남기지 않는 것과 같은 자리(`_tool_result_text`)에서 처리한다.
 
-- `ReadToolResult`에 `kept_text: str | None = None`을 더한다. None이면 지금처럼 결과 전체를 남긴다.
+- `ReadToolResult`에 `kept_text: str | None = None`을 더한다. None이면 기존 저장 규칙을 따른다(검색 후보는 지금처럼 설명을 뺀 사본).
 - `_tool_result_text`: `kept_text`가 있으면 이번 Turn에는 결과 전체, Turn에는 `kept_text`를 남긴다(링크 후보가 있는 결과는 지금 방식 그대로).
-- `market_feed_search`는 성공한 조회에만 `kept_text`를 준다:
-  `market_feed_search: 35 rows (results are not kept with the Turn; run the query again if a later question needs them).`
+- `market_feed_search`는 성공한 조회에만 `kept_text`를 준다. 내용은 기존 상수를 다시 쓴 세 줄이다(Codex P2):
+  - `SOURCE_RULE`(출처는 종류로만, 채널 메시지이지 확인된 사실이 아님). 결과 본문에만 있으면 다음 Turn에서 이 규칙이 사라지기 때문이다.
+  - 조회 시각과 행 수(지금 머리줄 `_header`). SQL의 `date('now', …)`가 그때 어느 날이었는지 알 수 있다.
+  - `Rows are not kept with the Turn; run the query again if a later question needs them.`
   - SQL은 도구 호출 인자로 그대로 남으므로 모델은 지난번에 무엇을 찾았는지 안다.
   - SQL 오류·DB 없음 같은 짧은 결과는 그대로 남긴다.
 - 도구 설명에 한 문장: "Results are not kept for later turns; to use them again, run a query again."
@@ -30,15 +32,40 @@
 - "아까 그 소식 자세히" 같은 후속 질문은 다시 조회한다. 그 사이 DB가 갱신되면(2시간마다) 결과가 조금 달라질 수 있다.
 - 답변에 인용하지 않은 기사 링크는 다음 Turn에 바로 읽을 수 없고, 다시 조회하면 다시 나온다.
 
+- 이미 저장된 큰 결과는 줄어들지 않는다. 효과는 배포 뒤 새 Turn부터다.
+
 ## 테스트
 
-- 단위: `kept_text`가 있으면 이번 Turn 결과는 전체, 저장된 Turn은 `kept_text`인지(orchestrator). `market_feed_search` 성공 결과에 `kept_text`가 있고 오류 결과에는 없는지.
-- 유료 시나리오(승인 필요, `smoke_flow --set market_feed`): 후속 질문 m6("아까 SK하이닉스 목표가 올린 근거 자세히")·m21이 다시 조회해 맞게 답하는지, 나머지 세트에 나빠진 것이 없는지. Context가 Turn마다 얼마나 덜 쌓이는지 기록.
+- 단위(orchestrator):
+  - 두 Turn에 걸쳐, 전체 결과는 그 Turn에만 보이고 다음 Turn에는 짧은 사본이 다시 들어가는지.
+  - 답변에 인용한 링크는 다음 Turn에도 읽을 수 있고, 생략된 링크는 다시 조회한 뒤 읽을 수 있는지.
+- 단위(market_feed): 성공 결과에 `kept_text`가 있고 출처 규칙이 들어 있는지, 오류 결과에는 없는지.
+- 유료 시나리오(승인 필요, `smoke_flow --set market_feed`):
+  - m6("아까 SK하이닉스 목표가 올린 근거 자세히")·m21은 앞선 대화를 포함해 돌린다(`--only m6,m21`만 돌리면 앞 질문이 빠진다).
+  - 다시 조회하는 것 자체를 통과 조건으로 두지 않는다. 필요한 내용이 답변에 이미 있으면 다시 조회할 필요가 없다. m21은 출처를 종류로만 말하는지가 핵심이다.
+  - 나머지 세트에 나빠진 것이 없는지.
+  - 비교는 Context 크기만이 아니라 전체 토큰·호출 수·시간을 함께 본다. 다시 조회하면 도구 호출 단계가 늘 수 있기 때문이다.
 
 ## 배포
 
-harness v0.7.18 → pia-agent 핀 → bot-only. PIA 코드 변경은 없다.
+harness v0.7.18 → pia-agent 핀 → bot-only. PIA 코드 변경은 없다. 다른 세션에서 구현 중인 harness 검색 지침 작업과 함께 릴리스한다(사용자 2026-10-19). 두 작업이 함께 바꾸는 `market_feed` 설명과 README는 합칠 때 양쪽 뜻을 모두 살린다.
 
 ## 순서
 
 계획 → Codex 계획 검토 → 구현 → 유료 시나리오(승인) → Codex 구현 검토 → 병합·릴리스·배포(Codex, 승인).
+
+## Codex 계획 검토 (ae79c47, 2026-10-19)
+
+찬성. 기존 저장 사본 분리 경로에 `kept_text` 하나를 더하는 방식이면 충분하고, 도구 이름 분기나 별도 캐시는 필요 없다.
+
+- [P2] 짧은 사본에도 `SOURCE_RULE`을 남긴다. 출처 익명화와 "검증된 사실이 아닌 채널 메시지" 안내가 결과 본문에만 있어, 행 수와 재조회 안내만 남기면 다음 Turn에서 규칙이 사라진다. 기존 상수를 다시 써서 출처 규칙 + 조회 시각 + 생략·재조회 안내만 남긴다. 조회 시각은 SQL의 `date('now', …)`가 그때 어느 날짜였는지 아는 데도 쓰인다.
+- 다른 경로: URL 경계(이번 Turn은 전체 결과로 검사, 다음 Turn은 답변의 인용 링크만 남는 대가는 계획대로), Memory·Summary 작성(요청·답변만 써서 그대로), Compaction(이번 답변 사용량에는 전체 포함, 이후 Turn이 작아져 같은 보존 한도에 더 많은 Turn이 남음), Turn 크기 한도(저장량만 줄고 PIA 저장 형식 변경 없음) 모두 문제없다.
+- 문구: `kept_text=None`은 "결과 전체를 남긴다"가 아니라 "기존 저장 규칙을 따른다".
+- 웹 본문 추출을 그대로 두는 판단은 적절하다.
+- 테스트 보완: 두 Turn에 걸친 전체/짧은 사본, 인용 링크 허용과 생략 링크의 재조회 뒤 허용, 짧은 사본의 출처 규칙, m6·m21은 앞선 대화 포함. 재조회 자체를 성공 조건으로 두지 않는다(m21은 출처 익명화가 핵심).
+- 계획에 적을 것: 기존 저장 결과는 줄지 않고 새 Turn부터 적용, 비교 때 전체 토큰·호출 수·시간을 함께 본다.
+- 직전 검색 지침 작업과 함께 릴리스해도 구조적 충돌은 없다. `market_feed` 설명과 README를 합칠 때 양쪽 의도를 살린다.
+
+## 반영 (Claude, 2026-10-19)
+
+위 검토를 모두 설계·테스트·배포 절에 반영했다. 구현은 다른 세션의 harness 작업이 끝난 뒤 시작한다(사용자).
