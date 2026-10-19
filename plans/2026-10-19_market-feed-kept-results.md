@@ -69,3 +69,11 @@ harness v0.7.18 → pia-agent 핀 → bot-only. PIA 코드 변경은 없다. 다
 ## 반영 (Claude, 2026-10-19)
 
 위 검토를 모두 설계·테스트·배포 절에 반영했다. 구현은 다른 세션의 harness 작업이 끝난 뒤 시작한다(사용자).
+
+## 구현 (2026-10-19, Claude)
+
+- 함께 내려던 검색 지침 작업은 사용자가 철회했다(2026-10-19). 그래서 기준 맞추기는 필요 없고(main 그대로 `62db823`), 이 작업만 v0.7.18로 낸다.
+- `orchestrator.ReadToolResult.kept_text: str | None = None`(None이면 기존 규칙). `_tool_result_text`는 링크 후보가 없는 결과에 `kept_text`가 있으면 그것을 Turn 사본으로 쓴다. 빈 `kept_text`는 결과 검사에서 거절.
+- `market_feed`: 성공한 조회의 `kept_text` = 머리줄(조회 시각·행 수) + `SOURCE_RULE` + `KEPT_NOTE`("Rows are not kept with the Turn; run the query again if a later question needs them."). 오류·DB 없음은 그대로. 설명에 "Results are not kept for later turns; to use them again, run a query again."
+- 테스트: orchestrator(두 Turn: 이번 Turn은 전체, 다음 Turn엔 사본만 재생, 인용 링크는 읽힘, 생략 링크는 거절됐다가 다시 조회 뒤 읽힘), market_feed(성공 결과의 사본에 머리줄·출처 규칙·안내, 행 내용 없음, 오류는 사본 없음, 설명 문장). pytest 256 통과, 새 lint·mypy 없음.
+- README §3(Turn 저장)과 6.2.5.
