@@ -77,3 +77,8 @@ harness v0.7.18 → pia-agent 핀 → bot-only. PIA 코드 변경은 없다. 다
 - `market_feed`: 성공한 조회의 `kept_text` = 머리줄(조회 시각·행 수) + `SOURCE_RULE` + `KEPT_NOTE`("Rows are not kept with the Turn; run the query again if a later question needs them."). 오류·DB 없음은 그대로. 설명에 "Results are not kept for later turns; to use them again, run a query again."
 - 테스트: orchestrator(두 Turn: 이번 Turn은 전체, 다음 Turn엔 사본만 재생, 인용 링크는 읽힘, 생략 링크는 거절됐다가 다시 조회 뒤 읽힘), market_feed(성공 결과의 사본에 머리줄·출처 규칙·안내, 행 내용 없음, 오류는 사본 없음, 설명 문장). pytest 256 통과, 새 lint·mypy 없음.
 - README §3(Turn 저장)과 6.2.5.
+
+## Codex 구현 검토 (c86c582, 2026-10-19)
+
+- 차단 없음. 이번 Turn 전체·이후 Turn 사본, 사본의 출처 규칙 보존(P2 해결), 인용 링크·재조회 테스트 확인. 새 상태·캐시·도구별 분기 없음. pytest 256·subtest 153, Ruff·mypy 신규 0, 전체 트리 공백 검사 통과. m2 CHECK는 SQL 글자 판정 방식 때문.
+- [비차단] 비교 기록의 −34%는 "기존 실행 기록 대비 최종 답변 호출 토큰의 관측 감소"로 좁힌다(이전 1차 실행은 m6 질문과 일부 지침이 달랐음) → 기록에 반영. 유료 재실행은 필요 없음.
