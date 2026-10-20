@@ -45,3 +45,9 @@
 
 - [P2] 이름 허용 범위가 "목표가·투자의견"(`price target or rating`)이라 목표가 없는 투자의견에도 이름이 허용됐다. 사용자 결정대로 **목표가를 설명할 때만, 그 행의 `targets.broker` 값으로, null이면 추정하지 않음**으로 좁혔다(위 `SOURCE_RULE`).
 - 검증에 목표가 없는 일반 의견에서 가상 증권사 이름이 나오지 않는지 보는 m24를 더했다.
+
+## Local Codex 구현 검토 (2026-10-20, 기준 077bf2d)
+
+- 차단 이슈 없음. P2 해결(목표가를 설명할 때만 그 행의 `targets.broker`, null이면 추정 안 함), 섹터 7개·`broker`가 수집기 schema 4와 일치, 결과 전체와 `kept_text`에 같은 출처 규칙, m24 포함.
+- Codex 직접 검증: 테스트 256개·subtest 153개, Ruff·mypy 신규 오류 0, format·공백 검사 통과, 가짜 DB를 실제 도구로 조회.
+- 릴리스 0.7.19(`pyproject.toml`).
