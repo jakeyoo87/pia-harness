@@ -24,10 +24,10 @@ CREATE TABLE message_sectors (id TEXT NOT NULL, sector TEXT NOT NULL);
 CREATE TABLE message_links (id TEXT NOT NULL, url TEXT NOT NULL);
 CREATE TABLE targets (id TEXT NOT NULL, seq INTEGER NOT NULL, stock TEXT NOT NULL,
     target_price REAL, previous_target_price REAL, currency TEXT, rating TEXT,
-    previous_rating TEXT);
+    previous_rating TEXT, broker TEXT);
 CREATE TABLE events (id TEXT NOT NULL, event_date TEXT NOT NULL, what TEXT NOT NULL,
     stock TEXT);
-INSERT INTO meta VALUES ('schema_version', '3');
+INSERT INTO meta VALUES ('schema_version', '4');
 """
 
 
@@ -220,13 +220,17 @@ class MarketFeedTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2026-10-17T22:00 KST", text)
         for label in ("뉴스", "증권사 의견", "커뮤니티 의견", "시장 알림"):
             self.assertIn(label, text)
-        self.assertIn("Never name the channels", text)
+        self.assertIn("Never name the channels, analysts or people", text)
+        self.assertIn(
+            "Only when you state a price target, you may name the brokerage", text
+        )
         description = tool.tool().description
         for rule in (
             "before news_search and web_search",
             "go straight to web_search",
             "date('now', '+9 hours')",
-            "반도체·IT, 2차전지·전기차, 바이오·헬스케어, 금융, 소비재·플랫폼",
+            "반도체, AI·SW·DC, 매크로, 2차전지·전기차, 에너지·방산·산업재, 소비재, 기타",
+            "previous_rating, broker)",
             "only in message_stocks",
             "50 rows or 20,000 characters",
             "Results are not kept for later turns",

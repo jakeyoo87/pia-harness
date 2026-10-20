@@ -1,8 +1,10 @@
 """A fake market feed for the market_feed scenario set (smoke_flow).
 
 Made-up messages in the real DB shape (pia-collector docs/research-db-spec.md,
-schema_version 3, times in KST without an offset), dated from the run time: today,
-yesterday, last week and the past month. No channel, broker or person names. It holds
+schema_version 4, times in KST without an offset), dated from the run time: today,
+yesterday, last week and the past month. No channel or person names; price targets carry
+made-up brokerage names (가온증권, 나래증권, 마루증권, 미리내증권, 라온증권), never real ones.
+LG에너지솔루션 has a broker opinion without any price target (m24). It holds
 one story twice in different words (대한전선), a message with "MUSK" in the body for
 the short-ticker check (MU), price targets, this week's events and more than 50 US
 stock messages. Nothing about Japanese export controls or 삼성전자 preliminary results.
@@ -29,10 +31,10 @@ CREATE TABLE message_sectors (id TEXT NOT NULL, sector TEXT NOT NULL, PRIMARY KE
 CREATE TABLE message_links (id TEXT NOT NULL, url TEXT NOT NULL, PRIMARY KEY (id, url));
 CREATE TABLE targets (id TEXT NOT NULL, seq INTEGER NOT NULL, stock TEXT NOT NULL,
     target_price REAL, previous_target_price REAL, currency TEXT, rating TEXT,
-    previous_rating TEXT, PRIMARY KEY (id, seq));
+    previous_rating TEXT, broker TEXT, PRIMARY KEY (id, seq));
 CREATE TABLE events (id TEXT NOT NULL, event_date TEXT NOT NULL, what TEXT NOT NULL,
     stock TEXT);
-INSERT INTO meta VALUES ('schema_version', '3');
+INSERT INTO meta VALUES ('schema_version', '4');
 """
 
 # (hours before now, type, summary, body, keywords, stocks, sectors, extra)
@@ -49,7 +51,7 @@ _MESSAGES: list[
         ),
         "마이크론, MU, 파업, D램, HBM, 공급 차질",
         ["MU"],
-        ["반도체·IT"],
+        ["반도체"],
         {"link": "https://news.example.com/micron-strike"},
     ),
     (
@@ -72,8 +74,8 @@ _MESSAGES: list[
         ),
         "SK하이닉스, 000660, 하이닉스, HBM, 목표주가 상향, 메모리",
         ["SK하이닉스"],
-        ["반도체·IT"],
-        {"target": ("SK하이닉스", 330000, 300000, "KRW", "buy", "buy")},
+        ["반도체"],
+        {"target": ("SK하이닉스", 330000, 300000, "KRW", "buy", "buy", "가온증권")},
     ),
     (
         5,
@@ -85,10 +87,10 @@ _MESSAGES: list[
         ),
         "삼성전자, 005930, 메모리 업황, D램 가격, 실적 개선",
         ["삼성전자"],
-        ["반도체·IT"],
+        ["반도체"],
         {
             "sentiment": "positive",
-            "target": ("삼성전자", 110000, 110000, "KRW", "buy", "buy"),
+            "target": ("삼성전자", 110000, 110000, "KRW", "buy", "buy", "나래증권"),
         },
     ),
     (
@@ -98,7 +100,7 @@ _MESSAGES: list[
         "52주 신고가 종목: SK하이닉스, 한미반도체",
         "52주 신고가, SK하이닉스, 한미반도체",
         ["SK하이닉스", "한미반도체"],
-        ["반도체·IT"],
+        ["반도체"],
         {},
     ),
     (
@@ -108,7 +110,7 @@ _MESSAGES: list[
         "필라델피아 반도체지수가 엔비디아와 브로드컴 강세에 3% 반등했다.",
         "필라델피아 반도체지수, SOX, 반도체 반등, 엔비디아, 브로드컴",
         ["NVDA", "AVGO"],
-        ["반도체·IT"],
+        ["반도체"],
         {"link": "https://news.example.com/sox-rebound"},
     ),
     (
@@ -118,7 +120,7 @@ _MESSAGES: list[
         "삼성전자 HBM4가 연내 품질 검증을 통과할 수 있다는 기대가 커지는 중. 확인된 건 아님.",
         "삼성전자, HBM4, 퀄 테스트, 품질 검증",
         ["삼성전자"],
-        ["반도체·IT"],
+        ["반도체"],
         {"sentiment": "positive"},
     ),
     (
@@ -132,7 +134,7 @@ _MESSAGES: list[
         "대한전선, 001440, 목표주가 하향, 전선, 선적 지연",
         ["대한전선"],
         ["에너지·방산·산업재"],
-        {"target": ("대한전선", 36000, 39000, "KRW", "buy", "buy")},
+        {"target": ("대한전선", 36000, 39000, "KRW", "buy", "buy", "마루증권")},
     ),
     (
         31,
@@ -145,7 +147,7 @@ _MESSAGES: list[
         "대한전선, 목표가 하향, 실적 부진, 원화 강세",
         ["대한전선"],
         ["에너지·방산·산업재"],
-        {"target": ("대한전선", 36000, 39000, "KRW", "buy", "buy")},
+        {"target": ("대한전선", 36000, 39000, "KRW", "buy", "buy", "마루증권")},
     ),
     (
         8 * 24,
@@ -157,7 +159,7 @@ _MESSAGES: list[
         ),
         "반도체 업종, 메모리 가격, D램 계약가격, 업황",
         ["SK하이닉스", "삼성전자"],
-        ["반도체·IT"],
+        ["반도체"],
         {},
     ),
     (
@@ -191,8 +193,8 @@ _TOPICS = [
     "실적 기대",
     "자사주 매입",
 ]
-# More kinds for the second batch (m16-m22): community mood, cut targets, a US target,
-# other sectors today.
+# More kinds for the second batch (m16-m24): community mood, cut targets, a US target,
+# other sectors today, AI data centers, a broker opinion without a price target.
 _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any]]] = [
     (
         1,
@@ -201,7 +203,7 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "삼성전자 들고 있는데 하이닉스만 가고 삼전은 제자리. 답답하다는 글이 많다.",
         "삼성전자, 삼전, 커뮤니티, 불만, 주가 정체",
         ["삼성전자"],
-        ["반도체·IT"],
+        ["반도체"],
         {"sentiment": "negative"},
     ),
     (
@@ -211,7 +213,7 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "삼성전자는 HBM4 납품만 확인되면 재평가될 것. 지금 가격이면 모아갈 만하다는 의견.",
         "삼성전자, HBM4, 저점 매수, 재평가",
         ["삼성전자"],
-        ["반도체·IT"],
+        ["반도체"],
         {"sentiment": "positive"},
     ),
     (
@@ -222,7 +224,7 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "현대로템, 064350, 목표주가 하향, 방산, 철도",
         ["현대로템"],
         ["에너지·방산·산업재"],
-        {"target": ("현대로템", 220000, 316000, "KRW", "buy", "buy")},
+        {"target": ("현대로템", 220000, 316000, "KRW", "buy", "buy", "미리내증권")},
     ),
     (
         9,
@@ -231,8 +233,8 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "마이크론 목표주가를 170달러로 올린다. HBM 점유율 확대와 D램 가격 상승을 반영했다.",
         "마이크론, MU, 목표주가 상향, HBM",
         ["MU"],
-        ["반도체·IT"],
-        {"target": ("MU", 170, 150, "USD", "buy", "buy")},
+        ["반도체"],
+        {"target": ("MU", 170, 150, "USD", "buy", "buy", "라온증권")},
     ),
     (
         1.5,
@@ -241,7 +243,7 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "국내 바이오 기업이 미국 제약사와 총 1조 원 규모의 신약 후보 기술이전 계약을 체결했다.",
         "바이오, 기술이전, 신약, 라이선스 아웃",
         [],
-        ["바이오·헬스케어"],
+        ["기타"],
         {"link": "https://news.example.com/bio-licensing"},
     ),
     (
@@ -251,8 +253,28 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "주요 시중은행이 기준금리 동결 이후 예금 금리를 0.1%포인트 인하했다.",
         "은행, 예금 금리, 금리 인하, 금융",
         [],
-        ["금융"],
+        ["기타"],
         {"link": "https://news.example.com/bank-deposit"},
+    ),
+    (
+        3,
+        "news",
+        "미국 빅테크들이 내년 AI 데이터센터 투자를 올해보다 30% 늘릴 계획이다.",
+        "미국 주요 클라우드 기업들이 내년 AI 데이터센터 설비 투자를 올해보다 약 30% 늘리겠다고 밝혔다.",
+        "AI 데이터센터, 클라우드, 하이퍼스케일러, 설비 투자, capex",
+        ["MSFT", "GOOGL", "AMZN"],
+        ["AI·SW·DC"],
+        {"link": "https://news.example.com/ai-dc-capex"},
+    ),
+    (
+        4,
+        "broker",
+        "LG에너지솔루션: ESS 수주 확대로 하반기 실적 개선 기대(매수 의견 유지).",
+        "LG에너지솔루션은 미국 ESS 수주가 늘어 하반기 실적 개선이 기대된다. 매수 의견 유지.",
+        "LG에너지솔루션, 373220, ESS, 수주, 2차전지",
+        ["LG에너지솔루션"],
+        ["2차전지·전기차"],
+        {"sentiment": "positive"},
     ),
 ]
 # (days ahead, what, stock)
@@ -282,7 +304,7 @@ def build(now: datetime | None = None) -> bytes:
                 f"{name}({ticker}) {topic} 관련 보도. 자세한 내용은 기사 참고.",
                 f"{name}, {ticker}, {topic}, 미국 주식",
                 [ticker],
-                ["반도체·IT" if n % 2 else "소비재·플랫폼"],
+                ["AI·SW·DC" if n % 2 else "소비재"],
                 {"link": f"https://news.example.com/us-{n + 1}"},
             )
         )
@@ -314,7 +336,7 @@ def build(now: datetime | None = None) -> bytes:
             )
         if "target" in extra:
             conn.execute(
-                "INSERT INTO targets VALUES (?, 1, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO targets VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)",
                 (id_, *extra["target"]),
             )
     for days, what, stock in _EVENTS:

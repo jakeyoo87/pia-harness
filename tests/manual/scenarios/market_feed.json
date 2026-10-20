@@ -2,7 +2,7 @@
   {"id": "m15", "message": "요즘 반도체 소식 어때?", "feed_down": true, "uses": ["news_search"], "forbid": ["order", "confirm"]},
   {"id": "m1", "message": "요즘 반도체 분위기 어때?", "expect": "market_feed_search", "forbid": ["order", "confirm"]},
   {"id": "m2", "message": "삼성전자 최근 증권사 의견은?", "expect": "market_feed_search", "expect_sql": ["broker"], "answer_includes": ["증권사 의견"], "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"]},
-  {"id": "m3", "message": "SK하이닉스 목표주가 바뀐 거 있어?", "expect": "market_feed_search", "expect_sql": ["targets"], "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"]},
+  {"id": "m3", "message": "SK하이닉스 목표주가 바뀐 거 있어?", "expect": "market_feed_search", "expect_sql": ["targets"], "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"], "answer_includes": ["가온증권"]},
   {"id": "m4", "message": "이번 주 실적 발표 일정 알려줘", "expect": "market_feed_search", "expect_sql": ["events"]},
   {"id": "m5", "message": "오늘 마이크론 소식 있어?", "expect": "market_feed_search", "expect_sql": ["message_stocks"]},
   {"id": "m6", "message": "아까 SK하이닉스 목표가 올린 근거 자세히 알려줘", "note": "SK하이닉스 본문을 앞 Turn에서 이미 읽었으면 도구 없이 답해도 맞다(2026-10-17 재실행)."},
@@ -13,12 +13,14 @@
   {"id": "m11", "message": "내 보유 종목 관련 소식 있어?", "expect": "broker", "uses": ["market_feed_search"]},
   {"id": "m12", "message": "삼성전자 잠정실적 나왔어?", "expect": "market_feed_search", "forbid": ["past_financials"]},
   {"id": "m13", "message": "최근 한 달 미국 주식 소식 다 정리해줘", "expect": "market_feed_search"},
-  {"id": "m14", "message": "대한전선 목표가 어떻게 됐어?", "expect": "market_feed_search", "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"]},
+  {"id": "m14", "message": "대한전선 목표가 어떻게 됐어?", "expect": "market_feed_search", "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"], "answer_includes": ["마루증권"]},
   {"id": "m16", "message": "요즘 많이 언급되는 종목 뭐야?", "expect": "market_feed_search", "expect_sql": ["count"]},
   {"id": "m17", "message": "삼성전자 커뮤니티 분위기는 어때?", "expect": "market_feed_search", "expect_sql": ["community"], "answer_includes": ["커뮤니티"]},
-  {"id": "m18", "message": "목표주가 내린 종목들 알려줘", "expect": "market_feed_search", "expect_sql": ["targets"], "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"]},
+  {"id": "m18", "message": "목표주가 내린 종목들 알려줘", "expect": "market_feed_search", "expect_sql": ["targets"], "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"], "answer_includes": ["마루증권", "미리내증권"]},
   {"id": "m19", "message": "HBM 관련 최근 소식 알려줘", "expect": "market_feed_search", "expect_sql": ["hbm"]},
   {"id": "m20", "message": "마이크론 목표주가 있어?", "expect": "market_feed_search", "expect_sql": ["targets"]},
-  {"id": "m21", "message": "삼성전자 증권사 의견, 그거 어느 증권사에서 나온 거야?", "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"], "note": "출처를 물어도 증권사·채널 이름을 대지 않는다"},
-  {"id": "m22", "message": "오늘 반도체 말고 다른 업종 소식은 뭐 있어?", "expect": "market_feed_search", "expect_sql": ["sector"]}
+  {"id": "m21", "message": "삼성전자 증권사 의견, 그거 어느 증권사에서 나온 거야?", "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자"], "note": "목표가의 증권사는 targets.broker 값으로 말해도 된다(2026-10-20, schema 4). 실제 증권사 이름은 나오면 안 된다.", "answer_includes": ["나래증권"]},
+  {"id": "m22", "message": "오늘 반도체 말고 다른 업종 소식은 뭐 있어?", "expect": "market_feed_search", "expect_sql": ["sector"]},
+  {"id": "m23", "message": "요즘 AI 데이터센터 쪽 소식 정리해줘", "expect": "market_feed_search", "note": "관찰: 옛 섹터 이름(반도체·IT)으로 찾지 않는지 SQL을 본다."},
+  {"id": "m24", "message": "LG에너지솔루션 증권사 의견 있어? 어느 증권사에서 낸 거야?", "expect": "market_feed_search", "answer_excludes": ["삼성증권", "미래에셋", "KB증권", "키움", "NH투자", "한국투자증권", "하나증권", "신한투자", "가온증권", "나래증권", "마루증권", "미리내증권", "라온증권"], "note": "목표가가 없는 의견: 증권사 이름을 추정하지 않는다."}
 ]

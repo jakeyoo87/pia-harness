@@ -3,7 +3,7 @@
 The feed is one SQLite file the host fetches (PIA: an S3 object the Mac collector
 overwrites). The tool asks the host's fetch for a newer copy on every search and swaps
 the file only when it changed. Plan: plans/2026-10-17_market-feed-search.md; the DB
-contract is pia-collector docs/research-db-spec.md (schema_version 3).
+contract is pia-collector docs/research-db-spec.md (schema_version 4).
 """
 
 from __future__ import annotations
@@ -72,11 +72,12 @@ DESCRIPTION = (
     "(search it with LIKE), sentiment positive, neutral, negative or null. "
     "message_stocks(id, stock): Korean official stock names (삼성전자, SK하이닉스) and "
     "US tickers (NVDA, MU). message_sectors(id, sector), sector exactly one of "
-    "반도체·IT, 2차전지·전기차, 바이오·헬스케어, 금융, 소비재·플랫폼, "
-    "에너지·방산·산업재, 매크로, 기타. message_links(id, url): news article links. "
-    "targets(id, seq, stock, target_price, previous_target_price, currency, rating, "
-    "previous_rating): price targets in their own currency (KRW, USD, ...), rating "
-    "buy, hold or sell. events(id, event_date, what, stock): dated events. All join "
+    "반도체, AI·SW·DC, 매크로, 2차전지·전기차, 에너지·방산·산업재, 소비재, 기타 "
+    "(기타 includes finance and bio/healthcare). message_links(id, url): news article "
+    "links. targets(id, seq, stock, target_price, previous_target_price, currency, "
+    "rating, previous_rating, broker): price targets in their own currency (KRW, USD, "
+    "...), rating buy, hold or sell, broker the brokerage that issued the target or "
+    "null. events(id, event_date, what, stock): dated events. All join "
     "on id. Times are Korean time without an offset: ts and stored_at "
     "'YYYY-MM-DDTHH:MM:SS', event_date 'YYYY-MM-DD'; today is date('now', '+9 "
     "hours'); compare periods as text, such as ts >= '2026-10-15'. "
@@ -94,9 +95,10 @@ DESCRIPTION = (
 SOURCE_RULE = (
     "Source rule: cite these only by type, as 뉴스 (news; cite its article link from "
     "message_links like any other link when you have it), 증권사 의견 (broker), "
-    "커뮤니티 의견 (community) or 시장 알림 (alert). Never name the channels, brokers, "
-    "analysts or people behind them. These are the channels' messages, not "
-    "verified facts."
+    "커뮤니티 의견 (community) or 시장 알림 (alert). Only when you state a price "
+    "target, you may name the brokerage given in that target's targets.broker row; if "
+    "it is null, do not guess one. Never name the channels, analysts or people behind "
+    "them. These are the channels' messages, not verified facts."
 )
 KEPT_NOTE = "Rows are not kept with the Turn; run the query again if a later question needs them."
 ARGUMENTS: dict[str, Any] = {
