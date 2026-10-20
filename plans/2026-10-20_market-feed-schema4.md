@@ -15,8 +15,8 @@
 
 - `src/pia_harness/market_feed.py`
   - `DESCRIPTION`: 섹터 목록을 7개로 바꾼다. `targets` 칸에 `broker`를 더하고 "the brokerage that issued the target, or null"로 적는다.
-  - `SOURCE_RULE`: 증권사 이름은 목표가·투자의견을 말할 때 `targets.broker` 값으로만 쓸 수 있다고 바꾼다. 채널·애널리스트·사람 이름은 그대로 금지, 나머지 소식·의견은 그대로 유형 이름표로만.
-    - 예: "Source rule: cite these only by type, as 뉴스 (…), 증권사 의견 (broker), 커뮤니티 의견 (community) or 시장 알림 (alert). Never name the channels, analysts or people behind them. Name a brokerage only with its price target or rating, as given in targets.broker. These are the channels' messages, not verified facts."
+  - `SOURCE_RULE`: 출처는 기본적으로 유형 이름표로만 쓴다. **목표가를 설명할 때만** 그 목표가 행의 `targets.broker` 값을 증권사 이름으로 쓸 수 있고, 값이 null이면 이름을 추정하지 않는다. 채널·애널리스트·사람 이름은 쓰지 않는다. 목표가 없이 투자의견만 말할 때는 이름을 쓰지 않는다.
+    - 예: "Source rule: cite these only by type, as 뉴스 (…), 증권사 의견 (broker), 커뮤니티 의견 (community) or 시장 알림 (alert). Only when you state a price target, you may name the brokerage given in that target's targets.broker row; if it is null, do not guess one. Never name the channels, analysts or people behind them. These are the channels' messages, not verified facts."
     - 이 문장은 결과 머리와 Turn에 남는 짧은 사본(`kept_text`)에 같이 들어가므로 다음 Turn에도 보인다(바뀌는 곳 없음).
   - 모듈 docstring의 `schema_version 3` → 4.
 - `README.md` 6.2.5: schema 4, 수집 주기(06~18시 매시간, 그 밖 2시간마다), "채널·사람 이름은 지운다, 증권사 이름은 목표가의 `targets.broker`에만 있다", 답에서 증권사 이름은 목표가에만.
@@ -27,6 +27,7 @@
     - 실제 증권사 이름 `answer_excludes`는 그대로 둔다(모델이 지어내지 않는지).
     - 목표가 행이 있는 질문에는 그 행의 가상 증권사 이름을 `answer_includes`에 더한다: m3 "SK하이닉스 목표주가 바뀐 거 있어?", m14 "대한전선 목표가 어떻게 됐어?", m18 "목표주가 내린 종목들 알려줘", m21 "삼성전자 증권사 의견, 그거 어느 증권사에서 나온 거야?"(가짜 DB의 삼성전자 의견에 목표가 행이 있다. 지금은 "이름을 대지 않는다"를 보는 질문이었는데, 이제 목표가의 증권사는 말해도 된다).
     - m23 추가(관찰): "요즘 AI 데이터센터 쪽 소식 정리해줘". 기록에 SQL을 남겨 옛 섹터 이름을 쓰지 않는지 본다.
+    - m24 추가(확인): 목표가가 없는 일반 증권사 의견을 묻는 질문. 가짜 DB에 같은 종목의 목표가 행(가상 증권사)과 목표가 없는 증권사 의견을 함께 두고, 답에 가상 증권사 이름이 나오지 않는지 `answer_excludes`로 본다(이름 허용 사례만 확인하는 빈틈을 막음, Codex).
 
 ## 하지 않는 것
 
@@ -37,5 +38,10 @@
 ## 검증
 
 - 단위 테스트 전체, ruff·format·mypy, 전체 트리 공백 검사.
-- 유료 시나리오 `--set market_feed`(사용자 승인 뒤): m1~m23. 바뀐 것은 m3·m14·m18·m21·m23.
+- 유료 시나리오 `--set market_feed`(사용자 승인 뒤): m1~m24. 바뀐 것은 m3·m14·m18·m21·m23·m24.
 - 그 뒤 v0.7.19 릴리스 → PIA 고정 버전 올리기(requirements.txt·lock·test_build_security·README) → bot-only 배포 → Telegram 확인("SK하이닉스 목표가 최근에 어디서 바꿨어?", "요즘 반도체 분위기 어때?").
+
+## Local Codex 계획 검토 반영 (2026-10-20, 기준 ccd9cfb)
+
+- [P2] 이름 허용 범위가 "목표가·투자의견"(`price target or rating`)이라 목표가 없는 투자의견에도 이름이 허용됐다. 사용자 결정대로 **목표가를 설명할 때만, 그 행의 `targets.broker` 값으로, null이면 추정하지 않음**으로 좁혔다(위 `SOURCE_RULE`).
+- 검증에 목표가 없는 일반 의견에서 가상 증권사 이름이 나오지 않는지 보는 m24를 더했다.
