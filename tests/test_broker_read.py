@@ -443,6 +443,18 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("no verified KIS account connection", text)
         self.assertIn("another broker does not count", text)
 
+    async def test_manual_scenario_reports_a_missing_connection_as_state(self) -> None:
+        from tests.manual.smoke_flow import _fake_broker
+
+        client = _fake_broker({"broker_not_connected": True}, [])
+        try:
+            tool = BrokerReadTool(base_url="https://broker.invalid", client=client)
+            result = await tool.execute(MEMBER, call("account"), ())
+            self.assertIn("Brokerage connection: none", result.observation_text)
+            self.assertNotIn("lookup failed", result.observation_text)
+        finally:
+            await client.aclose()
+
     async def test_failures_become_sentences(self) -> None:
         self.broker.reply_status = 503
         self.assertIn("temporarily unavailable", await self.lookup("account"))

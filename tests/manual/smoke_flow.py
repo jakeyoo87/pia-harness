@@ -290,10 +290,12 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
 
     def handle(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        # A scenario may set broker_not_connected: member routes answer 409.
+        # Trading needs a connection; its status remains readable without one.
         if started.get("broker_not_connected") and path.startswith(
             "/internal/members/"
         ):
+            if path.endswith("/broker-status"):
+                return httpx.Response(200, json={"connection": None})
             return httpx.Response(409, json={"code": "BROKER_NOT_CONNECTED"})
         if path == "/internal/instruments":
             query = "".join(request.url.params["query"].split()).casefold()
