@@ -1,5 +1,66 @@
 [
-  {"id": "r0", "seed": {"turns": [{"user": "[처음 시작]", "assistant": "안녕하세요! PIA에 오신 걸 환영해요 👋\n앞으로 어떻게 불러드리면 될까요?"}], "plan": {"goal": "목표: 자산 증식. 기간: 5년.", "portfolio": "국내 주식 40%, 해외 ETF 40%, 현금 20%"}}},
-  {"id": "r1", "message": "제이크야", "forbid": ["plan"], "plan_versions": 1},
-  {"id": "r2", "message": "응", "forbid": ["plan", "confirm"], "plan_versions": 1}
+  {
+    "id": "r0",
+    "seed": {
+      "turns": [
+        {
+          "user": "[처음 시작]",
+          "assistant": "안녕하세요! PIA에 오신 걸 환영해요 👋\\n앞으로 어떻게 불러드리면 될까요?"
+        }
+      ],
+      "memory": "사용자 호칭은 제이크.",
+      "plan": {
+        "goal": "목표: 자산 증식. 기간: 5년.",
+        "portfolio": "국내 주식 40%, 해외 ETF 40%, 현금 20%"
+      }
+    }
+  },
+  {
+    "id": "r1",
+    "message": "시작해보자",
+    "forbid": [
+      "plan",
+      "order",
+      "confirm"
+    ],
+    "plan_versions": 1,
+    "daily_yesterday": true,
+    "uses": [
+      "market_daily"
+    ],
+    "expect_choices": [
+      "오늘 반도체 주요 소식 표로 정리해줘",
+      "삼성전자 최근 8개 분기 매출 차트 보여줘"
+    ]
+  },
+  {
+    "id": "r2",
+    "message": "삼성전자 최근 8개 분기 매출 차트 보여줘",
+    "forbid": [
+      "plan",
+      "order",
+      "confirm"
+    ],
+    "plan_versions": 1,
+    "expect": "past_financials",
+    "answer_includes": [
+      "```chart"
+    ],
+    "expect_choices": false,
+    "answer_excludes": [
+      "계좌 연결하기",
+      "투자 기간:"
+    ]
+  },
+  {
+    "id": "r3",
+    "message": "고마워. 1+1은?",
+    "forbid": [
+      "plan",
+      "order",
+      "confirm"
+    ],
+    "plan_versions": 1,
+    "expect_choices": false
+  }
 ]

@@ -1,0 +1,40 @@
+[
+  {
+    "id": "l0",
+    "seed": {
+      "turns": [
+        {
+          "user": "[처음 시작]",
+          "assistant": "안녕하세요! PIA에 오신 걸 환영해요 👋\\n앞으로 어떻게 불러드리면 될까요?"
+        },
+        {
+          "user": "투자 계획 시작",
+          "assistant": "투자 기간: 얼마 동안 투자하실 건가요? 6개월 이내, 1~3년, 3~5년 중 골라 주세요."
+        }
+      ],
+      "memory": "사용자 호칭은 제이크."
+    }
+  },
+  {
+    "id": "l1",
+    "message": "3~5년",
+    "forbid": [
+      "plan",
+      "order",
+      "confirm"
+    ],
+    "plan_versions": 0,
+    "broker_not_connected": true,
+    "uses": [
+      "market_daily"
+    ],
+    "expect_choices": [
+      "오늘 반도체 주요 소식 표로 정리해줘",
+      "삼성전자 최근 8개 분기 매출 차트 보여줘"
+    ],
+    "answer_excludes": [
+      "하락 감내",
+      "투자금이 일시적으로"
+    ]
+  }
+]
