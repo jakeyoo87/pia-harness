@@ -779,7 +779,7 @@ def _fake_daily(state: dict[str, Any]) -> ReadToolDefinition:
         if state.get("daily_yesterday"):
             day -= timedelta(days=1)
         return ReadToolResult(
-            f"[Market Daily · {day.isoformat()}]\n시장 흐름과 주요 소식\n"
+            f"[Market Daily · {day.month}월 {day.day}일 ({'월화수목금토일'[day.weekday()]})]\n시장 흐름과 주요 소식\n"
             "코스피 2,600 (+0.5%)\n주요 소식: 반도체 업황 개선 기대.\n"
             f"전체 보기: https://member.example/daily/issues/{day.isoformat()}-{'A' * 43}.html"
         )
