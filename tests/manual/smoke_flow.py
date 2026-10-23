@@ -52,6 +52,7 @@ from pia_harness import (
     PastFinancialsTool,
     PlanVersion,
     ReadToolDefinition,
+    ReadToolResult,
 )
 from pia_harness.broker_read import _ArgumentProblem, _resolve
 from pia_harness.compaction import TokenCompactor
@@ -71,10 +72,12 @@ SCENARIO_SETS = (
     "plan",
     "onboarding",
     "onboarding_reset",
+    "onboarding_legacy",
     "financials",
     "market_feed",
 )
-_PLAN_SETS = frozenset({"plan", "onboarding", "onboarding_reset"})
+_ONBOARDING_SETS = frozenset({"onboarding", "onboarding_reset", "onboarding_legacy"})
+_PLAN_SETS = frozenset({"plan", *_ONBOARDING_SETS})
 # Sets that run with the fake pia-broker and the broker prompt, as PIA does.
 _BROKER_SETS = frozenset({"broker", "financials", "market_feed", *_PLAN_SETS})
 # name: (code, market, current price). The fake order reply is UNKNOWN for 005935
@@ -287,10 +290,12 @@ def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
 
     def handle(request: httpx.Request) -> httpx.Response:
         path = request.url.path
-        # A scenario may set broker_not_connected: member routes answer 409.
+        # Trading needs a connection; its status remains readable without one.
         if started.get("broker_not_connected") and path.startswith(
             "/internal/members/"
         ):
+            if path.endswith("/broker-status"):
+                return httpx.Response(200, json={"connection": None})
             return httpx.Response(409, json={"code": "BROKER_NOT_CONNECTED"})
         if path == "/internal/instruments":
             query = "".join(request.url.params["query"].split()).casefold()
@@ -768,6 +773,27 @@ def _plan_ok(scenario: dict[str, Any], record: Record) -> bool:
     )
 
 
+def _fake_daily(state: dict[str, Any]) -> ReadToolDefinition:
+    """Only published fake data; PIA owns the real store and display functions."""
+    async def execute(user_key, call, inputs):
+        del user_key, call, inputs
+        day = (datetime.now(UTC) + timedelta(hours=9)).date()
+        if state.get("daily_yesterday"):
+            day -= timedelta(days=1)
+        return ReadToolResult(
+            f"[Market Daily · {day.month}월 {day.day}일 ({'월화수목금토일'[day.weekday()]})]\n시장 흐름과 주요 소식\n"
+            "코스피 2,600 (+0.5%)\n주요 소식: 반도체 업황 개선 기대.\n"
+            f"전체 보기: https://member.example/daily/issues/{day.isoformat()}-{'A' * 43}.html"
+        )
+    return ReadToolDefinition(
+        name="market_daily",
+        description=("Read the latest published Market Daily summary and full-page link. "
+                     "Today's KST issue or yesterday's; keep its actual date. No arguments."),
+        arguments_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        execute=execute,
+    )
+
+
 async def run(
     scenarios: list[dict[str, Any]],
     model_id: str,
@@ -839,7 +865,7 @@ async def run(
 
     financials_client = None
     financial_tools = ()
-    if scenario_set in ("financials", "market_feed"):
+    if scenario_set in ("financials", "market_feed", *_ONBOARDING_SETS):
         financials_client = fake_financials_client()
         financial_tools = (
             logged_result(
@@ -853,9 +879,11 @@ async def run(
 
     feed = None
     feed_tools = ()
-    if scenario_set == "market_feed":
+    if scenario_set in ("market_feed", *_ONBOARDING_SETS):
         feed = MarketFeedSearchTool(fetch=fake_feed_fetch(state))
         feed_tools = (logged_result(feed.tool()),)
+
+    daily_tools = (logged_result(_fake_daily(state)),) if scenario_set in _ONBOARDING_SETS else ()
 
     async def deliver(user_key: str, text: str, choices: Choices | None) -> None:
         print("  ----- answer -----\n" + text + "\n  ------------------", flush=True)
@@ -881,7 +909,7 @@ async def run(
         system_prompt=SYSTEM_PROMPT
         + (ORDER_PROMPT if scenario_set in ("execution", *_BROKER_SETS) else "")
         + (BROKER_READ_PROMPT if scenario_set in _BROKER_SETS else "")
-        + (MARKET_FEED_PROMPT if scenario_set == "market_feed" else "")
+        + (MARKET_FEED_PROMPT if scenario_set in ("market_feed", *_ONBOARDING_SETS) else "")
         + (f" {PLAN_PROMPT}" if scenario_set in _PLAN_SETS else "")
         + (f"\n\n{extra_prompt}" if extra_prompt else ""),
         token_budget=budget,
@@ -895,6 +923,7 @@ async def run(
             *broker_tools,
             *plan_tools,
             *financial_tools,
+            *daily_tools,
         ),
         execution_tools=execution_tools,
         context_document=plan.document if scenario_set in _PLAN_SETS else None,
@@ -911,6 +940,7 @@ async def run(
             state["broker_us_error"] = scenario.get("broker_us_error")
             state["broker_not_connected"] = scenario.get("broker_not_connected")
             state["feed_down"] = scenario.get("feed_down", False)
+            state["daily_yesterday"] = scenario.get("daily_yesterday", False)
             first = asyncio.create_task(
                 orchestrator.submit(user_key=USER, message=scenario["message"])
             )

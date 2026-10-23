@@ -19,3 +19,5 @@ python -m tests.manual.smoke_flow --set broker
 ```
 
 `smoke_flow.py` 요약의 `CHECK`는 기대와 다른 선택을 뜻하며, 모델 판단이 흔들린 것인지 회귀인지 사람이 로그를 보고 판단한다. 키는 환경변수로만 받고 출력하지 않는다.
+
+초기 안내 체험(`onboarding`·`onboarding_reset`·`onboarding_legacy`)은 PIA 실제 지침을 `--extra-prompt-file`로 주입한다. 옛 여섯 질문 대신 Daily→표/차트→연결 제안·종료를 확인한다. Daily는 실행기의 가짜 읽기 도구(고정 발간, `daily_yesterday`면 어제 날짜), 시장 소식·과거 실적·Broker는 기존 가짜다. `onboarding_reset`은 호칭·계획·연결이 있는 회원, `onboarding_legacy`는 옛 설문이 남은 대화다. 전송 순서는 PIA 단위 테스트에서 확인한다. 유료 모델 실행은 별도 승인 후 한다.
