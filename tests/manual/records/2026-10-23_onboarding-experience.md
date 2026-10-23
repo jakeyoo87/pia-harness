@@ -1,5 +1,7 @@
 # 초기 안내 체험 모델 시나리오 (2026-10-23)
 
+> 최종 4차: 11 PASS, CHECK 0, 주문 0. 1~3차에는 미연결 가짜가 `/broker-status`까지 409를 반환하는 계약 오류가 있었다. 아래 원래 기록은 보존하고, 해석 정정과 최종 결과는 마지막 절에 적었다.
+
 - 사용자 승인 후 실행. pia-agent `961d0b951`, pia-harness `fe1e5f9`, 두 브랜치 `codex/onboarding-experience`.
 - 모델: 운영 설정의 `openai/gpt-6-luna`. 세트마다 새 가짜 대화로 `smoke_flow.run` 실행: onboarding(7질문), onboarding_reset(3질문), onboarding_legacy(1질문).
 - PIA 실제 `SYSTEM_PROMPT` + `ONBOARDING_PROMPT`를 extra_prompt로 주입했다. 차트 JSON 계약도 실제 지침을 사용하기 위해 SYSTEM_PROMPT를 포함했다. Memory 지침도 PIA `MEMORY_INSTRUCTION`을 주입했다. 실행기의 기존 broker/order/plan/시장 소식 안내는 유지했다.
@@ -54,3 +56,32 @@
 - **o6 미해결:** broker가 “verified KIS 연결 없음, Member Web에서 연결/확인 안내” 결과를 돌려줬다. 모델은 “아직 연결이 확인되지 않아요. 웹에서 ‘계좌 확인’까지 눌렀는지 봐 주세요.”라고 답했지만 `choices`를 부르지 않아 재확인 버튼이 없었다. 이 답변 호출에는 도구 12개가 제공됐다. 따라서 도구가 꺼진 경로나 Telegram 전송 오류가 아니라 모델의 버튼 호출 누락이다. 판정 오류로 취급하지 않는다.
 - o2~o5·o7·r1~r3는 기존 기대대로 통과했다. 뉴스 표와 실적 차트는 실제 생성 답변을 PIA parser/render로 확인해 PNG 생성까지 통과했다. 나중에 하기 뒤 일반 질문에 재촉하지 않았고, 연결 성공 뒤와 이미 연결된 사용자 체험 뒤에는 버튼 없이 끝났다.
 - 추가 수정·세 번째 유료 실행·병합·배포는 하지 않았다. 남은 o6의 원인과 최소 수정 방향은 결과를 공유한 뒤 정한다. CHECK를 없애기 위한 판정 완화나 단계 저장·문구 감지 코드는 추가하지 않았다.
+
+
+## 배포 전 추가 확인: 3차와 가짜 계약 오류 발견
+
+- 남은 o6 확인을 요청받아 연결 안내/미확인 응답의 공통 마무리 지침을 정리해 3차 11질문을 실행했다(PIA `c23f8c3ca`, harness `7329911`). 결과는 다시 10 PASS/1 CHECK, 주문 0, 소요 시간 56.9+24.5+10.7=92.1초였다. o6만 계속 choices를 호출하지 않았다. 추가 지침의 효과는 확인되지 않았다.
+- 경로·캐시·전송 문제를 더 대조했다. 실제 import는 `/pia/app/core.py`였고 새 문장을 읽고 있었다. 답변 호출에 도구 12개가 제공됐으며 모델이 choices를 호출한 기록 자체가 없었다.
+- **가짜 계약 오류:** `broker_not_connected`가 `/internal/members/*` 전체에 409를 반환해 `/broker-status`도 거절했다. 실제 Broker `credential_api`의 상태 조회는 인증된 요청에 연결이 없어도 `200 {"connection": null}`을 반환한다.
+- 실제 `BrokerReadTool._account`는 account 409 뒤 `_status`를 읽는다. 그런데 가짜가 그 상태 조회도 막아 `Broker account lookup failed: ...`라는 오류 안내를 모델에 보냈다. 정상 미연결 상태를 확인하는 시나리오가 아니라 상태 조회까지 실패한 입력이었다.
+- 따라서 앞선 o6를 **제품의 정상 미연결 안내 문제로만 분류한 판단은 정정**한다. 모델이 버튼을 안 낸 것은 사실이지만 그 입력이 실제 정상 상태 계약과 달랐다. 입력 차이를 그대로 둔 채 지침만 강화하는 방식은 적절하지 않았다.
+- 효과가 없었던 추가 지침은 PIA `2876de934`로 되돌렸다. 최종 ONBOARDING_PROMPT는 2차의 `2d0fa4316`과 동일하다.
+
+## 4차: 실제 계약에 맞춘 가짜로 최종 확인
+
+- PIA `2876de934`(지침은 `2d0fa4316`과 같음), harness `35887c0`. `broker_not_connected`에서도 `/broker-status`는 200·connection null을 반환하도록 가짜만 고쳤다. 제품 Broker/Harness 코드는 바꾸지 않았다.
+- `test_manual_scenario_reports_a_missing_connection_as_state`가 실제 BrokerReadTool로 가짜를 조회해 `Brokerage connection: none`을 받는지 본다. 수정 전 가짜는 조회 실패, 수정 후는 정상 상태가 나오는 차이를 오프라인으로 재현했다.
+- 동일 11질문·모델·실제 PIA 지침·판정 조건 유지. **11 PASS / CHECK 0 / 주문 0**.
+
+| 세트 | PASS | CHECK | 소요 시간 |
+|---|---:|---:|---:|
+| onboarding | 7 | 0 | 64.7초 |
+| onboarding_reset | 3 | 0 | 28.0초 |
+| onboarding_legacy | 1 | 0 | 12.7초 |
+| 합계 | 11 | 0 | 105.4초 |
+
+- o6: broker 결과가 `Brokerage connection: none`으로 나왔고, 모델이 `choices(options=["계좌 연결 완료"])`를 호출했다. 미확인 안내와 재확인 버튼이 같은 답변에 있다.
+- Daily·예시 버튼·뉴스 표·실적 차트, 나중에 이후 일반 대화, 연결 성공 종료, 이미 연결된 회원, 옛 설문→새 흐름 전환도 모두 통과했다.
+- 최종 표(603×721)·차트(1200×700)의 파싱·사진 규격·PNG 렌더를 오프라인으로 확인했다.
+- PIA 499개·건너뜀 0, Ruff·후보 이미지 빌드 PASS. Harness 257개·subtest 153개 PASS, 변경 파일 Ruff PASS. 실제 provider 호출은 모델만 발생했고 뉴스·웹 호출 0, 실제 계좌·회원 조회·주문 없음. 로그·결과 JSON에 주입한 키가 없는지도 프로세스 안에서 확인했다.
+- 병합·배포·릴리스는 하지 않았다. 추가 모델 지침이나 전송 예외·단계 플래그·문구 감지 코드를 넣지 않았다. Harness 변경은 시나리오 가짜와 회귀 테스트이므로 릴리스가 필요 없다.
