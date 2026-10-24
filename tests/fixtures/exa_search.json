@@ -1,0 +1,58 @@
+{
+  "requestId": "fake-request",
+  "results": [
+    {
+      "id": "https://source1.example/report",
+      "url": "https://source1.example/report",
+      "title": "기업 자료 1",
+      "publishedDate": null,
+      "highlights": [
+        "검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. 검색 결과의 짧은 발췌입니다. "
+      ]
+    },
+    {
+      "id": "https://source2.example/report",
+      "url": "https://source2.example/report",
+      "title": "기업 자료 2",
+      "publishedDate": "2026-10-20T04:55:00Z",
+      "highlights": [
+        "발췌 2",
+        "두 번째 줄"
+      ]
+    },
+    {
+      "id": "https://source3.example/report",
+      "url": "https://source3.example/report",
+      "title": "기업 자료 3",
+      "publishedDate": "2026-10-20T04:55:00Z",
+      "highlights": [
+        "발췌 3",
+        "두 번째 줄"
+      ]
+    },
+    {
+      "id": "https://source4.example/report",
+      "url": "https://source4.example/report",
+      "title": "기업 자료 4",
+      "publishedDate": "2026-10-20T04:55:00Z",
+      "highlights": [
+        "발췌 4",
+        "두 번째 줄"
+      ]
+    },
+    {
+      "id": "https://source5.example/report",
+      "url": "https://source5.example/report",
+      "title": "기업 자료 5",
+      "publishedDate": "2026-10-20T04:55:00Z",
+      "highlights": [
+        "발췌 5",
+        "두 번째 줄"
+      ]
+    }
+  ],
+  "costDollars": {
+    "total": 0.004
+  },
+  "searchTime": 123
+}

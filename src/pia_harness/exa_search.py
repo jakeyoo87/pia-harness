@@ -1,9 +1,8 @@
-"""Web search through Exa's hosted MCP server (`web_search_exa`), with a key."""
+"""Web search through Exa Lite, with cached highlights and no page fetch."""
 
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 import httpx
@@ -16,13 +15,14 @@ from .orchestrator import (
     ToolLink,
 )
 
-EXA_MCP_URL = "https://mcp.exa.ai/mcp"
+EXA_SEARCH_URL = "https://api.exa.ai/search"
 WEB_SEARCH_RESULT_COUNT = 5
 WEB_SEARCH_SUMMARY_MAX_CHARS = 400
 WEB_SEARCH_DESCRIPTION = (
     "Search the web, news included, for pages about the request: recent news, "
     "company and fund pages, ETF holdings, filings and reports. Returns up to five "
-    "candidates with title, link, date and a short excerpt, not full pages. Choose "
+    "candidates with title, link, date and a short excerpt, not full pages. Exa Lite "
+    "uses its cached index; pages are not fetched live during search. Choose "
     "when the answer needs facts that are not already in the conversation. For "
     "Korean news articles, news_search is usually better."
 )
@@ -41,8 +41,6 @@ WEB_SEARCH_ARGUMENTS_SCHEMA: dict[str, Any] = {
     "required": ["query"],
     "additionalProperties": False,
 }
-_LABELS = ("Title:", "URL:", "Published:", "Author:", "Highlights:")
-_SSE_LINE = re.compile(r"\r\n|\r|\n")
 
 
 class ExaWebSearch:
@@ -53,13 +51,13 @@ class ExaWebSearch:
         timeout_seconds: float = 20.0,
         async_client: httpx.AsyncClient | None = None,
     ) -> None:
-        # Keyless calls share a low limit and fail with 429 under real use.
+        # PIA provides its existing Exa key; never put it in a query or URL.
         if not isinstance(api_key, str) or not api_key.strip():
             raise ValueError("api_key is required")
         # The key goes in a header, never in the URL.
         self._headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
+            "Accept": "application/json",
             "x-api-key": api_key.strip(),
         }
         self._owns_client = async_client is None
@@ -91,17 +89,14 @@ class ExaWebSearch:
         query = query.strip()
         heading = f"Web search: query={json.dumps(query, ensure_ascii=False)}"
         payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "web_search_exa",
-                "arguments": {"query": query, "numResults": WEB_SEARCH_RESULT_COUNT},
-            },
+            "query": query,
+            "type": "lite",
+            "numResults": WEB_SEARCH_RESULT_COUNT,
+            "contents": {"highlights": True},
         }
         try:
             response = await self._client.post(
-                EXA_MCP_URL, json=payload, headers=self._headers
+                EXA_SEARCH_URL, json=payload, headers=self._headers
             )
         except httpx.HTTPError:
             return ReadToolResult(f"{heading}. The search request failed.")
@@ -110,96 +105,56 @@ class ExaWebSearch:
                 f"{heading}. The search request failed with status "
                 f"{response.status_code}."
             )
-        text = _tool_text(response.content.decode("utf-8", "replace"))
-        # Diagnostics carry sizes only: the reply may hold queries and page text.
-        if text is None:
+        try:
+            data = response.json()
+            rows = data["results"]
+            if not isinstance(rows, list):
+                raise TypeError("results")
+            links = tuple(link for row in rows if (link := _link(row)) is not None)[
+                :WEB_SEARCH_RESULT_COUNT
+            ]
+            notices = data.get("notices", [])
+            notes = [
+                f"Note: {notice['message']}"
+                for notice in notices
+                if isinstance(notice, dict) and isinstance(notice.get("message"), str)
+            ]
+        except (KeyError, TypeError, ValueError):
+            # API errors can echo request data: report only the response size.
             return ReadToolResult(
-                f"{heading}. The search response was an error or invalid "
-                f"({len(response.content)} bytes)."
+                f"{heading}. The search response was invalid ({len(response.content)} bytes)."
             )
-        if not text.strip():
-            return ReadToolResult(f"{heading}. No pages were found.")
-        links = parse_results(text)[:WEB_SEARCH_RESULT_COUNT]
-        if not links:
-            return ReadToolResult(
-                f"{heading}. The search results could not be read "
-                f"({len(text)} characters, no result blocks)."
-            )
-        return ReadToolResult(f"{heading}. Found {len(links)} candidates.", links)
+        if links:
+            status = f"Found {len(links)} candidates."
+        elif rows:
+            status = "The search results could not be read (no usable URLs)."
+        else:
+            status = "No pages were found."
+        observation = "\n".join([f"{heading}. {status}", *notes])
+        return ReadToolResult(observation, links)
 
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
 
 
-def _tool_text(body: str) -> str | None:
-    """Text of a JSON-RPC tools/call reply, sent as JSON or as SSE data lines.
-
-    None for an error reply or an unknown shape. SSE lines are split on CR/LF only:
-    str.splitlines would also split on characters that occur inside Korean text.
-    """
-    stripped = body.strip()
-    candidates = [stripped] if stripped.startswith("{") else []
-    candidates += [
-        line[len("data:") :].strip()
-        for line in _SSE_LINE.split(body)
-        if line.startswith("data:")
-    ]
-    for candidate in candidates:
-        try:
-            data = json.loads(candidate)
-        except ValueError:
-            continue
-        if not isinstance(data, dict) or data.get("error"):
-            return None
-        result = data.get("result")
-        if not isinstance(result, dict) or result.get("isError"):
-            return None
-        content = result.get("content")
-        if not isinstance(content, list):
-            return None
-        return "".join(
-            item["text"]
-            for item in content
-            if isinstance(item, dict) and isinstance(item.get("text"), str)
-        )
-    return None
+def _link(row: Any) -> ToolLink | None:
+    if not isinstance(row, dict):
+        return None
+    url = row.get("url")
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return None
+    published = _value(row.get("publishedDate"))
+    highlights = row.get("highlights") or []
+    if not isinstance(highlights, list):
+        raise TypeError("highlights")
+    return ToolLink(
+        title=_value(row.get("title")) or url,
+        url=url,
+        published=published[:10] if published else None,
+        summary=" ".join(highlights)[:WEB_SEARCH_SUMMARY_MAX_CHARS] or None,
+    )
 
 
-def parse_results(text: str) -> tuple[ToolLink, ...]:
-    """Exa's text blocks, split by '---': Title/URL/Published/Author/Highlights."""
-    links: list[ToolLink] = []
-    for block in text.split("\n---\n"):
-        fields: dict[str, str] = {}
-        highlights: list[str] = []
-        in_highlights = False
-        for line in (item.strip() for item in block.splitlines()):
-            label = next((name for name in _LABELS if line.startswith(name)), None)
-            if label is not None:
-                in_highlights = label == "Highlights:"
-                value = line[len(label) :].strip()
-                if in_highlights:
-                    if value:
-                        highlights.append(value)
-                else:
-                    fields[label] = value
-            elif in_highlights and line:
-                highlights.append(line)
-        url = fields.get("URL:", "")
-        if not url.startswith(("http://", "https://")):
-            continue
-        published = fields.get("Published:", "")
-        summary = " ".join(highlights)[:WEB_SEARCH_SUMMARY_MAX_CHARS]
-        links.append(
-            ToolLink(
-                title=_value(fields.get("Title:")) or url,
-                url=url,
-                published=_value(published[:10]),
-                summary=summary or None,
-            )
-        )
-    return tuple(links)
-
-
-def _value(text: str | None) -> str | None:
-    return None if text is None or text in ("", "N/A") else text
+def _value(text: Any) -> str | None:
+    return text if isinstance(text, str) and text not in ("", "N/A") else None
