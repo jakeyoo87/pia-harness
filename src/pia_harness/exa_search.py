@@ -152,9 +152,10 @@ def _link(row: Any) -> ToolLink | None:
         title=_value(row.get("title")) or url,
         url=url,
         published=published[:10] if published else None,
-        summary=" ".join(highlights)[:WEB_SEARCH_SUMMARY_MAX_CHARS] or None,
+        summary=" ".join(" ".join(highlights).split())[:WEB_SEARCH_SUMMARY_MAX_CHARS]
+        or None,
     )
 
 
 def _value(text: Any) -> str | None:
-    return text if isinstance(text, str) and text not in ("", "N/A") else None
+    return text if isinstance(text, str) and text else None

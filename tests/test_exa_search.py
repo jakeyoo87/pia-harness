@@ -60,7 +60,7 @@ class ExaWebSearchTest(unittest.IsolatedAsyncioTestCase):
             None,
             {"url": "ftp://bad.example"},
             {"title": "URL missing"},
-            {"url": "https://a.example", "title": None, "publishedDate": "N/A"},
+            {"url": "https://a.example", "title": None},
         ]
         rows += [{"url": f"https://example.com/{i}"} for i in range(6)]
         result = await execute(
