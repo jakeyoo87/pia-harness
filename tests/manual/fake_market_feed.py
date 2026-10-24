@@ -1,7 +1,7 @@
 """A fake market feed for the market_feed scenario set (smoke_flow).
 
 Made-up messages in the real DB shape (pia-collector docs/research-db-spec.md,
-schema_version 4, times in KST without an offset), dated from the run time: today,
+schema_version 6, times in KST without an offset), dated from the run time: today,
 yesterday, last week and the past month. No channel or person names; price targets carry
 made-up brokerage names (가온증권, 나래증권, 마루증권, 미리내증권, 라온증권), never real ones.
 LG에너지솔루션 has a broker opinion without any price target (m24). It holds
@@ -34,7 +34,7 @@ CREATE TABLE targets (id TEXT NOT NULL, seq INTEGER NOT NULL, stock TEXT NOT NUL
     previous_rating TEXT, broker TEXT, PRIMARY KEY (id, seq));
 CREATE TABLE events (id TEXT NOT NULL, event_date TEXT NOT NULL, what TEXT NOT NULL,
     stock TEXT);
-INSERT INTO meta VALUES ('schema_version', '4');
+INSERT INTO meta VALUES ('schema_version', '6');
 """
 
 # (hours before now, type, summary, body, keywords, stocks, sectors, extra)
@@ -61,7 +61,7 @@ _MESSAGES: list[
         "MUSK 발언 하나에 테슬라가 장중 6% 상승. 단기 과열 같아 보인다는 의견.",
         "테슬라, TSLA, 머스크, 단기 과열",
         ["TSLA"],
-        ["2차전지·전기차"],
+        ["2차전지·전기차·로봇"],
         {},
     ),
     (
@@ -273,7 +273,7 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "LG에너지솔루션은 미국 ESS 수주가 늘어 하반기 실적 개선이 기대된다. 매수 의견 유지.",
         "LG에너지솔루션, 373220, ESS, 수주, 2차전지",
         ["LG에너지솔루션"],
-        ["2차전지·전기차"],
+        ["2차전지·전기차·로봇"],
         {"sentiment": "positive"},
     ),
 ]
@@ -304,7 +304,7 @@ def build(now: datetime | None = None) -> bytes:
                 f"{name}({ticker}) {topic} 관련 보도. 자세한 내용은 기사 참고.",
                 f"{name}, {ticker}, {topic}, 미국 주식",
                 [ticker],
-                ["AI·SW·DC" if n % 2 else "소비재"],
+                ["AI·SW·DC" if n % 2 else "기타"],
                 {"link": f"https://news.example.com/us-{n + 1}"},
             )
         )

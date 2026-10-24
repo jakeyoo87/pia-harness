@@ -27,7 +27,7 @@ CREATE TABLE targets (id TEXT NOT NULL, seq INTEGER NOT NULL, stock TEXT NOT NUL
     previous_rating TEXT, broker TEXT);
 CREATE TABLE events (id TEXT NOT NULL, event_date TEXT NOT NULL, what TEXT NOT NULL,
     stock TEXT);
-INSERT INTO meta VALUES ('schema_version', '4');
+INSERT INTO meta VALUES ('schema_version', '6');
 """
 
 
@@ -229,7 +229,8 @@ class MarketFeedTest(unittest.IsolatedAsyncioTestCase):
             "before news_search and web_search",
             "go straight to web_search",
             "date('now', '+9 hours')",
-            "반도체, AI·SW·DC, 매크로, 2차전지·전기차, 에너지·방산·산업재, 소비재, 기타",
+            "매크로, 반도체, AI·SW·DC, 전기전자·디스플레이, 2차전지·전기차·로봇, 에너지·방산·산업재, ",
+            "바이오·헬스케어, 기타 (매크로 is the whole market",
             "previous_rating, broker)",
             "only in message_stocks",
             "50 rows or 20,000 characters",
