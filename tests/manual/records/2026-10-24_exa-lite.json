@@ -1,0 +1,846 @@
+{
+  "started_at": "2026-10-24T00:57:21.752598+00:00",
+  "calls": [
+    {
+      "id": 1,
+      "category": "해외 최신 뉴스",
+      "query": "Reuters semiconductor industry news October 23 2026",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1498,
+      "results": [
+        {
+          "title": "FCC grants Intel waiver to use existing foreign-made robotic devices By Reuters",
+          "url": "https://www.investing.com/news/stock-market-news/fcc-grants-intel-waiver-for-foreignmade-robotic-devices-4967773",
+          "published": "2026-10-22"
+        },
+        {
+          "title": "SK Hynix puts US IPO of chip unit Solidigm on hold after Seoul authorities raise concerns By Reuters",
+          "url": "https://www.investing.com/news/stock-market-news/sk-hynix-drops-us-ipo-plan-for-solidigm-newspaper-reports-4967714",
+          "published": "2026-10-22"
+        },
+        {
+          "title": "Chip Industry Week In Review",
+          "url": "https://semiengineering.com/chip-industry-week-in-review-161/",
+          "published": "2026-10-23"
+        },
+        {
+          "title": "US to award $389 million in R&D funds for power semiconductors, critical materials",
+          "url": "https://ca.finance.yahoo.com/news/us-award-389-million-r-130214977.html",
+          "published": "2026-10-22"
+        },
+        {
+          "title": "Semiconductors & AI Chips Weekly Briefing – October 23, 2026",
+          "url": "https://www.distillintelligence.com/briefings/semiconductors-ai-chips-2026-10-23",
+          "published": "2026-10-23"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 1,
+      "category": "해외 최신 뉴스",
+      "query": "Reuters semiconductor industry news October 23 2026",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 481,
+      "results": [
+        {
+          "title": "SK Hynix puts US IPO of chip unit Solidigm on hold after Seoul authorities raise concerns By Reuters",
+          "url": "https://www.investing.com/news/stock-market-news/sk-hynix-drops-us-ipo-plan-for-solidigm-newspaper-reports-4967714",
+          "published": "2026-10-22"
+        },
+        {
+          "title": "HKEX launches AI and semiconductor indexes, licenses AI index in China",
+          "url": "https://finance.yahoo.com/technology/ai/articles/hkex-launches-ai-semiconductor-indexes-100527616.html",
+          "published": "2026-10-23"
+        },
+        {
+          "title": "FCC grants Intel waiver to use existing foreign-made robotic devices By Reuters",
+          "url": "https://www.investing.com/news/stock-market-news/fcc-grants-intel-waiver-for-foreignmade-robotic-devices-4967773",
+          "published": "2026-10-22"
+        },
+        {
+          "title": "Chip Industry Week In Review",
+          "url": "https://semiengineering.com/chip-industry-week-in-review-161/",
+          "published": "2026-10-23"
+        },
+        {
+          "title": "US to award $389 million in R&D funds for power semiconductors, critical materials",
+          "url": "https://ca.finance.yahoo.com/news/us-award-389-million-r-130214977.html",
+          "published": "2026-10-22"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 2,
+      "category": "해외 언론 자료",
+      "query": "Financial Times Nvidia AI chips latest news October 2026",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 471,
+      "results": [
+        {
+          "title": "China faces uphill battle to wean tech firms off Nvidia chips",
+          "url": "https://www.ft.com/content/9dbd99db-6b0c-43bd-b7be-849f129df098",
+          "published": "2026-10-13"
+        },
+        {
+          "title": "Nvidia in talks to acquire US ‘open’ model start-up Reflection AI",
+          "url": "https://www.ft.com/content/052610c5-22b4-4dd4-932e-b7f9f0628b6a",
+          "published": "2026-10-10"
+        },
+        {
+          "title": "Nvidia | Financial Times",
+          "url": "https://www.ft.com/nvidia",
+          "published": null
+        },
+        {
+          "title": "Nvidia’s Jensen Huang Wants AI Chips To Be A ‘Financeable Asset,’ Says Neocloud Demand Is ‘Off The Charts’",
+          "url": "https://finance.yahoo.com/technology/ai/articles/nvidia-jensen-huang-wants-ai-105720331.html",
+          "published": "2026-10-22"
+        },
+        {
+          "title": "SpaceX seeks $40 billion financing to buy Nvidia chips, sources say By Reuters",
+          "url": "https://www.investing.com/news/stock-market-news/spacex-seeks-40-billion-to-buy-nvidia-chips-ft-reports-4935381",
+          "published": "2026-10-06"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 2,
+      "category": "해외 언론 자료",
+      "query": "Financial Times Nvidia AI chips latest news October 2026",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1853,
+      "results": [
+        {
+          "title": "China faces uphill battle to wean tech firms off Nvidia chips",
+          "url": "https://www.ft.com/content/9dbd99db-6b0c-43bd-b7be-849f129df098",
+          "published": "2026-10-13"
+        },
+        {
+          "title": "Nvidia in talks to acquire US ‘open’ model start-up Reflection AI",
+          "url": "https://www.ft.com/content/052610c5-22b4-4dd4-932e-b7f9f0628b6a",
+          "published": "2026-10-10"
+        },
+        {
+          "title": "Nvidia | Financial Times",
+          "url": "https://www.ft.com/nvidia",
+          "published": null
+        },
+        {
+          "title": "Nvidia’s Jensen Huang Wants AI Chips To Be A ‘Financeable Asset,’ Says Neocloud Demand Is ‘Off The Charts’",
+          "url": "https://finance.yahoo.com/technology/ai/articles/nvidia-jensen-huang-wants-ai-105720331.html",
+          "published": "2026-10-22"
+        },
+        {
+          "title": "Chart of the Week: The chip stock split",
+          "url": "https://www.ft.com/content/c5ed09fe-dc65-4f05-8c12-8f74f5dc7ccd",
+          "published": "2026-10-17"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 3,
+      "category": "기업 공식 실적",
+      "query": "site:investor.nvidia.com latest quarterly financial results 2026",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1341,
+      "results": [
+        {
+          "title": "NVIDIA Announces Financial Results for Second Quarter ...",
+          "url": "https://investor.nvidia.com/news/press-release-details/2026/NVIDIA-Announces-Financial-Results-for-Second-Quarter-Fiscal-2027/",
+          "published": "2026-08-26"
+        },
+        {
+          "title": "NVIDIA Corporation - NVIDIA Announces Financial Results for Second Quarter Fiscal 2027",
+          "url": "https://investor.nvidia.com/news/press-release-details/2026/NVIDIA-Announces-Financial-Results-for-Second-Quarter-Fiscal-2027/default.aspx",
+          "published": "2026-08-26"
+        },
+        {
+          "title": "NVIDIA Corporation - Financial Info - Quarterly Results",
+          "url": "https://investor.nvidia.com/financial-info/quarterly-results/",
+          "published": null
+        },
+        {
+          "title": "NVIDIA Corporation - NVIDIA Announces Financial Results for First Quarter Fiscal 2027",
+          "url": "https://investor.nvidia.com/news/press-release-details/2026/NVIDIA-Announces-Financial-Results-for-First-Quarter-Fiscal-2027/default.aspx",
+          "published": "2026-05-20"
+        },
+        {
+          "title": "NVIDIA Corporation - Financial Info - SEC Filings - SEC Filings Details",
+          "url": "https://investor.nvidia.com/financial-info/sec-filings/sec-filings-details/default.aspx?FilingId=19735893",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 3,
+      "category": "기업 공식 실적",
+      "query": "site:investor.nvidia.com latest quarterly financial results 2026",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 434,
+      "results": [
+        {
+          "title": "NVIDIA Corporation - NVIDIA Announces Financial Results for Second Quarter Fiscal 2027",
+          "url": "https://investor.nvidia.com/news/press-release-details/2026/NVIDIA-Announces-Financial-Results-for-Second-Quarter-Fiscal-2027/default.aspx",
+          "published": "2026-08-26"
+        },
+        {
+          "title": "NVIDIA Corporation - Financial Info - Quarterly Results",
+          "url": "https://investor.nvidia.com/financial-info/quarterly-results/",
+          "published": null
+        },
+        {
+          "title": "NVIDIA Corporation - NVIDIA Announces Financial Results for First Quarter Fiscal 2027",
+          "url": "https://investor.nvidia.com/news/press-release-details/2026/NVIDIA-Announces-Financial-Results-for-First-Quarter-Fiscal-2027/default.aspx",
+          "published": "2026-05-20"
+        },
+        {
+          "title": "NVIDIA Corporation - Financial Info - SEC Filings - SEC Filings Details",
+          "url": "https://investor.nvidia.com/financial-info/sec-filings/sec-filings-details/default.aspx?FilingId=19735893",
+          "published": null
+        },
+        {
+          "title": "NVIDIA Corporation - Financial Reports",
+          "url": "https://investor.nvidia.com/financial-info/financial-reports/default.aspx?lang=pt",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 4,
+      "category": "기업 공식 소식",
+      "query": "site:apple.com/newsroom October 2026 latest announcements",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 481,
+      "results": [
+        {
+          "title": "All Topics Archive - Apple",
+          "url": "https://www.apple.com/newsroom/archive/",
+          "published": null
+        },
+        {
+          "title": "iPhone Duo arrives at Apple Store locations worldwide - Apple",
+          "url": "https://www.apple.com/newsroom/2026/10/iphone-duo-arrives-at-apple-store-locations-worldwide/",
+          "published": "2026-10-23"
+        },
+        {
+          "title": "Developers bring incredible new app experiences to iPhone Duo - Apple",
+          "url": "https://www.apple.com/newsroom/2026/10/developers-bring-incredible-new-app-experiences-to-iphone-duo/",
+          "published": "2026-10-23"
+        },
+        {
+          "title": "Formula 1® United States Grand Prix™ streams live on Apple TV this weekend - Apple",
+          "url": "https://www.apple.com/newsroom/2026/10/formula-1-united-states-grand-prix-streams-live-on-apple-tv-this-weekend/",
+          "published": "2026-10-22"
+        },
+        {
+          "title": "Apple unveils the 2026 Designers of Tomorrow - Apple",
+          "url": "https://www.apple.com/newsroom/2026/10/apple-unveils-the-2026-designers-of-tomorrow/",
+          "published": "2026-10-22"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 4,
+      "category": "기업 공식 소식",
+      "query": "site:apple.com/newsroom October 2026 latest announcements",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1341,
+      "results": [
+        {
+          "title": "All Topics Archive - Apple",
+          "url": "https://www.apple.com/newsroom/archive/",
+          "published": null
+        },
+        {
+          "title": "iPhone Duo arrives at Apple Store locations worldwide - Apple",
+          "url": "https://www.apple.com/newsroom/2026/10/iphone-duo-arrives-at-apple-store-locations-worldwide/",
+          "published": "2026-10-23"
+        },
+        {
+          "title": "Newsroom - Apple",
+          "url": "https://www.apple.com/newsroom/",
+          "published": null
+        },
+        {
+          "title": "Developers bring incredible new app experiences to iPhone Duo - Apple",
+          "url": "https://www.apple.com/newsroom/2026/10/developers-bring-incredible-new-app-experiences-to-iphone-duo/",
+          "published": "2026-10-23"
+        },
+        {
+          "title": "Apple unveils the 2026 Designers of Tomorrow - Apple",
+          "url": "https://www.apple.com/newsroom/2026/10/apple-unveils-the-2026-designers-of-tomorrow/",
+          "published": "2026-10-22"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 5,
+      "category": "ETF 공식 구성",
+      "query": "site:vanguard.com VOO portfolio holdings official",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1268,
+      "results": [
+        {
+          "title": "Vanguard SandP 500 ETF",
+          "url": "https://fund-docs.vanguard.com/FA0968_SPM.pdf",
+          "published": null
+        },
+        {
+          "title": "Vanguard SandP 500 ETF",
+          "url": "https://workplace.vanguard.com/assets/corp/fund_communications/pdf_publish/us-products/fact-sheet/F0968.pdf",
+          "published": null
+        },
+        {
+          "title": "Vanguard S&P 500 ETF | VOO",
+          "url": "https://fund-docs.vanguard.com/F0968.pdf",
+          "published": null
+        },
+        {
+          "title": "Vanguard S&P 500 ETF",
+          "url": "https://personal1.vanguard.com/pub/Pdf/p968.pdf",
+          "published": null
+        },
+        {
+          "title": "Vanguard S&P 500 ETF",
+          "url": "https://fund-docs.vanguard.com/p968.pdf",
+          "published": "2026-04-28"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 5,
+      "category": "ETF 공식 구성",
+      "query": "site:vanguard.com VOO portfolio holdings official",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 551,
+      "results": [
+        {
+          "title": "Vanguard S&P 500 ETF",
+          "url": "https://investor.vanguard.com/investment-products/mutual-funds/profile/0968",
+          "published": null
+        },
+        {
+          "title": "Vanguard SandP 500 ETF",
+          "url": "https://fund-docs.vanguard.com/F0968.pdf",
+          "published": null
+        },
+        {
+          "title": "Vanguard S&P 500 ETF",
+          "url": "https://personal1.vanguard.com/pub/Pdf/p968.pdf",
+          "published": null
+        },
+        {
+          "title": "Compare ETFs \n and mutual funds",
+          "url": "https://investor.vanguard.com/tools-calculators/etf-fund-comparison-tool?Ticker=vfifx%2Cvoo",
+          "published": null
+        },
+        {
+          "title": "Vanguard SandP 500 ETF",
+          "url": "https://fund-docs.vanguard.com/FA0968_SPM.pdf",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 6,
+      "category": "반도체 ETF 구성",
+      "query": "site:ishares.com SOXX ETF holdings official",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 517,
+      "results": [
+        {
+          "title": "iShares Semiconductor ETF | SOXX",
+          "url": "https://www.ishares.com/us/products/239705/ishares-phlx-semiconductor-etf/%20",
+          "published": null
+        },
+        {
+          "title": "iShares Semiconductor ETF",
+          "url": "https://www.ishares.com/us/literature/fact-sheet/soxx-ishares-semiconductor-etf-fund-fact-sheet-en-us.pdf",
+          "published": null
+        },
+        {
+          "title": "iShares Semiconductor ETF | SOXX",
+          "url": "https://www.ishares.com/us/products/239705/ishares-semiconductor-etf?qt=SOXX",
+          "published": null
+        },
+        {
+          "title": "iShares Semiconductor ETF | SOXX",
+          "url": "https://www.ishares.com/us/products/239705/ishares-semiconductor-etf",
+          "published": null
+        },
+        {
+          "title": "iShares ETF Investments List | iShares - BlackRock",
+          "url": "https://www.ishares.com/us/products/etf-investments",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 6,
+      "category": "반도체 ETF 구성",
+      "query": "site:ishares.com SOXX ETF holdings official",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1155,
+      "results": [
+        {
+          "title": "iShares Semiconductor ETF | SOXX",
+          "url": "https://www.ishares.com/us/products/239705/ishares-phlx-semiconductor-etf/%20",
+          "published": null
+        },
+        {
+          "title": "iShares Semiconductor ETF",
+          "url": "https://www.ishares.com/us/literature/fact-sheet/soxx-ishares-semiconductor-etf-fund-fact-sheet-en-us.pdf",
+          "published": null
+        },
+        {
+          "title": "iShares Semiconductor ETF SOXX | NASDAQ",
+          "url": "https://www.ishares.com/us/literature/annual-report/ar-soxx-en.pdf",
+          "published": null
+        },
+        {
+          "title": "iShares Semiconductor ETF | SOXX",
+          "url": "https://www.ishares.com/us/products/239705/ishares-semiconductor-etf?qt=SOXX",
+          "published": null
+        },
+        {
+          "title": "iShares Semiconductor ETF | SOXX",
+          "url": "https://www.ishares.com/us/products/239705/ishares-semiconductor-etf",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 7,
+      "category": "미국 공시",
+      "query": "site:sec.gov NVIDIA 2026 Form 10-Q",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1982,
+      "results": [
+        {
+          "title": "nvda-20260726",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000075/nvda-20260726.htm",
+          "published": null
+        },
+        {
+          "title": "EDGAR Filing Documents for 0001045810-26-000075",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000075/0001045810-26-000075-index.html",
+          "published": null
+        },
+        {
+          "title": "NVIDIA CORP Form 10-Q for the period ended April 26, 2026",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000052/nvda-20260426.htm",
+          "published": "2026-05-20"
+        },
+        {
+          "title": "NVIDIA CORP NVDA on Nasdaq",
+          "url": "https://www.sec.gov/edgar/browse/?CIK=1045810",
+          "published": null
+        },
+        {
+          "title": "EDGAR Search Results",
+          "url": "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0001045810&type=10-Q",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 7,
+      "category": "미국 공시",
+      "query": "site:sec.gov NVIDIA 2026 Form 10-Q",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 580,
+      "results": [
+        {
+          "title": "nvda-20260726",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000075/nvda-20260726.htm",
+          "published": null
+        },
+        {
+          "title": "nvda-20260426",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000052/nvda-20260426.htm",
+          "published": "2026-05-20"
+        },
+        {
+          "title": "EDGAR Filing Documents for 0001045810-26-000075",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000075/0001045810-26-000075-index.htm",
+          "published": null
+        },
+        {
+          "title": "EDGAR Search Results",
+          "url": "https://www.sec.gov/cgi-bin/browse-edgar?CIK=0001045810&type=10-Q",
+          "published": null
+        },
+        {
+          "title": "EDGAR Filing Documents for 0001045810-26-000075",
+          "url": "https://www.sec.gov/Archives/edgar/data/1045810/000104581026000075/0001045810-26-000075-index.html",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 8,
+      "category": "공식 정책",
+      "query": "site:federalreserve.gov latest FOMC statement October 2026",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 466,
+      "results": [
+        {
+          "title": "Federal Reserve Board - 2026 FOMC Press Releases",
+          "url": "https://www.federalreserve.gov/newsevents/pressreleases/2026-press-fomc.htm",
+          "published": null
+        },
+        {
+          "title": "Federal Reserve Board - Monetary Policy",
+          "url": "https://www.federalreserve.gov/monetarypolicy.htm",
+          "published": null
+        },
+        {
+          "title": "Federal Reserve Board - Federal Reserve issues FOMC statement",
+          "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm",
+          "published": "2026-09-16"
+        },
+        {
+          "title": "Federal Reserve Board - Calendar: October 2026",
+          "url": "http://federalreserve.gov/newsevents/2026-october.htm",
+          "published": null
+        },
+        {
+          "title": "The Fed - Meeting calendars and information",
+          "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 8,
+      "category": "공식 정책",
+      "query": "site:federalreserve.gov latest FOMC statement October 2026",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 2340,
+      "results": [
+        {
+          "title": "The Fed - Meeting calendars and information",
+          "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+          "published": null
+        },
+        {
+          "title": "Federal Reserve Board - Federal Reserve issues FOMC statement",
+          "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary20260916a.htm",
+          "published": "2026-09-16"
+        },
+        {
+          "title": "Federal Reserve Board - Calendar: October 2026",
+          "url": "http://federalreserve.gov/newsevents/2026-october.htm",
+          "published": null
+        },
+        {
+          "title": "Federal Reserve Board - Monetary Policy",
+          "url": "https://www.federalreserve.gov/monetarypolicy.htm",
+          "published": null
+        },
+        {
+          "title": "The Fed - September 15-16, 2026 FOMC Meeting",
+          "url": "https://www.federalreserve.gov/monetarypolicy/fomcpresconf20260916.htm",
+          "published": "2026-09-16"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 9,
+      "category": "국내 공식 실적",
+      "query": "삼성전자 2026년 3분기 실적 발표 공식 IR",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1142,
+      "results": [
+        {
+          "title": "삼성전자, 2026년 3분기 잠정실적 발표 – Samsung Newsroom Korea",
+          "url": "https://news.samsung.com/kr/%EC%82%BC%EC%84%B1%EC%A0%84%EC%9E%90-2026%EB%85%84-3%EB%B6%84%EA%B8%B0-%EC%9E%A0%EC%A0%95%EC%8B%A4%EC%A0%81-%EB%B0%9C%ED%91%9C",
+          "published": "2026-10-07"
+        },
+        {
+          "title": "경영정보 공시 | 투자자 정보 | Samsung 대한민국",
+          "url": "https://www.samsung.com/sec/ir/reports-disclosures/public-disclosure/4070/",
+          "published": null
+        },
+        {
+          "title": "IR 행사 │실적발표 & IR 행사│ 투자자 정보 │ Samsung 대한민국",
+          "url": "https://www.samsung.com/sec/ir/ir-events-presentations/events/",
+          "published": "2017-03-30"
+        },
+        {
+          "title": "실적발표 │ 실적발표 & IR 행사 │ 투자자 정보 │ ...",
+          "url": "https://www.samsung.com/sec/ir/financial-information/earnings-release/",
+          "published": null
+        },
+        {
+          "title": "프레스센터 - 삼성전자 반도체 뉴스룸",
+          "url": "https://news.samsungsemiconductor.com/kr/category/%eb%89%b4%ec%8a%a4/",
+          "published": null
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    },
+    {
+      "id": 9,
+      "category": "국내 공식 실적",
+      "query": "삼성전자 2026년 3분기 실적 발표 공식 IR",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 523,
+      "results": [
+        {
+          "title": "경영정보 공시 | 투자자 정보 | Samsung 대한민국",
+          "url": "https://www.samsung.com/sec/ir/reports-disclosures/public-disclosure/4070/",
+          "published": null
+        },
+        {
+          "title": "삼성전자, 2026년 3분기 잠정실적 발표 – Samsung Newsroom Korea",
+          "url": "https://news.samsung.com/kr/%EC%82%BC%EC%84%B1%EC%A0%84%EC%9E%90-2026%EB%85%84-3%EB%B6%84%EA%B8%B0-%EC%9E%A0%EC%A0%95%EC%8B%A4%EC%A0%81-%EB%B0%9C%ED%91%9C",
+          "published": "2026-10-07"
+        },
+        {
+          "title": "IR 행사 │실적발표 & IR 행사│ 투자자 정보 │ Samsung 대한민국",
+          "url": "https://www.samsung.com/sec/ir/ir-events-presentations/events/",
+          "published": null
+        },
+        {
+          "title": "Earnings Releases │Financial Information │ Investor Relations │ Samsung Global |",
+          "url": "https://www.samsung.com/global/ir/financial-information/earnings-release/",
+          "published": null
+        },
+        {
+          "title": "Samsung Electronics Announces Earnings Guidance for Third Quarter 2026 – Samsung Global Newsroom",
+          "url": "https://news.samsung.com/global/samsung-electronics-announces-earnings-guidance-for-third-quarter-2026",
+          "published": "2026-10-07"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 10,
+      "category": "국내 기업 자료",
+      "query": "SK하이닉스 2026년 3분기 실적 발표 HBM 공식",
+      "type": "lite",
+      "status": 200,
+      "elapsed_ms": 492,
+      "results": [
+        {
+          "title": "Earnings Release",
+          "url": "https://www.skhynix.com/ir/UI-FR-IR06/?os=icxa75gdubczx",
+          "published": null
+        },
+        {
+          "title": "All – SK hynix Newsroom",
+          "url": "https://news.skhynix.co.kr/all/",
+          "published": null
+        },
+        {
+          "title": "AI 메모리 호황 탄 SK하이닉스…3분기 영업익 '80조' 돌파 주목 - 글로벌이코노믹",
+          "url": "https://www.g-enews.com/article/Industry/2026/10/202610181102265167fa4bb4fab2_1",
+          "published": "2026-10-18"
+        },
+        {
+          "title": "'영업익 77조' 전망에도 좁혀진 점유율 격차… SK하이닉스, HBM4 시험대 < 기획특집 < PUBLICVIEW < 기사본문 - 더퍼블릭",
+          "url": "https://www.thepublic.kr/news/articleView.html?idxno=323135",
+          "published": "2026-10-21"
+        },
+        {
+          "title": "SK하이닉스, AI 호재 지속 속 3분기 실적 우상향 유지",
+          "url": "https://www.ket.kr/news/article.html?no=41085",
+          "published": "2026-09-30"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.004,
+        "search": {
+          "neural": 0.004
+        }
+      }
+    },
+    {
+      "id": 10,
+      "category": "국내 기업 자료",
+      "query": "SK하이닉스 2026년 3분기 실적 발표 HBM 공식",
+      "type": "auto",
+      "status": 200,
+      "elapsed_ms": 1143,
+      "results": [
+        {
+          "title": "Earnings Release < Financial Information < IR < SK hynix",
+          "url": "https://www.skhynix.com/ir/UI-FR-IR06/?os=icxa75gdubczx",
+          "published": null
+        },
+        {
+          "title": "SK하이닉스 2026년 3분기 실적발표",
+          "url": "https://www.knowingasset.com/app/calendar/7806",
+          "published": null
+        },
+        {
+          "title": "SK하이닉스, 2026년 2분기 경영실적 발표",
+          "url": "https://news.skhynix.co.kr/q2-2026-business-results/",
+          "published": "2026-07-29"
+        },
+        {
+          "title": "SK하이닉스, AI 호재 지속 속 3분기 실적 우상향 유지",
+          "url": "https://www.ket.kr/news/article.html?no=41085",
+          "published": "2026-09-30"
+        },
+        {
+          "title": "AI 메모리 호황 탄 SK하이닉스…3분기 영업익 '80조' 돌파 주목 - 글로벌이코노믹",
+          "url": "https://www.g-enews.com/article/Industry/2026/10/202610181102265167fa4bb4fab2_1",
+          "published": "2026-10-18"
+        }
+      ],
+      "notices": [],
+      "costDollars": {
+        "total": 0.007,
+        "search": {
+          "neural": 0.007
+        }
+      }
+    }
+  ],
+  "finished_at": "2026-10-24T00:57:41.887270+00:00"
+}
