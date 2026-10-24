@@ -7,151 +7,173 @@ from pathlib import Path
 import httpx
 
 from pia_harness import ExaWebSearch, ToolCall
-from pia_harness.exa_search import EXA_MCP_URL, parse_results
+from pia_harness.exa_search import EXA_SEARCH_URL
 
-FIXTURE = Path(__file__).parent / "fixtures" / "exa_web_search.sse"
-
-
-def search(handler) -> ExaWebSearch:
-    return ExaWebSearch(
-        api_key="synthetic-key",
-        async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-    )
+FIXTURE = Path(__file__).parent / "fixtures" / "exa_search.json"
 
 
-def call(query: str = "TIGER AI반도체핵심공정 471760 구성종목") -> ToolCall:
+def call(query: str = "ETF holdings official report") -> ToolCall:
     return ToolCall("web_search", json.dumps({"query": query}, ensure_ascii=False))
 
 
-def mcp_reply(text: str) -> httpx.Response:
-    body = {"result": {"content": [{"type": "text", "text": text}]}}
-    return httpx.Response(
-        200,
-        text="event: message\ndata: " + json.dumps(body, ensure_ascii=False) + "\n",
-        headers={"content-type": "text/event-stream"},
-    )
+async def execute(handler, query: str = "ETF holdings official report"):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tool = ExaWebSearch(api_key="synthetic-key", async_client=client)
+        return await tool.execute("user", call(query), ())
 
 
 class ExaWebSearchTest(unittest.IsolatedAsyncioTestCase):
-    async def test_recorded_reply_becomes_five_candidates(self) -> None:
-        requests: list[httpx.Request] = []
+    async def test_lite_request_and_five_candidates(self) -> None:
+        requests = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request):
             requests.append(request)
-            return httpx.Response(
-                200,
-                content=FIXTURE.read_bytes(),
-                headers={"content-type": "text/event-stream"},
-            )
+            return httpx.Response(200, content=FIXTURE.read_bytes())
 
-        result = await search(handler).execute("user", call(), ())
-
-        self.assertEqual(EXA_MCP_URL, str(requests[0].url))
-        sent = json.loads(requests[0].content)
-        self.assertEqual("web_search_exa", sent["params"]["name"])
-        self.assertEqual(5, sent["params"]["arguments"]["numResults"])
-        self.assertEqual("synthetic-key", requests[0].headers["x-api-key"])
-        self.assertIn("Found 5 candidates", result.observation_text)
+        result = await execute(handler)
+        self.assertEqual(1, len(requests))
+        request = requests[0]
+        self.assertEqual(EXA_SEARCH_URL, str(request.url))
+        self.assertEqual("synthetic-key", request.headers["x-api-key"])
+        self.assertEqual("application/json", request.headers["accept"])
         self.assertEqual(
-            [
-                "https://etfshopping.com/etf/471760",
-                "https://www.funetf.co.kr/product/etf/view/KR7471760009",
-                "https://finance.naver.com/item/main.naver?code=471760",
-                "https://kr.tradingview.com/symbols/KRX-471760/holdings/",
-                "https://etfexplorer.io/etf/471760",
-            ],
-            [link.url for link in result.links],
+            {
+                "query": "ETF holdings official report",
+                "type": "lite",
+                "numResults": 5,
+                "contents": {"highlights": True},
+            },
+            json.loads(request.content),
         )
+        self.assertIn("Found 5 candidates", result.observation_text)
+        self.assertEqual(5, len(result.links))
         first = result.links[0]
-        self.assertTrue(first.title.startswith("TIGER AI반도체핵심공정"))
-        # "N/A" is not a date.
+        self.assertEqual("기업 자료 1", first.title)
+        self.assertEqual("https://source1.example/report", first.url)
         self.assertIsNone(first.published)
-        self.assertIsNotNone(first.summary)
-        self.assertLessEqual(len(first.summary or ""), 400)
+        self.assertEqual(400, len(first.summary or ""))
+        self.assertEqual("2026-10-20", result.links[1].published)
+        self.assertEqual("발췌 2 두 번째 줄", result.links[1].summary)
 
-    def test_fields_and_highlights_are_read_per_block(self) -> None:
-        text = (
-            "Title: 기사 A\nURL: https://a.example/1\nPublished: 2026-09-28T04:55:00Z\n"
-            "Author: 기자\nHighlights:\n첫 줄\n둘째 줄\n\n---\n\n"
-            "Title: N/A\nURL: https://b.example/2\nPublished: N/A\nHighlights:\n\n---\n\n"
-            "Title: 링크 없음\nURL: ftp://c.example/3\n"
+    async def test_missing_fields_bad_urls_and_result_limit(self) -> None:
+        rows = [
+            None,
+            {"url": "ftp://bad.example"},
+            {"title": "URL missing"},
+            {"url": "https://a.example", "title": None},
+        ]
+        rows += [{"url": f"https://example.com/{i}"} for i in range(6)]
+        result = await execute(
+            lambda request: httpx.Response(200, json={"results": rows})
         )
-        links = parse_results(text)
+        self.assertEqual(5, len(result.links))
+        self.assertEqual("https://a.example", result.links[0].title)
+        self.assertIsNone(result.links[0].published)
+        self.assertIsNone(result.links[0].summary)
+        self.assertNotIn("https://example.com/5", [link.url for link in result.links])
 
-        self.assertEqual(2, len(links))
-        self.assertEqual("기사 A", links[0].title)
-        self.assertEqual("2026-09-28", links[0].published)
-        self.assertEqual("첫 줄 둘째 줄", links[0].summary)
-        # A missing title falls back to the link.
-        self.assertEqual("https://b.example/2", links[1].title)
-        self.assertIsNone(links[1].summary)
+    async def test_notices_are_shown_even_with_no_results_but_warnings_are_not(
+        self,
+    ) -> None:
+        for rows in ([], [{"url": "https://example.com"}]):
+            with self.subTest(rows=rows):
+                result = await execute(
+                    lambda request, rows=rows: httpx.Response(
+                        200,
+                        json={
+                            "results": rows,
+                            "notices": [
+                                {
+                                    "code": "CONSTRAINT_RELAXED",
+                                    "path": "/query",
+                                    "message": "No page matched site:; searched without it.",
+                                }
+                            ],
+                            "warnings": [
+                                {
+                                    "code": "IGNORED_FIELD",
+                                    "path": "/startCrawlDate",
+                                    "message": "internal diagnostic",
+                                }
+                            ],
+                        },
+                    )
+                )
+                self.assertIn(
+                    "Note: No page matched site:; searched without it.",
+                    result.observation_text,
+                )
+                self.assertNotIn("internal diagnostic", result.observation_text)
+                self.assertNotIn("IGNORED_FIELD", result.observation_text)
+                if not rows:
+                    self.assertIn("No pages were found", result.observation_text)
 
-    async def test_failures_come_back_as_results(self) -> None:
-        cases = {
-            "status": lambda request: httpx.Response(429, text="rate limited"),
-            "error reply": lambda request: httpx.Response(
-                200, json={"error": {"message": "limit"}}
+    async def test_failures_return_safe_results_without_retry(self) -> None:
+        cases = [
+            (httpx.Response(429, text="synthetic-key"), "failed with status 429"),
+            (httpx.Response(503, text="synthetic-key"), "failed with status 503"),
+            (
+                httpx.Response(302, headers={"location": "https://other.example"}),
+                "failed with status 302",
             ),
-            "tool error": lambda request: httpx.Response(
-                200, json={"result": {"isError": True, "content": []}}
+            (httpx.Response(200, text="synthetic-key"), "response was invalid"),
+            (
+                httpx.Response(200, json={"error": {"message": "synthetic-key"}}),
+                "response was invalid",
             ),
-            "unreadable text": lambda request: mcp_reply("no blocks here"),
-            "empty": lambda request: mcp_reply(""),
-        }
-        expected = {
-            "status": "failed with status 429",
-            "error reply": "response was an error or invalid",
-            "tool error": "response was an error or invalid",
-            "unreadable text": "could not be read (14 characters, no result blocks)",
-            "empty": "No pages were found",
-        }
-        for name, handler in cases.items():
-            with self.subTest(name):
-                result = await search(handler).execute("user", call(), ())
-                self.assertIn(expected[name], result.observation_text)
+            (httpx.Response(200, json={"results": {}}), "response was invalid"),
+            (httpx.Response(200, json={"results": []}), "No pages were found"),
+            (
+                httpx.Response(200, json={"results": [{"url": "ftp://bad.example"}]}),
+                "could not be read",
+            ),
+        ]
+        for reply, expected in cases:
+            requests = []
+
+            def handler(request, requests=requests, reply=reply):
+                requests.append(request)
+                return reply
+
+            with self.subTest(expected=expected):
+                result = await execute(handler)
+                self.assertIn(expected, result.observation_text)
+                self.assertNotIn("synthetic-key", result.observation_text)
                 self.assertEqual((), result.links)
+                self.assertEqual(1, len(requests))
 
-        def broken(request: httpx.Request) -> httpx.Response:
-            raise httpx.ConnectError("down", request=request)
+        def broken(request):
+            raise httpx.ConnectError("synthetic-key", request=request)
 
-        result = await search(broken).execute("user", call(), ())
+        result = await execute(broken)
         self.assertIn("The search request failed.", result.observation_text)
+        self.assertNotIn("synthetic-key", result.observation_text)
 
     async def test_blank_query_is_not_sent(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request):
             raise AssertionError("not sent")
 
-        result = await search(handler).execute("user", call("  "), ())
+        result = await execute(handler, "  ")
         self.assertIn("query was invalid", result.observation_text)
-
-    async def test_key_goes_in_a_header(self) -> None:
-        requests: list[httpx.Request] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            requests.append(request)
-            return mcp_reply("Title: A\nURL: https://a.example/1\n")
-
-        tool = ExaWebSearch(
-            api_key="synthetic-key",
-            async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        )
-        await tool.execute("user", call(), ())
-
-        self.assertEqual("synthetic-key", requests[0].headers["x-api-key"])
-        self.assertEqual(EXA_MCP_URL, str(requests[0].url))
 
     def test_a_key_is_required(self) -> None:
         for key in (None, "", "  "):
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, "api_key"):
                 ExaWebSearch(api_key=key)
 
-    def test_tool_definition(self) -> None:
-        tool = ExaWebSearch(api_key="synthetic-key").tool()
-        self.assertEqual("web_search", tool.name)
-        self.assertEqual(["query"], tool.arguments_schema["required"])
-        self.assertIn(
-            "site:", tool.arguments_schema["properties"]["query"]["description"]
-        )
+    async def test_tool_definition_is_still_query_only(self) -> None:
+        tool = ExaWebSearch(api_key="synthetic-key")
+        try:
+            definition = tool.tool()
+            self.assertEqual("web_search", definition.name)
+            self.assertEqual(["query"], list(definition.arguments_schema["properties"]))
+            self.assertIn(
+                "site:",
+                definition.arguments_schema["properties"]["query"]["description"],
+            )
+            self.assertIn("cached index", definition.description)
+        finally:
+            await tool.aclose()
 
 
 if __name__ == "__main__":

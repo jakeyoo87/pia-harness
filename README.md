@@ -254,14 +254,14 @@ OpenRouter 내장 Web Search는 사용하지 않는다. 검색은 `market_feed_s
 
 뉴스 검색(`news_search`)은 한국 뉴스 기사 후보를 찾는 읽기 도구다. 공급자는 NAVER API HUB 뉴스 검색이고, host가 준 키(Client ID·Secret)를 헤더로 보낸다. 키는 필수다. PIA는 자기 비밀 저장소에서 읽어 `NaverNewsSearch(client_id=..., client_secret=...)`로 넘긴다. NAVER API HUB는 지금 한시적으로 무료이고, 검색 호출은 월 775,000회가 한도다(유료로 바뀌면 미리 공지된다). 한 번에 관련도순으로 5건을 받고, 후보마다 제목·날짜·짧은 설명·링크가 있다. 링크는 네이버 뉴스 주소(`*.news.naver.com`)가 있으면 그것을, 없으면 언론사 원문 주소를 쓴다. 그중 `n.news.naver.com` 기사는 본문 추출이 직접 읽고, 스포츠·연예 주소는 Jina로 읽는다(6.2.2). 회사·펀드 페이지, ETF 구성, 공시, 해외 자료, `site:` 검색은 웹 검색의 몫이다. 두 도구의 설명에 이 구분을 적는다.
 
-웹 검색(`web_search`)은 뉴스를 포함한 웹 전체에서 후보를 찾는 읽기 도구다. 공급자는 Exa의 MCP 서버(`web_search_exa`)이고, host가 준 Exa 키를 `x-api-key` 헤더로 보낸다(URL에는 넣지 않는다). 키는 필수다. 키 없는 호출은 여러 사용자가 한 한도를 나눠 써서 조사 중 429로 막혔다(측정 2026-09-30). PIA는 OpenRouter 키처럼 자기 비밀 저장소에서 읽어 `ExaWebSearch(api_key=...)`로 넘긴다. 검색 한 번에 후보를 최대 5건 받으며, 후보에는 본문이 없다. 본문이 필요하면 모델이 6.2.2 본문 추출을 따로 부른다.
+웹 검색(`web_search`)은 뉴스를 포함한 웹 전체에서 후보를 찾는 읽기 도구다. 공급자는 Exa Lite이고 Search API(`POST https://api.exa.ai/search`, `type=lite`)를 직접 호출한다. host가 준 기존 Exa 키를 `x-api-key` 헤더로 보내며(URL에는 넣지 않음), 키는 필수다. PIA는 자기 비밀 저장소에서 읽어 `ExaWebSearch(api_key=...)`로 넘긴다. 검색 한 번에 후보를 최대 5건 받고, 후보는 제목·링크·발행일·발췌 최대 400자다. Lite는 검색 시 페이지를 새로 읽지 않고 Exa의 캐시된 인덱스를 사용한다. 필요한 본문은 모델이 6.2.2 본문 추출로 따로 읽는다. 계획은 `plans/2026-10-24_exa-lite.md`다.
 
 ```text
 ◇ 모델이 web_search 호출 (검색어를 씀)
   · 앞선 결과에서 아직 확인되지 않은 부분을 찾음
   · site:example.com, "정확한 구문" 같은 연산자 사용 가능
     ↓
-Harness가 Exa MCP를 1회 호출 (numResults=5)
+Harness가 Exa Search API를 1회 호출 (type=lite, numResults=5, contents.highlights=true)
     ↓
 후보 최대 5건
   · 제목·링크·날짜(있으면)·짧은 발췌 (본문 없음)
@@ -275,7 +275,7 @@ Harness가 Exa MCP를 1회 호출 (numResults=5)
   └─ 답변하기에 충분함 → 답변
 ```
 
-MCP 응답은 결과를 합친 텍스트다. `---`로 나뉜 블록마다 `Title:`, `URL:`, `Published:`, `Highlights:` 뒤를 읽고, URL이 없는 블록은 버린다. 텍스트가 있는데 후보를 하나도 읽지 못하면 "검색 결과를 해석하지 못함"을 글자 수와 함께 결과로 돌려준다. 응답에는 검색어·본문이 들어 있을 수 있어 내용은 적지 않는다. HTTP 오류·한도 초과·오류 응답도 결과 문장으로 돌려주며, 코드 오류만 Turn을 끝낸다. 후보의 날짜가 Context에 함께 들어가므로 최신성은 모델이 날짜를 보고 판단한다.
+JSON `results`의 `title`·`url`·`publishedDate`·`highlights`를 기존 후보로 변환한다. URL이 없는 행은 버리고, 본문·AI 요약은 요청하지 않는다. 결과를 만든 방식(예: `site:` 제약을 완화해 검색함)을 알리는 `notices.message`는 도구 결과에 남기고, 코드 유지보수용 `warnings` 원문은 모델에 전달하지 않는다. 빈 결과·HTTP 오류·연결 실패·해석할 수 없는 응답은 결과 문장으로 돌려준다. 오류 응답 내용에는 키·검색어가 있을 수 있어 원문을 노출하지 않는다. 자동 재시도나 Auto로의 자동 전환은 없다. 검색어 인자·결과 개수·발췌 한도·본문 추출·Turn 저장 규칙은 그대로다.
 
 #### 6.2.2 본문 추출
 
