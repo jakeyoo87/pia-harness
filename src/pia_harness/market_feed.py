@@ -3,7 +3,7 @@
 The feed is one SQLite file the host fetches (PIA: an S3 object the Mac collector
 overwrites). The tool asks the host's fetch for a newer copy on every search and swaps
 the file only when it changed. Plan: plans/2026-10-17_market-feed-search.md; the DB
-contract is pia-collector docs/research-db-spec.md (schema_version 6).
+contract is pia-collector docs/research-db-spec.md (schema_version 7).
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ DESCRIPTION = (
     "(search it with LIKE), sentiment positive, neutral, negative or null. "
     "message_stocks(id, stock): Korean official stock names (삼성전자, SK하이닉스) and "
     "US tickers (NVDA, MU). message_sectors(id, sector), sector exactly one of "
-    "매크로, 반도체, AI·SW·DC, 전기전자·디스플레이, 2차전지·전기차·로봇, 에너지·방산·산업재, "
+    "매크로, 반도체·전기전자, AI·SW·DC, 2차전지·전기차·로봇, 에너지·방산·산업재, "
     "바이오·헬스케어, 기타 (매크로 is the whole market: rates, FX, indices, economy, "
     "policy and market-wide flows; 기타 includes finance, consumer goods, games and "
     "telecom). message_links(id, url): news article "

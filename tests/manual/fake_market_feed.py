@@ -1,7 +1,7 @@
 """A fake market feed for the market_feed scenario set (smoke_flow).
 
 Made-up messages in the real DB shape (pia-collector docs/research-db-spec.md,
-schema_version 6, times in KST without an offset), dated from the run time: today,
+schema_version 7, times in KST without an offset), dated from the run time: today,
 yesterday, last week and the past month. No channel or person names; price targets carry
 made-up brokerage names (가온증권, 나래증권, 마루증권, 미리내증권, 라온증권), never real ones.
 LG에너지솔루션 has a broker opinion without any price target (m24). It holds
@@ -34,7 +34,7 @@ CREATE TABLE targets (id TEXT NOT NULL, seq INTEGER NOT NULL, stock TEXT NOT NUL
     previous_rating TEXT, broker TEXT, PRIMARY KEY (id, seq));
 CREATE TABLE events (id TEXT NOT NULL, event_date TEXT NOT NULL, what TEXT NOT NULL,
     stock TEXT);
-INSERT INTO meta VALUES ('schema_version', '6');
+INSERT INTO meta VALUES ('schema_version', '7');
 """
 
 # (hours before now, type, summary, body, keywords, stocks, sectors, extra)
@@ -51,7 +51,7 @@ _MESSAGES: list[
         ),
         "마이크론, MU, 파업, D램, HBM, 공급 차질",
         ["MU"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {"link": "https://news.example.com/micron-strike"},
     ),
     (
@@ -74,7 +74,7 @@ _MESSAGES: list[
         ),
         "SK하이닉스, 000660, 하이닉스, HBM, 목표주가 상향, 메모리",
         ["SK하이닉스"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {"target": ("SK하이닉스", 330000, 300000, "KRW", "buy", "buy", "가온증권")},
     ),
     (
@@ -87,7 +87,7 @@ _MESSAGES: list[
         ),
         "삼성전자, 005930, 메모리 업황, D램 가격, 실적 개선",
         ["삼성전자"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {
             "sentiment": "positive",
             "target": ("삼성전자", 110000, 110000, "KRW", "buy", "buy", "나래증권"),
@@ -100,7 +100,7 @@ _MESSAGES: list[
         "52주 신고가 종목: SK하이닉스, 한미반도체",
         "52주 신고가, SK하이닉스, 한미반도체",
         ["SK하이닉스", "한미반도체"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {},
     ),
     (
@@ -110,7 +110,7 @@ _MESSAGES: list[
         "필라델피아 반도체지수가 엔비디아와 브로드컴 강세에 3% 반등했다.",
         "필라델피아 반도체지수, SOX, 반도체 반등, 엔비디아, 브로드컴",
         ["NVDA", "AVGO"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {"link": "https://news.example.com/sox-rebound"},
     ),
     (
@@ -120,7 +120,7 @@ _MESSAGES: list[
         "삼성전자 HBM4가 연내 품질 검증을 통과할 수 있다는 기대가 커지는 중. 확인된 건 아님.",
         "삼성전자, HBM4, 퀄 테스트, 품질 검증",
         ["삼성전자"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {"sentiment": "positive"},
     ),
     (
@@ -159,7 +159,7 @@ _MESSAGES: list[
         ),
         "반도체 업종, 메모리 가격, D램 계약가격, 업황",
         ["SK하이닉스", "삼성전자"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {},
     ),
     (
@@ -203,7 +203,7 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "삼성전자 들고 있는데 하이닉스만 가고 삼전은 제자리. 답답하다는 글이 많다.",
         "삼성전자, 삼전, 커뮤니티, 불만, 주가 정체",
         ["삼성전자"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {"sentiment": "negative"},
     ),
     (
@@ -213,7 +213,7 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "삼성전자는 HBM4 납품만 확인되면 재평가될 것. 지금 가격이면 모아갈 만하다는 의견.",
         "삼성전자, HBM4, 저점 매수, 재평가",
         ["삼성전자"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {"sentiment": "positive"},
     ),
     (
@@ -233,7 +233,7 @@ _MORE: list[tuple[float, str, str, str, str, list[str], list[str], dict[str, Any
         "마이크론 목표주가를 170달러로 올린다. HBM 점유율 확대와 D램 가격 상승을 반영했다.",
         "마이크론, MU, 목표주가 상향, HBM",
         ["MU"],
-        ["반도체"],
+        ["반도체·전기전자"],
         {"target": ("MU", 170, 150, "USD", "buy", "buy", "라온증권")},
     ),
     (
