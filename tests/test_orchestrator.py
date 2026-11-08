@@ -518,7 +518,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.memory.explicit_inputs[0][1])
         self.assertEqual(["explicit"], self.memory.calls)
         self.assertEqual(combined, self.store.turns[0].user_message)
-        self.assertIn(f"- remembered:{combined}", second_result.final_text)
+        self.assertIn(f"(기억: remembered:{combined})", second_result.final_text)
 
     async def test_generated_forget_allows_clear_without_duplicate_revisit(
         self,
@@ -548,7 +548,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertTrue(result.memory_failed)
-        self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
+        self.assertEqual("answer\n\n기억에 반영하지 못했어요.", result.final_text)
         # The notice is for the user only; the Turn keeps the model's answer.
         self.assertEqual("answer", self.store.turns[0].assistant_message)
 
@@ -575,7 +575,7 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
         self.assertTrue(result.memory_failed)
-        self.assertEqual("answer\n\n- 기억에 반영하지 못했어요.", result.final_text)
+        self.assertEqual("answer\n\n기억에 반영하지 못했어요.", result.final_text)
         self.assertEqual(["explicit"], self.memory.calls)
 
     async def test_delivery_and_persistence_failures_have_simple_boundaries(
@@ -2353,3 +2353,40 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MemoryLineTest(unittest.TestCase):
+    """The end of an answer: Memory changes as "(기억: …)" lines, then notices as
+    they are; at most three in all, a notice taking a change's place."""
+
+    def test_changes_and_notices(self) -> None:
+        from pia_harness.memory import MemoryReviewResult, MemoryReviewStatus
+        from pia_harness.orchestrator import _add_changes, _add_notice, _final_text
+
+        changes: list[str] = []
+        notices: list[str] = []
+        self.assertEqual("answer", _final_text("answer", changes, notices))
+        _add_changes(
+            changes,
+            notices,
+            MemoryReviewResult(
+                MemoryReviewStatus.REPLACED,
+                "memory",
+                ("호칭 선호를 OO님으로 추가", "답변 길이 선호를 짧게로 변경", "a", "b"),
+            ),
+        )
+        self.assertEqual(3, len(changes))
+        _add_notice(changes, notices, "확인 시간이 지났습니다. 다시 요청해 주세요.")
+        _add_notice(changes, notices, "확인 시간이 지났습니다. 다시 요청해 주세요.")
+        self.assertEqual(
+            "answer\n\n(기억: 호칭 선호를 OO님으로 추가)\n(기억: 답변 길이 선호를 짧게로 변경)\n"
+            "확인 시간이 지났습니다. 다시 요청해 주세요.",
+            _final_text("answer", changes, notices),
+        )
+
+    def test_the_memory_instruction_asks_for_short_phrases(self) -> None:
+        from pia_harness.openrouter import MEMORY_OUTPUT_INSTRUCTION
+
+        self.assertIn(
+            "short phrase without a sentence ending", MEMORY_OUTPUT_INSTRUCTION
+        )

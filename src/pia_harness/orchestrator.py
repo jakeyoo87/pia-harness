@@ -51,6 +51,8 @@ RESEARCH_LIMIT_NOTICE = (
     "confirmed."
 )
 CONFIRMATION_TTL_SECONDS = 300.0
+# The label of the Memory change lines at the end of an answer.
+MEMORY_CHANGE_LABEL = "기억"
 CONFIRMATION_EXPIRED_NOTICE = "확인 시간이 지났습니다. 다시 요청해 주세요."
 # An action that needs no confirmation runs after the answer, once the Turn can
 # no longer be cancelled; the model writes the answer before it runs.
@@ -1218,6 +1220,7 @@ class ConversationOrchestrator:
         choices: Choices | None = None,
     ) -> tuple[ConversationResult, bool]:
         changes: list[str] = []
+        notices: list[str] = []
         explicit_memory_failed = False
         now = batch[-1].value.accepted_at
         combined = _combined_message(batch)
@@ -1260,19 +1263,19 @@ class ConversationOrchestrator:
                         memory_failed = True
                         explicit_memory_failed = True
                     else:
-                        _add_changes(changes, review)
+                        _add_changes(changes, notices, review)
                 except ConversationAbandoned:
                     raise
                 except Exception:
                     memory_failed = True
                     explicit_memory_failed = True
             if explicit_memory_failed:
-                _add_notice(changes, self._explicit_memory_failure_notice)
+                _add_notice(changes, notices, self._explicit_memory_failure_notice)
             if confirmation_expired:
-                _add_notice(changes, CONFIRMATION_EXPIRED_NOTICE)
+                _add_notice(changes, notices, CONFIRMATION_EXPIRED_NOTICE)
 
             final_text = "\n\n".join(
-                (_final_text(answer.text, changes), *applied_texts)
+                (_final_text(answer.text, changes, notices), *applied_texts)
             )
             if prepared:
                 # Last and outside the notice list, so they are never trimmed.
@@ -1732,27 +1735,34 @@ def _resolve_unfinished(
             submission.future.set_result(result)
 
 
-def _add_changes(changes: list[str], result: MemoryReviewResult | None) -> None:
+def _add_changes(
+    changes: list[str], notices: list[str], result: MemoryReviewResult | None
+) -> None:
     if result is None or result.status is MemoryReviewStatus.STALE:
         return
     for item in result.change_summary:
-        if item not in changes and len(changes) < MAX_CHANGE_SUMMARY_ITEMS:
+        if (
+            item not in changes
+            and len(changes) + len(notices) < MAX_CHANGE_SUMMARY_ITEMS
+        ):
             changes.append(item)
 
 
-def _add_notice(changes: list[str], notice: str) -> None:
+def _add_notice(changes: list[str], notices: list[str], notice: str) -> None:
     # The user's own failed request outranks an incidental automatic summary, so
     # the notice takes a slot instead of being dropped when the budget is full.
-    if notice in changes:
+    if notice in notices:
         return
-    del changes[MAX_CHANGE_SUMMARY_ITEMS - 1 :]
-    changes.append(notice)
+    del changes[max(0, MAX_CHANGE_SUMMARY_ITEMS - 1 - len(notices)) :]
+    notices.append(notice)
 
 
-def _final_text(answer: str, changes: list[str]) -> str:
-    if not changes:
+def _final_text(answer: str, changes: list[str], notices: list[str]) -> str:
+    """Memory changes as "(기억: …)" lines, then the notices as they are."""
+    lines = [f"({MEMORY_CHANGE_LABEL}: {item})" for item in changes] + notices
+    if not lines:
         return answer
-    return f"{answer}\n\n" + "\n".join(f"- {item}" for item in changes)
+    return f"{answer}\n\n" + "\n".join(lines)
 
 
 async def _before_deadline(deadline: float, operation: Awaitable[_T]) -> _T:
