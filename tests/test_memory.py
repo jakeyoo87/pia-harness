@@ -412,12 +412,13 @@ class MemoryReviewerTest(unittest.TestCase):
             ),
         )
         for output in invalid_outputs:
-            with self.subTest(output=output), self.assertRaises(MemoryReviewValidationError):
-                self.explicit(
-                    MemoryReviewer(self.store, lambda request, value=output: value),
-                    user_key,
-                    session_id,
-                )
+            with self.subTest(output=output):
+                with self.assertRaises(MemoryReviewValidationError):
+                    self.explicit(
+                        MemoryReviewer(self.store, lambda request, value=output: value),
+                        user_key,
+                        session_id,
+                    )
                 self.assertIsNone(self.store.get_memory(user_key))
 
         def fail(request):

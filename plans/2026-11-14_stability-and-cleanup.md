@@ -99,3 +99,12 @@
   `TYPE_CHECKING`에서만 `unittest.TestCase`를 부모로, `should_compact(**size)`는 계획의 "이름으로 넘김" 대신 `size`에
   `dict[str, Any]` 타입 표시(같은 효과, 더 작음), `delete_all_for_user`의 반복 변수 이름 분리. 결과 ruff 0, mypy 0.
 - 버전 0.7.24. 테스트 261개 통과.
+
+## 구현 검토 (Local Codex, dc0d499 + pia 2a60fe279): 차단 없음
+
+- P3 반영: `tests/test_memory.py`의 한 곳은 안쪽 `with` 뒤에 검사 줄(`assertIsNone`)이 있어 합치면 그 검사가 실행되지
+  않았다(ruff도 합치라고 하지 않은 곳을 합침). 원래 중첩 모양으로 되돌림. 같은 방식으로 합친 다른 6곳은 뒤따르는 줄이
+  없음을 확인.
+- 확인: 읽기·준비의 예외 경계, 실패도 20회 한도에 듦, 로그 내용, `TOOL_FAILED` 입력 보존과 `ConversationAbandoned`
+  전파, 옛 계획 참조 제거와 `context_document` 유지, 삭제 스크립트 범위, 정리의 동작 불변. 새 harness와 연결한 PIA
+  관련 테스트 통과.
