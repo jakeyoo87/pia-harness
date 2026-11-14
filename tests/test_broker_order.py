@@ -150,6 +150,70 @@ class BrokerOrderToolTest(unittest.IsolatedAsyncioTestCase):
             sent,
         )
 
+    async def test_an_accepted_order_goes_to_the_host_to_watch(self) -> None:
+        watched: list[tuple[str, dict]] = []
+
+        async def on_accepted(user_key, order):
+            watched.append((user_key, dict(order)))
+
+        client = httpx.AsyncClient(
+            base_url="https://broker.example",
+            transport=httpx.MockTransport(self.broker.handle),
+        )
+        tool = BrokerOrderTool(
+            base_url="https://broker.example", client=client, on_accepted=on_accepted
+        )
+        prepared = await tool.prepare(MEMBER, call())
+        assert prepared.action is not None
+        text = await tool.execute(MEMBER, prepared.action)
+        self.assertTrue(text.endswith("체결되면 알려 드릴게요."), text)
+        stored = json.loads(prepared.action.arguments_json)
+        self.assertEqual(
+            [
+                (
+                    MEMBER,
+                    {
+                        "request_id": stored["request_id"],
+                        "code": "005930",
+                        "name": "삼성전자",
+                        "side": "BUY",
+                        "quantity": 10,
+                        "broker_order_no": "0000117057",
+                        "ordered_at": "2026-09-28T00:31:06Z",
+                    },
+                )
+            ],
+            watched,
+        )
+
+        # The order is placed either way; a failed hook only changes the last sentence.
+        async def failing(user_key, order):
+            raise RuntimeError("store down")
+
+        tool = BrokerOrderTool(
+            base_url="https://broker.example", client=client, on_accepted=failing
+        )
+        prepared = await tool.prepare(MEMBER, call())
+        assert prepared.action is not None
+        with self.assertLogs("pia_harness", "WARNING") as logs:
+            text = await tool.execute(MEMBER, prepared.action)
+        self.assertIn("주문이 접수되었습니다", text)
+        self.assertTrue(
+            text.endswith(
+                "체결 알림을 등록하지 못했어요. 체결 여부는 증권사 앱에서 확인해 주세요."
+            ),
+            text,
+        )
+        self.assertEqual(
+            ["WARNING:pia_harness:harness.order_tracking_failed error_type=RuntimeError"],
+            logs.output,
+        )
+        # Without a hook: the sentence as before.
+        prepared = await self.tool.prepare(MEMBER, call())
+        assert prepared.action is not None
+        text = await self.tool.execute(MEMBER, prepared.action)
+        self.assertTrue(text.endswith("체결 여부는 증권사 앱에서 확인해 주세요."), text)
+
     async def test_market_order_sends_no_price(self) -> None:
         prepared = await self.tool.prepare(MEMBER, call(order_type="MARKET", price=1))
         assert prepared.action is not None

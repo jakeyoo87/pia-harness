@@ -443,7 +443,7 @@ Broker 현재가 (계좌 미연결이면 "Member Web에서 연결·확인 필요
 - 지정가가 기본이고, 시장가는 사용자가 요청할 때만 쓴다(국내. 미국은 요청해도 현재가 지정가로 준비하고, 위 시장가 확인 문장은 국내용이다).
 - 준비 중 Broker 오류(409 외의 상태·무응답·해석할 수 없는 응답)는 그 호출의 실패 결과(`Not prepared: the tool had an error.`)가 되고 모델이 이어서 답한다(→ 6.0).
 - 실행 결과 문장:
-  - ACCEPTED: "주문이 접수되었습니다: 요약 (주문번호 …). 체결 여부는 증권사 앱에서 확인해 주세요."
+  - ACCEPTED: "주문이 접수되었습니다: 요약 (주문번호 …). 체결 여부는 증권사 앱에서 확인해 주세요." host가 `on_accepted(user_key, order)`를 주면(PIA: 체결 알림, pia-agent `plans/2026-11-14_fills-and-cancel.md` §3) 접수된 주문(`request_id`, `code`, `name`, `side`, `quantity`, `broker_order_no`, `ordered_at`)을 넘기고, 마지막 문장은 "체결되면 알려 드릴게요."가 된다. 고리가 실패하면 주문 결과는 그대로 두고 마지막 문장만 "체결 알림을 등록하지 못했어요. 체결 여부는 증권사 앱에서 확인해 주세요."로 바꾸고 `pia_harness` WARNING(`harness.order_tracking_failed error_type=…`)을 남긴다. 결과 문장을 해석해 접수를 알아내지 않는다.
   - REJECTED: "주문이 거부되었습니다: 요약. 사유: KIS 거부 문구(없으면 code)"
   - 그 밖(UNKNOWN, 응답 오류, 통신 실패): "주문 결과를 확인하지 못했습니다: 요약. 주문이 들어갔을 수 있으니 다시 주문하기 전에 증권사 앱에서 꼭 확인해 주세요." 자동으로 다시 보내지 않는다.
 - 같은 확인 대기를 두 번 실행해도 같은 `request_id`라 Broker가 한 번만 주문한다.

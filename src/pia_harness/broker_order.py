@@ -8,8 +8,10 @@ origin and an httpx auth that signs each request.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -68,6 +70,16 @@ ORDER_DESCRIPTION = (
 )
 
 
+logger = logging.getLogger("pia_harness")
+# What the host does with an accepted order (PIA: watches it to tell the user when it
+# fills, pia-agent plans/2026-11-14_fills-and-cancel.md §3). The order fields: request_id,
+# code, name, side, quantity, broker_order_no, ordered_at (the Broker's UTC time).
+OnAccepted = Callable[[str, Mapping[str, Any]], Awaitable[None]]
+ACCEPTED_CHECK_APP = "체결 여부는 증권사 앱에서 확인해 주세요."
+ACCEPTED_TRACKED = "체결되면 알려 드릴게요."
+ACCEPTED_NOT_TRACKED = "체결 알림을 등록하지 못했어요. " + ACCEPTED_CHECK_APP
+
+
 class BrokerOrderTool:
     def __init__(
         self,
@@ -76,10 +88,12 @@ class BrokerOrderTool:
         auth: httpx.Auth | None = None,
         timeout_seconds: float = 35.0,
         client: httpx.AsyncClient | None = None,
+        on_accepted: OnAccepted | None = None,
     ) -> None:
         if not base_url.startswith("https://") and client is None:
             raise ValueError("Broker origin must be https")
         self._owns_client = client is None
+        self._on_accepted = on_accepted
         self._client = client or httpx.AsyncClient(
             base_url=base_url, auth=auth, timeout=timeout_seconds
         )
@@ -183,6 +197,7 @@ class BrokerOrderTool:
         stored = {
             "request_id": uuid.uuid4().hex,
             "code": code,
+            "name": official_name,
             "side": side,
             "quantity": quantity,
             "order_type": order_type,
@@ -223,9 +238,26 @@ class BrokerOrderTool:
             result = None
         status = result.get("status") if isinstance(result, dict) else None
         if status == "ACCEPTED" and result.get("broker_order_no"):
+            note = ACCEPTED_CHECK_APP
+            if self._on_accepted is not None:
+                order = {
+                    **{key: stored[key] for key in ("request_id", "code", "side", "quantity")},
+                    "name": stored.get("name") or stored["code"],
+                    "broker_order_no": result["broker_order_no"],
+                    "ordered_at": result.get("ordered_at"),
+                }
+                try:
+                    await self._on_accepted(user_key, order)
+                    note = ACCEPTED_TRACKED
+                # The order is placed either way; only the watching failed.
+                except Exception as error:  # noqa: BLE001 - reported in the result
+                    logger.warning(
+                        "harness.order_tracking_failed error_type=%s", type(error).__name__
+                    )
+                    note = ACCEPTED_NOT_TRACKED
             return (
-                f"주문이 접수되었습니다: {summary} (주문번호 {result.get('broker_order_no')}). "
-                "체결 여부는 증권사 앱에서 확인해 주세요."
+                f"주문이 접수되었습니다: {summary} "
+                f"(주문번호 {result.get('broker_order_no')}). {note}"
             )
         if status == "REJECTED":
             reason = result.get("reason") or result.get("reason_code")
