@@ -72,14 +72,13 @@ class PersistenceValidationTest(unittest.TestCase):
             ConversationContext(summary, (self.turn,)),
         )
         for context in cases:
-            with self.subTest(context=context):
-                with self.assertRaises(StoreContractError):
-                    validate_loaded_context(
-                        context,
-                        user_key="user",
-                        session_id="session",
-                        now=self.now,
-                    )
+            with self.subTest(context=context), self.assertRaises(StoreContractError):
+                validate_loaded_context(
+                    context,
+                    user_key="user",
+                    session_id="session",
+                    now=self.now,
+                )
 
 
 if __name__ == "__main__":

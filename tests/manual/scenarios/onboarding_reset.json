@@ -8,11 +8,7 @@
           "assistant": "안녕하세요! PIA에 오신 걸 환영해요 👋\n앞으로 어떻게 불러드리면 될까요?"
         }
       ],
-      "memory": "사용자 호칭은 제이크.",
-      "plan": {
-        "goal": "목표: 자산 증식. 기간: 5년.",
-        "portfolio": "국내 주식 40%, 해외 ETF 40%, 현금 20%"
-      }
+      "memory": "사용자 호칭은 제이크."
     }
   },
   {
@@ -23,7 +19,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 1,
     "daily_yesterday": true,
     "uses": [
       "market_daily"
@@ -41,7 +36,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 1,
     "expect": "past_financials",
     "answer_includes": [
       "```chart"
@@ -60,7 +54,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 1,
     "expect_choices": false
   }
 ]

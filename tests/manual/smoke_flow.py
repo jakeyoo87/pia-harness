@@ -11,13 +11,13 @@ The market_feed set adds market_feed_search over a fake feed DB
 
     OPENROUTER_API_KEY=... EXA_API_KEY=... NAVER_API_HUB_CLIENT_ID=... \\
     NAVER_API_HUB_CLIENT_SECRET=... python -m tests.manual.smoke_flow \\
-        [--set read|execution|broker|plan|onboarding|financials|market_feed] [--only 1,2]
+        [--set read|execution|broker|onboarding|financials|market_feed] [--only 1,2]
         [--model ID]
         [--context-limit N] [--extra-prompt-file PATH]
 
-The plan and onboarding sets take the host's own instructions (pia-agent
+The onboarding sets take the host's own instructions (pia-agent
 ONBOARDING_PROMPT) through --extra-prompt-file, not a copy. A scenario entry with
-"seed" instead of "message" puts earlier Turns, Memory or a plan in place first.
+"seed" instead of "message" puts earlier Turns or Memory in place first.
 """
 
 from __future__ import annotations
@@ -36,21 +36,17 @@ from typing import Any
 import httpx
 
 from pia_harness import (
-    PLAN_MEMORY_RULE,
-    PLAN_PROMPT,
     BrokerOrderTool,
     BrokerReadTool,
     Choices,
     ConversationOrchestrator,
     ExaWebSearch,
-    InvestmentPlan,
     JinaPageExtractor,
     MarketFeedSearchTool,
     ModelTokenBudget,
     NaverNewsSearch,
     OpenRouterModelAdapter,
     PastFinancialsTool,
-    PlanVersion,
     ReadToolDefinition,
     ReadToolResult,
 )
@@ -59,7 +55,7 @@ from pia_harness.compaction import TokenCompactor
 from pia_harness.context import PromptContextAssembler
 from pia_harness.memory import MemoryReviewer
 from pia_harness.session import MemoryDocument, new_turn_id
-from pia_harness.testing import InMemoryConversationStore, InMemoryPlanStore
+from pia_harness.testing import InMemoryConversationStore
 
 from .fake_financials import client as fake_financials_client
 from .fake_market_feed import fetch as fake_feed_fetch
@@ -69,7 +65,6 @@ SCENARIO_SETS = (
     "read",
     "execution",
     "broker",
-    "plan",
     "onboarding",
     "onboarding_reset",
     "onboarding_legacy",
@@ -77,9 +72,8 @@ SCENARIO_SETS = (
     "market_feed",
 )
 _ONBOARDING_SETS = frozenset({"onboarding", "onboarding_reset", "onboarding_legacy"})
-_PLAN_SETS = frozenset({"plan", *_ONBOARDING_SETS})
 # Sets that run with the fake pia-broker and the broker prompt, as PIA does.
-_BROKER_SETS = frozenset({"broker", "financials", "market_feed", *_PLAN_SETS})
+_BROKER_SETS = frozenset({"broker", "financials", "market_feed", *_ONBOARDING_SETS})
 # name: (code, market, current price). The fake order reply is UNKNOWN for 005935
 # so one scenario sees the "check the broker app" result. US codes are exchange:ticker
 # and found by ticker too; "마이크론" matches two names, as in the real list.
@@ -127,11 +121,6 @@ MARKET_FEED_PROMPT = (
     "sectors or stocks, use market_feed_search first when it applies, before "
     "news_search and web_search."
 )
-# The plan set keeps what PIA keeps out of Memory (pia-agent app/core.py).
-PLAN_MEMORY_INSTRUCTION = (
-    "Keep durable facts a financial investment agent should remember about the user. "
-    f"{PLAN_MEMORY_RULE} Do not keep news content or one-off questions."
-)
 _MEMORY_ACTIONS = {"update": "UPDATE", "forget": "FORGET"}
 _EXECUTION_TOOLS = frozenset({"order", "confirm"})
 # Bars by period, as the broker returns them (pia-broker README).
@@ -154,8 +143,7 @@ class Record:
     tokens: list[int] = field(default_factory=list)
     # Provider-reported total tokens of each answer (the estimate above is not).
     usage: list[int] = field(default_factory=list)
-    # The plan set: the plan and Memory after the Turn.
-    plan_versions: list[Any] = field(default_factory=list)
+    # Memory after the Turn.
     memory_text: str = ""
     orders_sent: int = 0
     # The options delivered under the answer, if any.
@@ -674,9 +662,6 @@ _CHECK_KEYS = frozenset(
     {
         "expect",
         "forbid",
-        "plan_versions",
-        "expect_plan",
-        "same_as_version",
         "memory_excludes",
         "expect_memory",
         "expect_choices",
@@ -751,26 +736,10 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
     ok = ok and not any(
         text in record.answer for text in scenario.get("answer_excludes", ())
     )
-    return "PASS" if ok and _plan_ok(scenario, record) else "CHECK"
-
-
-def _plan_ok(scenario: dict[str, Any], record: Record) -> bool:
-    """The plan set: what was saved, not only which tools ran."""
-    plans = record.plan_versions
-    latest = dict(plans[-1].sections) if plans else {}
-    ok = True
-    if "plan_versions" in scenario:  # a plan step never sends an order
-        ok = len(plans) == scenario["plan_versions"] and record.orders_sent == 0
-    for name, text in scenario.get("expect_plan", {}).items():
-        value = latest.get(name, "")
-        ok = ok and (value == "" if text == "" else text in value)
-    if "same_as_version" in scenario:
-        earlier = dict(plans[scenario["same_as_version"] - 1].sections)
-        names = set(earlier) | set(latest)
-        ok = ok and all(earlier.get(n, "") == latest.get(n, "") for n in names)
-    return ok and not any(
+    ok = ok and not any(
         word in record.memory_text for word in scenario.get("memory_excludes", ())
     )
+    return "PASS" if ok else "CHECK"
 
 
 def _fake_daily(state: dict[str, Any]) -> ReadToolDefinition:
@@ -841,9 +810,6 @@ async def run(
     execution_tools = ()
     broker_tools = ()
     broker_client = None
-    plan_store = InMemoryPlanStore()
-    plan = InvestmentPlan(plan_store)
-    plan_tools = ()
     if scenario_set in ("execution", *_BROKER_SETS):
         broker_client = _fake_broker(state, orders)
         execution_tools = (
@@ -851,9 +817,6 @@ async def run(
                 base_url="https://broker.invalid", client=broker_client
             ).tool(),
         )
-    if scenario_set in _PLAN_SETS:
-        execution_tools = (*execution_tools, plan.plan_tool())
-        plan_tools = (logged_result(plan.history_tool()),)
     if scenario_set in _BROKER_SETS:
         broker_tools = (
             logged_result(
@@ -899,9 +862,7 @@ async def run(
         memory_reviewer=MemoryReviewer(
             store,
             model.review_memory,
-            instruction=PLAN_MEMORY_INSTRUCTION
-            if scenario_set in _PLAN_SETS
-            else MEMORY_INSTRUCTION,
+            instruction=MEMORY_INSTRUCTION,
         ),
         compactor=TokenCompactor(store, model.summarize),
         generate_reply=model.generate_reply,
@@ -910,7 +871,6 @@ async def run(
         + (ORDER_PROMPT if scenario_set in ("execution", *_BROKER_SETS) else "")
         + (BROKER_READ_PROMPT if scenario_set in _BROKER_SETS else "")
         + (MARKET_FEED_PROMPT if scenario_set in ("market_feed", *_ONBOARDING_SETS) else "")
-        + (f" {PLAN_PROMPT}" if scenario_set in _PLAN_SETS else "")
         + (f"\n\n{extra_prompt}" if extra_prompt else ""),
         token_budget=budget,
         model_id=model_id,
@@ -921,18 +881,16 @@ async def run(
             *search_tools,
             extractor.tool(),
             *broker_tools,
-            *plan_tools,
             *financial_tools,
             *daily_tools,
         ),
         execution_tools=execution_tools,
-        context_document=plan.document if scenario_set in _PLAN_SETS else None,
     )
     rows = []
     try:
         for scenario in scenarios:
             if "seed" in scenario:
-                _seed(store, plan_store, scenario["seed"])
+                _seed(store, scenario["seed"])
                 print(f"\n===== {scenario['id']}: seeded {sorted(scenario['seed'])}")
                 continue
             print(f"\n===== {scenario['id']}: {scenario['message']}", flush=True)
@@ -959,15 +917,6 @@ async def run(
             memory = store.get_memory(USER)
             record.memory_text = memory.memory_text if memory else ""
             record.orders_sent = len(orders) - sent_before
-            record.plan_versions = list(plan_store.plans.get(USER, []))
-            if scenario_set in _PLAN_SETS:
-                latest = record.plan_versions[-1] if record.plan_versions else None
-                _log(
-                    state["started"],
-                    "PLAN",
-                    f"versions={len(record.plan_versions)} changed="
-                    + ("-" if latest is None else ",".join(latest.changed)),
-                )
             _log(state["started"], "RESULT", " ".join(str(r.status) for r in results))
             _log(
                 state["started"],
@@ -1026,8 +975,8 @@ async def run(
     return 0 if all(row[3] != "CHECK" for row in rows) else 1
 
 
-def _seed(store: Any, plan_store: Any, seed: dict[str, Any]) -> None:
-    """Earlier Turns, Memory and a plan, as a host would have them already."""
+def _seed(store: Any, seed: dict[str, Any]) -> None:
+    """Earlier Turns and Memory, as a host would have them already."""
     now = datetime.now(UTC)
     session = store.get_or_create_active_session(USER, now=now)
     turn_id = None
@@ -1047,11 +996,6 @@ def _seed(store: Any, plan_store: Any, seed: dict[str, Any]) -> None:
         store.replace_memory(
             MemoryDocument(USER, seed["memory"], reviewed, now),
             expected_last_reviewed_turn_id=None,
-        )
-    if "plan" in seed:
-        sections = dict(seed["plan"])
-        plan_store.save_plan(
-            USER, PlanVersion(1, sections, tuple(sections), "합성 시드", now)
         )
 
 

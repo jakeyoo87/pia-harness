@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from threading import RLock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from .persistence import TurnConflictError, TurnTooLargeError
@@ -235,8 +235,8 @@ class InMemoryConversationStore:
                 del self._turns[key]
             summaries = [key for key in self._summaries if key[0] == user_key]
             count += len(summaries)
-            for key in summaries:
-                del self._summaries[key]
+            for summary_key in summaries:
+                del self._summaries[summary_key]
             if self._sessions.pop(user_key, None) is not None:
                 count += 1
             if self._memories.pop(user_key, None) is not None:
@@ -258,8 +258,17 @@ class InMemoryConversationStore:
         )
 
 
-class ConversationStoreContract:
-    """Reusable unittest mixin for application ConversationStore adapters."""
+if TYPE_CHECKING:
+    import unittest
+
+    _ContractBase = unittest.TestCase
+else:
+    _ContractBase = object
+
+
+class ConversationStoreContract(_ContractBase):
+    """Reusable unittest mixin for application ConversationStore adapters (typed as
+    a TestCase for its assert methods; at run time a plain mixin)."""
 
     store: Any
     now: datetime
@@ -542,32 +551,3 @@ def _required(name: str, value: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} is required")
     return value
-
-
-class InMemoryPlanStore:
-    """Investment plan versions in memory, with the same rules as the host's store:
-    newest first, a version is never replaced."""
-
-    def __init__(self) -> None:
-        self.plans: dict[str, list[Any]] = {}
-
-    def get_plan(self, user_key: str) -> Any:
-        plans = self.plans.get(user_key, [])
-        return plans[-1] if plans else None
-
-    def list_plans(
-        self, user_key: str, *, limit: int, saved_through: datetime | None = None
-    ) -> tuple[Any, ...]:
-        plans = [
-            plan
-            for plan in reversed(self.plans.get(user_key, []))
-            if saved_through is None or plan.created_at <= saved_through
-        ]
-        return tuple(plans[:limit])
-
-    def save_plan(self, user_key: str, plan: Any) -> bool:
-        plans = self.plans.setdefault(user_key, [])
-        if any(saved.version == plan.version for saved in plans):
-            return False
-        plans.append(plan)
-        return True

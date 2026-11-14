@@ -69,3 +69,33 @@
   도구 이름·예외 클래스만, `TOOL_FAILED`(Harness 코드 오류) 뒤 다음 메시지가 앞 메시지와 합쳐진다.
 - PIA 테스트 전체, 삭제 스크립트는 DynamoDB Local로 개수·삭제 확인.
 - 배포 뒤: Bot 시작 로그, 스크립트 결과(개수만).
+
+## 계획 검토 (Local Codex, a373dce): 차단 없음
+
+- 반복 호출: 실패 결과에도 같은 도구를 부르면 기존 조사 한도(20회)로 끝나고 도구 없는 답으로 간다. 실패한 시도도
+  횟수에 들어가므로 따로 재시도·차단 목록을 두지 않는다. 90초는 조사 한도다(최종 답 생성 시간은 별도).
+- `TOOL_FAILED` 입력 보존: 실행 확정 전 오류 경로라 `clear_pending=False`로 충분하다.
+- 구현 때 지킬 것: 실행 도구는 `prepare`와 `_validate_preparation()` 검사를 같은 오류 경계에 넣는다(읽기의
+  `_validate_read_tool_result`와 같이). "동작 변경 없는 정리"이므로 TRY004 때문에 `ValueError`를 `TypeError`로 바꾸지
+  않는다(이유 주석 + `noqa`).
+- 추가로 지울 참조: 수동 시나리오의 `plan.json`, onboarding 계열의 `seed.plan`·`plan_versions` 검사, `context.py`의
+  옛 투자 계획 주석, PIA README 저장 표의 `PLAN#` 설명.
+- 삭제 스크립트는 `USER#… / PLAN#…`만 대상으로 하고 `PORTFOLIO#…`는 남긴다. 과거 계획서·검토 기록은 지우지 않는다.
+
+## 구현 기록
+
+- 1·2: `_run_round`의 읽기(`execute` + `_validate_read_tool_result`)와 준비(`prepare` + `_validate_preparation`)를 같은
+  경계에서 받는다. `ConversationAbandoned`는 올리고, 시간 초과는 지금처럼. 로그는 `pia_harness` logger WARNING
+  `harness.tool_failed tool=… error_type=…`. 실패한 읽기도 조사 횟수에 든다.
+- 3: `TOOL_FAILED`의 `clear_pending=False`. 테스트: 묶음 처리 오류 뒤 "잉?"이 앞 요청과 합쳐져 답한다.
+- 4: `investment_plan.py`, 내보내기 5개, `testing.InMemoryPlanStore`, `tests/test_investment_plan.py`,
+  `tests/manual/scenarios/plan.json` 삭제. `smoke_flow.py`에서 plan 세트·계획 검사·`seed.plan` 제거. onboarding 세
+  세트는 온보딩 흐름 검사로 남기고 `plan_versions` 키만 뺐다. 과거 기록(`tests/manual/records`, `plans/`)은 그대로.
+- 5: README §3에 "도구 정의"·"Host 문서" 단락을 나누고, 도구 하나의 사양은 그 도구 설명에 둔다는 원칙 한 줄. §6.0에
+  "도구 하나의 오류는 그 호출의 결과" 규칙, §6.2·6.2.2·6.4.1의 "Turn을 끝낸다" 문장을 새 규칙으로. §6.4.2 삭제.
+- 6: 설정 파일이 없어 ruff 0.17.5 기본 규칙과 mypy 2.4.1 기본으로 쟀다. ruff: import 정렬·`__all__` 정렬 자동 수정,
+  중첩 `with` 합침, 이어 쓴 문자열에 괄호, `_before_deadline`은 PEP 695 타입 인자, TRY004는 예외 종류를 바꾸지 않고
+  `noqa` + 이유, 의도한 broad except(BLE001)는 `noqa` + 이유(위 주석이 이미 있으면 주석). mypy: 계약 mixin은
+  `TYPE_CHECKING`에서만 `unittest.TestCase`를 부모로, `should_compact(**size)`는 계획의 "이름으로 넘김" 대신 `size`에
+  `dict[str, Any]` 타입 표시(같은 효과, 더 작음), `delete_all_for_user`의 반복 변수 이름 분리. 결과 ruff 0, mypy 0.
+- 버전 0.7.24. 테스트 261개 통과.

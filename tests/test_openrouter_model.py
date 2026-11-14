@@ -26,7 +26,6 @@ from pia_harness import (
     ToolObservation,
 )
 
-
 FAKE_KEY = "sk-or-v1-TEST-ONLY-synthetic-model-adapter-key"
 BASE_URL = "https://openrouter.ai/api/v1"
 

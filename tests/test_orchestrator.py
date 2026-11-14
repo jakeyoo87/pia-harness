@@ -38,7 +38,11 @@ from pia_harness import (
     TurnTooLargeError,
 )
 from pia_harness.context import EARLIER_TURNS_NOTE
-from pia_harness.orchestrator import RESEARCH_LIMIT_NOTICE
+from pia_harness.orchestrator import (
+    PREPARE_ERROR_RESULT,
+    READ_TOOL_ERROR_RESULT,
+    RESEARCH_LIMIT_NOTICE,
+)
 
 GOAL = "기사 핵심 내용"
 EXTRACT_SCHEMA = {
@@ -1273,18 +1277,87 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
     async def never_run(user_key, call, inputs):
         raise AssertionError("a bad call is not run")
 
-    async def test_a_broken_read_tool_ends_the_turn(self) -> None:
-        async def execute(user_key, call, inputs):
-            raise AttributeError("bug")
+    async def test_a_broken_read_tool_is_its_result_and_the_answer_goes_on(
+        self,
+    ) -> None:
+        async def broken(user_key, call, inputs):
+            raise AttributeError("bug at https://example.com/?q=secret")
 
-        result = await self.orchestrator(
-            self.script([("search", {"query": "q"})], "answer"),
-            read_tools=(self.search(execute=execute),),
-        ).submit(user_key="user", message="뉴스", accepted_at=self.now)
+        async def invalid(user_key, call, inputs):
+            return ReadToolResult(" ")
 
-        # A code error is not an expected failure; the model would keep calling it.
-        self.assertEqual(OrchestratorStatus.TOOL_FAILED, result.status)
-        self.assertEqual([], self.delivered)
+        for execute, error in ((broken, "AttributeError"), (invalid, "ValueError")):
+            self.delivered.clear()
+            contexts = []
+            with self.assertLogs("pia_harness", "WARNING") as logs:
+                result = await self.orchestrator(
+                    self.script(
+                        [("search", {"query": "q"})], "answer", contexts=contexts
+                    ),
+                    read_tools=(self.search(execute=execute),),
+                ).submit(user_key="user", message="뉴스", accepted_at=self.now)
+
+            self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+            self.assertEqual([READ_TOOL_ERROR_RESULT], _results(contexts[-1]))
+            self.assertEqual("answer", self.delivered[-1][1])
+            # The tool name and the error class only, never the message.
+            self.assertEqual(
+                [
+                    ("WARNING:pia_harness:harness.tool_failed tool=search "
+                     f"error_type={error}")
+                ],
+                logs.output,
+            )
+
+    async def test_a_broken_preparation_is_its_result(self) -> None:
+        async def broken(user_key, call):
+            raise KeyError("account")
+
+        async def invalid(user_key, call):
+            return PreparationResult("")
+
+        for prepare in (broken, invalid):
+            contexts = []
+            tool = ExecutionToolDefinition(
+                "order", "Prepare an order", {"type": "object"}, prepare, self.never_run
+            )
+            with self.assertLogs("pia_harness", "WARNING"):
+                result = await self.orchestrator(
+                    self.script([("order", {})], "answer", contexts=contexts),
+                    execution_tools=(tool,),
+                ).submit(user_key="user", message="사줘", accepted_at=self.now)
+
+            self.assertEqual(OrchestratorStatus.DELIVERED, result.status)
+            self.assertEqual([PREPARE_ERROR_RESULT], _results(contexts[-1]))
+
+    async def test_a_round_that_fails_keeps_the_request_for_the_next_message(
+        self,
+    ) -> None:
+        contexts = []
+        orchestrator = self.orchestrator(
+            self.script([("search", {"query": "q"})], "answer", contexts=contexts),
+            read_tools=(self.search(),),
+        )
+        run_round = orchestrator._run_round
+        calls = itertools.count()
+
+        async def fail_once(*args, **kwargs):
+            if next(calls) == 0:
+                raise RuntimeError("bug in the round")
+            return await run_round(*args, **kwargs)
+
+        orchestrator._run_round = fail_once
+        failed = await orchestrator.submit(
+            user_key="user", message="현금 90%로 해줘", accepted_at=self.now
+        )
+        self.assertEqual(OrchestratorStatus.TOOL_FAILED, failed.status)
+
+        await orchestrator.submit(
+            user_key="user", message="잉?", accepted_at=self.now + timedelta(minutes=1)
+        )
+        # Like a failed answer, the earlier request is answered with the next one.
+        self.assertIn("현금 90%로 해줘", _message(contexts[-1]))
+        self.assertIn("잉?", _message(contexts[-1]))
 
     async def test_superseded_read_tool_cannot_commit(self) -> None:
         tool_started = asyncio.Event()
@@ -2339,10 +2412,10 @@ class ConversationOrchestratorTest(unittest.IsolatedAsyncioTestCase):
             [
                 (
                     "user",
-                    f"SK하이닉스 36.8% [1]({found}), 삼성전자 23.9% [2]({given}).\n"
-                    f"기준일은 8월 ETF쇼핑 [1]({found}). 참고 와 다른 곳. "
-                    f"앞서 본 비중 [2]({given})\n\n"
-                    f"출처\n[1]({found})",
+                    (f"SK하이닉스 36.8% [1]({found}), 삼성전자 23.9% [2]({given}).\n"
+                     f"기준일은 8월 ETF쇼핑 [1]({found}). 참고 와 다른 곳. "
+                     f"앞서 본 비중 [2]({given})\n\n"
+                     f"출처\n[1]({found})"),
                 )
             ],
             self.delivered,

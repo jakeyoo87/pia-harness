@@ -157,7 +157,7 @@ class OpenRouterModelAdapter:
         if not isinstance(model_id, str) or not model_id.strip():
             raise ValueError("model_id is required")
         if not isinstance(token_budget, ModelTokenBudget):
-            raise ValueError("token_budget must be a ModelTokenBudget")
+            raise ValueError("token_budget must be a ModelTokenBudget")  # noqa: TRY004 - ValueError is the contract
         if (
             isinstance(timeout_seconds, bool)
             or not isinstance(timeout_seconds, (int, float))
@@ -207,7 +207,7 @@ class OpenRouterModelAdapter:
         model can only answer.
         """
         if not isinstance(context, AssembledPromptContext):
-            raise ValueError("context must be an AssembledPromptContext")
+            raise ValueError("context must be an AssembledPromptContext")  # noqa: TRY004 - ValueError is the contract
         payload = self._reply_payload(context.parts, context.tools)
         _add_cache_key(payload, context.user_key)
         offered = {tool.name for tool in context.tools}
@@ -278,7 +278,7 @@ class OpenRouterModelAdapter:
 
     def review_memory(self, request: MemoryReviewRequest) -> MemoryReviewOutput:
         if not isinstance(request, MemoryReviewRequest):
-            raise ValueError("request must be a MemoryReviewRequest")
+            raise ValueError("request must be a MemoryReviewRequest")  # noqa: TRY004 - ValueError is the contract
         payload = self._base_payload(
             messages=_memory_messages(request),
             schema_name="pia_memory_review",
@@ -318,7 +318,7 @@ class OpenRouterModelAdapter:
 
     def summarize(self, request: SummaryRequest) -> SummaryOutput:
         if not isinstance(request, SummaryRequest):
-            raise ValueError("request must be a SummaryRequest")
+            raise ValueError("request must be a SummaryRequest")  # noqa: TRY004 - ValueError is the contract
         payload = self._base_payload(
             messages=_summary_messages(request),
             schema_name="pia_rolling_summary",
@@ -476,7 +476,7 @@ def _context_messages(
     messages: list[dict[str, Any]] = []
     for index, part in enumerate(parts):
         if not isinstance(part, PromptContextPart):
-            raise ValueError("part has the wrong type")
+            raise ValueError("part has the wrong type")  # noqa: TRY004 - ValueError is the contract
         if part.kind is PromptContextKind.SYSTEM:
             if (
                 index != 0

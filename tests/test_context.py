@@ -14,8 +14,8 @@ from pia_harness import (
     PromptContextKind,
     PromptContextValidationError,
     PromptTrust,
-    ToolObservation,
     RollingSummary,
+    ToolObservation,
     new_turn_id,
 )
 from pia_harness.context import EARLIER_TURNS_NOTE
@@ -269,9 +269,8 @@ class PromptContextAssemblerTest(unittest.TestCase):
             {"conversation": ConversationContext(None, (wrong_turn_session,))},
         )
         for overrides in cases:
-            with self.subTest(overrides=overrides):
-                with self.assertRaises(PromptContextValidationError):
-                    self.assemble(count, **overrides)
+            with self.subTest(overrides=overrides), self.assertRaises(PromptContextValidationError):
+                self.assemble(count, **overrides)
         self.assertEqual([], calls)
 
     def test_turn_order_and_summary_overlap_are_rejected(self) -> None:
@@ -323,24 +322,24 @@ class PromptContextAssemblerTest(unittest.TestCase):
             {"token_budget": None},
         )
         for overrides in invalid_calls:
-            with self.subTest(overrides=overrides):
-                with self.assertRaises(PromptContextValidationError):
-                    self.assemble(lambda parts: 1, **overrides)
+            with self.subTest(overrides=overrides), self.assertRaises(PromptContextValidationError):
+                self.assemble(lambda parts: 1, **overrides)
 
         for result in (-1, 1.5, True):
-            with self.subTest(counter_result=result):
-                with self.assertRaisesRegex(
+            with (
+                self.subTest(counter_result=result),
+                self.assertRaisesRegex(
                     PromptContextValidationError, "non-negative integer"
-                ):
-                    self.assemble(lambda parts, value=result: value)
+                ),
+            ):
+                self.assemble(lambda parts, value=result: value)
 
         with self.assertRaisesRegex(ValueError, "must be callable"):
             PromptContextAssembler(None)
 
         for values in ((0, 1), (100, 0), (100, 100), (True, 1), (100, True)):
-            with self.subTest(token_budget=values):
-                with self.assertRaises(ValueError):
-                    ModelTokenBudget(*values)
+            with self.subTest(token_budget=values), self.assertRaises(ValueError):
+                ModelTokenBudget(*values)
 
     def test_counter_failure_propagates_and_budget_default_is_shared(self) -> None:
         def fail(parts):

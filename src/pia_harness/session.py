@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-
 MEMORY_MAX_CHARS = 4_000
 # What the Memory writer aims for; MEMORY_MAX_CHARS is only the hard limit,
 # so a document a little over the target is still kept.

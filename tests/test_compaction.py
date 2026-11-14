@@ -4,7 +4,6 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from pia_harness import (
-    ToolObservation,
     CompactionPolicy,
     ContextUsage,
     ConversationContext,
@@ -14,6 +13,7 @@ from pia_harness import (
     SummaryOutput,
     SummaryValidationError,
     TokenCompactor,
+    ToolObservation,
     new_turn_id,
 )
 from pia_harness.testing import InMemoryConversationStore

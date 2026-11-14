@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol
 from enum import StrEnum
+from typing import Any, Protocol
 
 from .budget import ModelTokenBudget
 from .session import ConversationContext, MemoryDocument, ToolObservation
@@ -11,7 +11,7 @@ from .session import ConversationContext, MemoryDocument, ToolObservation
 
 class PromptContextKind(StrEnum):
     SYSTEM = "SYSTEM"
-    # A document the host keeps for the user (PIA: the investment plan).
+    # A document the host keeps for the user (PIA: the portfolio operation status).
     HOST_DOCUMENT = "HOST_DOCUMENT"
     MEMORY = "MEMORY"
     SUMMARY = "SUMMARY"
@@ -82,7 +82,7 @@ class PromptContextAssembler:
         ],
     ) -> None:
         if not callable(count_input_tokens):
-            raise ValueError("count_input_tokens must be callable")
+            raise ValueError("count_input_tokens must be callable")  # noqa: TRY004 - ValueError is the contract
         self._count_input_tokens = count_input_tokens
 
     def assemble(

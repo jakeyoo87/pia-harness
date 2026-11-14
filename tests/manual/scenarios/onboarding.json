@@ -18,7 +18,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 0,
     "broker_not_connected": true,
     "uses": [
       "market_daily"
@@ -37,7 +36,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 0,
     "broker_not_connected": true,
     "expect": "market_feed_search",
     "answer_includes": [
@@ -56,7 +54,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 0,
     "broker_not_connected": true,
     "expect_choices": false,
     "answer_excludes": [
@@ -72,7 +69,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 0,
     "broker_not_connected": true,
     "expect_choices": false,
     "answer_excludes": [
@@ -88,7 +84,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 0,
     "broker_not_connected": true,
     "expect_choices": [
       "계좌 연결 완료"
@@ -105,7 +100,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 0,
     "broker_not_connected": true,
     "expect": "broker",
     "expect_choices": [
@@ -120,7 +114,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 0,
     "expect": "broker",
     "expect_choices": false,
     "answer_excludes": [

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 DEFAULT_MAX_RESPONSE_TOKENS = 4_096
 
 

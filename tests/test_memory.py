@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 from pia_harness import (
     MEMORY_MAX_CHARS,
     MEMORY_REVIEW_INSTRUCTION,
-    MemoryReviewer as _MemoryReviewer,
     CompletedTurn,
     CurrentMemoryInput,
     MemoryDocument,
@@ -17,6 +16,9 @@ from pia_harness import (
     RollingSummary,
     StoreContractError,
     new_turn_id,
+)
+from pia_harness import (
+    MemoryReviewer as _MemoryReviewer,
 )
 from pia_harness.testing import InMemoryConversationStore
 
@@ -328,14 +330,13 @@ class MemoryReviewerTest(unittest.TestCase):
             ),
         )
         for invalid in invalid_cases:
-            with self.subTest(current_input=invalid):
-                with self.assertRaises(MemoryReviewValidationError):
-                    reviewer.review_explicit_input(
-                        user_key=user_key,
-                        session_id=session.session_id,
-                        current_input=invalid,
-                        now=self.now + timedelta(seconds=2),
-                    )
+            with self.subTest(current_input=invalid), self.assertRaises(MemoryReviewValidationError):
+                reviewer.review_explicit_input(
+                    user_key=user_key,
+                    session_id=session.session_id,
+                    current_input=invalid,
+                    now=self.now + timedelta(seconds=2),
+                )
         self.assertEqual(1, len(calls))
 
     def test_explicit_input_rejects_a_conflicting_or_newer_persisted_turn(self) -> None:
@@ -411,13 +412,12 @@ class MemoryReviewerTest(unittest.TestCase):
             ),
         )
         for output in invalid_outputs:
-            with self.subTest(output=output):
-                with self.assertRaises(MemoryReviewValidationError):
-                    self.explicit(
-                        MemoryReviewer(self.store, lambda request, value=output: value),
-                        user_key,
-                        session_id,
-                    )
+            with self.subTest(output=output), self.assertRaises(MemoryReviewValidationError):
+                self.explicit(
+                    MemoryReviewer(self.store, lambda request, value=output: value),
+                    user_key,
+                    session_id,
+                )
                 self.assertIsNone(self.store.get_memory(user_key))
 
         def fail(request):

@@ -23,7 +23,6 @@
       "order",
       "confirm"
     ],
-    "plan_versions": 0,
     "broker_not_connected": true,
     "uses": [
       "market_daily"

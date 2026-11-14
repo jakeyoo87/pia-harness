@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import logging
 import math
 import re
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Any, TypeVar
+from typing import Any
 
 from .budget import ModelTokenBudget
 from .compaction import ContextUsage, TokenCompactor
@@ -23,8 +24,8 @@ from .context import (
 from .memory import (
     MAX_CHANGE_SUMMARY_CHARS,
     MAX_CHANGE_SUMMARY_ITEMS,
-    MemoryReviewer,
     CurrentMemoryInput,
+    MemoryReviewer,
     MemoryReviewResult,
     MemoryReviewStatus,
 )
@@ -37,6 +38,7 @@ from .persistence import (
 from .session import ActiveSession, as_utc, new_turn_id
 
 MESSAGE_SEPARATOR = "\n\n--- additional user message ---\n\n"
+logger = logging.getLogger("pia_harness")
 RESEARCH_TIMEOUT_SECONDS = 90.0
 PROGRESS_TIMEOUT_SECONDS = 5.0
 # Research stops at whichever comes first: this many read-tool uses or the
@@ -61,6 +63,13 @@ APPLIED_AFTER_ANSWER_NOTE = (
     "already saved."
 )
 APPLIED_ACTION_FAILED_NOTICE = "요청한 변경을 저장하지 못했습니다. 다시 요청해 주세요."
+# One tool call's unexpected error is that call's result: the model goes on with
+# the other results (plans/2026-11-14_stability-and-cleanup.md §1). Repeated
+# calls are bounded by the research limits, failed ones included.
+READ_TOOL_ERROR_RESULT = (
+    "Failed: the tool had an error. Answer without it or use another tool."
+)
+PREPARE_ERROR_RESULT = "Not prepared: the tool had an error."
 # A waiting action's question is the tool's fixed text, added after the answer;
 # a model that also asks shows the user two questions.
 CONFIRMATION_APPENDED_NOTE = (
@@ -91,7 +100,6 @@ _CODE = re.compile(r"(```.*?(?:```|\Z)|`[^`\n]*`)", re.DOTALL)
 # Marks a removal so only the space next to it goes, not the answer's own.
 _REMOVED = "\x00"
 _REMOVED_SPACE = re.compile(r"[ \t]+\x00|\x00[ \t]*")
-_T = TypeVar("_T")
 _KST = timezone(timedelta(hours=9))
 
 
@@ -413,9 +421,9 @@ class ConversationOrchestrator:
         context_document: Callable[[str], str | None] | None = None,
     ) -> None:
         if not callable(generate_reply):
-            raise ValueError("generate_reply must be callable")
+            raise ValueError("generate_reply must be callable")  # noqa: TRY004 - ValueError is the contract
         if not callable(deliver):
-            raise ValueError("deliver must be callable")
+            raise ValueError("deliver must be callable")  # noqa: TRY004 - ValueError is the contract
         if progress is not None and not callable(progress):
             raise ValueError("progress must be callable")
         if context_document is not None and not callable(context_document):
@@ -455,7 +463,7 @@ class ConversationOrchestrator:
         if not isinstance(model_id, str) or not model_id:
             raise ValueError("model_id is required")
         if not isinstance(token_budget, ModelTokenBudget):
-            raise ValueError("token_budget must be a ModelTokenBudget")
+            raise ValueError("token_budget must be a ModelTokenBudget")  # noqa: TRY004 - ValueError is the contract
         if (
             not isinstance(explicit_memory_failure_notice, str)
             or not explicit_memory_failure_notice.strip()
@@ -656,9 +664,10 @@ class ConversationOrchestrator:
                     )
                 except ConversationAbandoned:
                     raise
-                # Expected failures come back as results; anything else is a
-                # code error in a tool.
-                except Exception:
+                # A tool call's own error is its result (_run_round); anything
+                # else is a code error in the round itself. Like a failed
+                # answer, the request stays to be answered with the next message.
+                except Exception:  # noqa: BLE001
                     await self._finish_generation(
                         user_key,
                         state,
@@ -668,7 +677,7 @@ class ConversationOrchestrator:
                             OrchestratorStatus.TOOL_FAILED,
                             turn_id=batch[-1].value.turn_id,
                         ),
-                        clear_pending=True,
+                        clear_pending=False,
                     )
                     return
                 if not await self._is_current(state, generation_id):
@@ -777,7 +786,7 @@ class ConversationOrchestrator:
             )
         except asyncio.CancelledError:
             return
-        except Exception:
+        except Exception:  # noqa: BLE001 - reported as GENERATION_FAILED
             await self._finish_generation(
                 user_key,
                 state,
@@ -956,13 +965,18 @@ class ConversationOrchestrator:
 
         async def read(
             tool: ReadToolDefinition, call: ToolCall
-        ) -> ReadToolResult | None:
+        ) -> ReadToolResult | str | None:
             # Waiting for a slot counts against the same deadline.
             try:
                 result = await _before_deadline(deadline, execute(tool, call))
+                _validate_read_tool_result(result)
             except TimeoutError:
                 return None
-            _validate_read_tool_result(result)
+            except ConversationAbandoned:
+                raise
+            except Exception as error:  # noqa: BLE001 - one call, not the Turn
+                _log_tool_failure(call.name, error)
+                return READ_TOOL_ERROR_RESULT
             return result
 
         results = await asyncio.gather(
@@ -972,6 +986,8 @@ class ConversationOrchestrator:
             if result is None:
                 outcome.results[index] = "Not finished: the research time ran out."
                 outcome.limit_hit = True
+            elif isinstance(result, str):
+                outcome.results[index] = result + prefix
             else:
                 text, kept = _tool_result_text(result, listed_urls)
                 outcome.results[index] = text + prefix
@@ -986,11 +1002,17 @@ class ConversationOrchestrator:
                 preparation = await _before_deadline(
                     deadline, execution.prepare(user_key, call)
                 )
+                _validate_preparation(preparation)
             except TimeoutError:
                 outcome.results[index] = "Not prepared: the time ran out."
                 outcome.limit_hit = True
                 continue
-            _validate_preparation(preparation)
+            except ConversationAbandoned:
+                raise
+            except Exception as error:  # noqa: BLE001 - one call, not the Turn
+                _log_tool_failure(call.name, error)
+                outcome.results[index] = PREPARE_ERROR_RESULT
+                continue
             text = preparation.observation_text
             draft = preparation.action
             if draft is not None and not draft.needs_confirmation:
@@ -1023,7 +1045,7 @@ class ConversationOrchestrator:
             )
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - progress is best effort
             return
 
     async def _assemble_context(
@@ -1266,7 +1288,7 @@ class ConversationOrchestrator:
                         _add_changes(changes, notices, review)
                 except ConversationAbandoned:
                     raise
-                except Exception:
+                except Exception:  # noqa: BLE001 - reported as memory_failed
                     memory_failed = True
                     explicit_memory_failed = True
             if explicit_memory_failed:
@@ -1289,7 +1311,7 @@ class ConversationOrchestrator:
                 await self._deliver(user_key, final_text, choices)
             except ConversationAbandoned:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 - reported as DELIVERY_FAILED
                 return ConversationResult(
                     OrchestratorStatus.DELIVERY_FAILED,
                     final_text=final_text,
@@ -1330,7 +1352,7 @@ class ConversationOrchestrator:
                     await _durable_call(self._store.append_completed_turn, **turn)
             except ConversationAbandoned:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 - reported as PERSISTENCE_FAILED
                 return ConversationResult(
                     OrchestratorStatus.PERSISTENCE_FAILED,
                     final_text=final_text,
@@ -1342,7 +1364,7 @@ class ConversationOrchestrator:
             # Compaction runs here, after the answer is out, so the user does
             # not wait for it. The model's reported usage decides, not an
             # estimate.
-            size = {
+            size: dict[str, Any] = {
                 "token_budget": self._token_budget,
                 "model_id": self._model_id,
                 "estimated_context_tokens": answer.estimated_total_tokens,
@@ -1361,7 +1383,7 @@ class ConversationOrchestrator:
                 raise
             # The answer is delivered and stored; a failed Compaction only
             # leaves the Context larger for the next request.
-            except Exception:
+            except Exception:  # noqa: BLE001
                 compaction_failed = True
 
         return ConversationResult(
@@ -1411,14 +1433,13 @@ class ConversationOrchestrator:
             )
 
     async def _remove_if_idle(self, user_key: str, state: _UserState) -> None:
-        async with self._states_lock:
-            async with state.state_lock:
-                if (
-                    self._states.get(user_key) is state
-                    and state.phase is _Phase.IDLE
-                    and not state.pending
-                ):
-                    del self._states[user_key]
+        async with self._states_lock, state.state_lock:
+            if (
+                self._states.get(user_key) is state
+                and state.phase is _Phase.IDLE
+                and not state.pending
+            ):
+                del self._states[user_key]
 
 
 def _choices(arguments: Mapping[str, Any]) -> Choices | None:
@@ -1474,9 +1495,9 @@ def _waiting_note(offered: tuple[_PendingAction, ...]) -> str | None:
     if not offered:
         return None
     lines = [
-        "Actions prepared in the previous answer are waiting for the user's "
-        "confirmation. Call confirm with the IDs the latest message clearly "
-        "agrees to; otherwise do not."
+        ("Actions prepared in the previous answer are waiting for the user's "
+         "confirmation. Call confirm with the IDs the latest message clearly "
+         "agrees to; otherwise do not.")
     ]
     lines.extend(f"- {item.action_id}: {item.action.summary}" for item in offered)
     return "\n".join(lines)
@@ -1573,7 +1594,7 @@ def _combined_message(batch: tuple[_Submission, ...]) -> str:
 
 def _validate_generated_answer(answer: GeneratedAnswer) -> None:
     if not isinstance(answer, GeneratedAnswer):
-        raise ValueError("the answer has the wrong type")
+        raise ValueError("the answer has the wrong type")  # noqa: TRY004 - ValueError is the contract
     if not isinstance(answer.text, str) or not answer.text:
         raise ValueError("generated answer text is required")
     if not isinstance(answer.model_id, str) or not answer.model_id:
@@ -1588,7 +1609,7 @@ def _validate_generated_answer(answer: GeneratedAnswer) -> None:
 
 def _validate_reply(reply: ModelReply, answer_only: bool) -> None:
     if not isinstance(reply, ModelReply):
-        raise ValueError("generate_reply returned the wrong type")
+        raise ValueError("generate_reply returned the wrong type")  # noqa: TRY004 - ValueError is the contract
     if reply.answer is not None:
         if reply.tool_calls:
             raise ValueError("a reply is either tool calls or an answer")
@@ -1617,6 +1638,14 @@ def _validate_preparation(result: PreparationResult) -> None:
         or not action.arguments_json.strip()
     ):
         raise ValueError("prepared action is invalid")
+
+
+def _log_tool_failure(name: str, error: Exception) -> None:
+    # The tool name and the error class only: a message can carry a URL, a search
+    # or account details.
+    logger.warning(
+        "harness.tool_failed tool=%s error_type=%s", name, type(error).__name__
+    )
 
 
 def _validate_read_tool_result(result: ReadToolResult) -> None:
@@ -1765,7 +1794,7 @@ def _final_text(answer: str, changes: list[str], notices: list[str]) -> str:
     return f"{answer}\n\n" + "\n".join(lines)
 
 
-async def _before_deadline(deadline: float, operation: Awaitable[_T]) -> _T:
+async def _before_deadline[T](deadline: float, operation: Awaitable[T]) -> T:
     remaining = max(0.0, deadline - asyncio.get_running_loop().time())
     return await asyncio.wait_for(operation, timeout=remaining)
 

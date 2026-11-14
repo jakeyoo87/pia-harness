@@ -6,9 +6,9 @@ import unittest
 
 from pia_harness import (
     GeneratedAnswer,
-    ModelReply,
     MemoryReviewAction,
     MemoryReviewOutput,
+    ModelReply,
     OpenRouterModelError,
     SummaryOutput,
 )
