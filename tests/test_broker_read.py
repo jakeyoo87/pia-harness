@@ -143,7 +143,7 @@ FLOWS = {
 SERIES = {
     ("macro", "usdkrw"): ("USD/KRW", "KRW per USD", 1384.5512),
     ("macro", "us10y"): ("US 10-year Treasury yield", "%", 4.1234),
-    ("commodity", "gold"): ("Gold (COMEX)", "USD per troy ounce", 2650.4),
+    ("commodity", "gold"): ("Gold (international spot)", "USD per troy ounce", 2650.4),
     ("market", "spx"): ("S&P 500", "points", 6012.25),
 }
 
@@ -705,7 +705,7 @@ class BrokerReadToolTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual({"macro": "us10y"}, self.params())
         text = await self.lookup("quote", commodity="gold")
-        self.assertIn("Gold (COMEX), looked up at", text)
+        self.assertIn("Gold (international spot), looked up at", text)
         self.assertIn(
             ": 2,650.4 USD per troy ounce; change from the previous close", text
         )

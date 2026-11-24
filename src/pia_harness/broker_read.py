@@ -72,7 +72,7 @@ _MACRO = {
     "vix": "VIX volatility index",
 }
 _COMMODITY = {
-    "gold": "gold (COMEX)",
+    "gold": "gold (international spot)",
     "silver": "silver (COMEX)",
     "wti": "WTI crude oil",
     "brent": "Brent crude oil",
