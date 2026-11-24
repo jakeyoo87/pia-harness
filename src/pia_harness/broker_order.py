@@ -7,8 +7,10 @@ origin and an httpx auth that signs each request.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import math
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -78,6 +80,9 @@ OnAccepted = Callable[[str, Mapping[str, Any]], Awaitable[None]]
 ACCEPTED_CHECK_APP = "체결 여부는 증권사 앱에서 확인해 주세요."
 ACCEPTED_TRACKED = "체결되면 알려 드릴게요."
 ACCEPTED_NOT_TRACKED = "체결 알림을 등록하지 못했어요. " + ACCEPTED_CHECK_APP
+# A funding sell is checked this many times, a second apart, before the buy goes.
+FUNDING_CHECKS = 10
+FUNDING_PAUSE_SECONDS = 1.0
 
 
 class BrokerOrderTool:
@@ -89,11 +94,19 @@ class BrokerOrderTool:
         timeout_seconds: float = 35.0,
         client: httpx.AsyncClient | None = None,
         on_accepted: OnAccepted | None = None,
+        funding_code: str | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
+        """`funding_code`: a Korean stock the host keeps its cash in (PIA: the
+        money-market ETF of an operated account). A Korean limit buy that costs more
+        than KIS lets the account buy sells enough of it first, in the same
+        confirmation, and buys once that sell has filled."""
         if not base_url.startswith("https://") and client is None:
             raise ValueError("Broker origin must be https")
         self._owns_client = client is None
         self._on_accepted = on_accepted
+        self._funding_code = funding_code
+        self._sleep = sleep
         self._client = client or httpx.AsyncClient(
             base_url=base_url, auth=auth, timeout=timeout_seconds
         )
@@ -194,7 +207,7 @@ class BrokerOrderTool:
                 f"{label}를 시장가로 {action_word}할까요? "
                 f"(예상 금액 약 {current * quantity:,}원, {at} 기준 현재가 {now})"
             )
-        stored = {
+        stored: dict[str, Any] = {
             "request_id": uuid.uuid4().hex,
             "code": code,
             "name": official_name,
@@ -204,6 +217,22 @@ class BrokerOrderTool:
             "price": limit,
             "summary": summary,
         }
+        if (
+            self._funding_code is not None
+            and side == "BUY"
+            and currency == "KRW"
+            and limit is not None
+            and code != self._funding_code
+        ):
+            funding = await self._funding(user_key, code, quantity * limit)
+            if funding is not None:
+                stored["funding"] = funding
+                summary = f"{funding['summary']} 후 {summary}"
+                confirmation = (
+                    f"{funding['label']}를 {_amount(funding['price'], 'KRW')}에 팔고, "
+                    f"{label}를 {_amount(limit, currency)} 지정가로 {action_word}할까요? "
+                    f"({at} 기준 현재가 {now})"
+                )
         note = (
             " US stocks take no market orders, so it is a limit order at the current "
             "price."
@@ -220,6 +249,26 @@ class BrokerOrderTool:
 
     async def execute(self, user_key: str, action: PreparedAction) -> str:
         stored = json.loads(action.arguments_json)
+        funding = stored.get("funding")
+        if funding is None:
+            text, _ = await self._place(user_key, stored)
+            return text
+        # The cash first; the buy only once that sell has filled (sale money buys the
+        # same day once filled).
+        text, order_no = await self._place(user_key, funding)
+        if order_no is None:
+            return f"{text} 그래서 {stored['summary']} 주문은 넣지 않았어요."
+        if not await self._filled(user_key, order_no, int(funding["quantity"])):
+            return (
+                f"{text} 체결이 확인되지 않아 {stored['summary']} 주문은 넣지 않았어요. "
+                "다시 사려면 같은 요청을 해 주세요."
+            )
+        bought, _ = await self._place(user_key, stored)
+        return f"{text}\n{bought}"
+
+    async def _place(self, user_key: str, stored: Mapping[str, Any]) -> tuple[str, str | None]:
+        """One order sent once: the result sentence, and the broker order number when
+        it was accepted."""
         summary = stored["summary"]
         body = {
             key: stored[key]
@@ -255,18 +304,80 @@ class BrokerOrderTool:
                         "harness.order_tracking_failed error_type=%s", type(error).__name__
                     )
                     note = ACCEPTED_NOT_TRACKED
-            return (
-                f"주문이 접수되었습니다: {summary} "
-                f"(주문번호 {result.get('broker_order_no')}). {note}"
-            )
+            number = str(result.get("broker_order_no"))
+            return f"주문이 접수되었습니다: {summary} (주문번호 {number}). {note}", number
         if status == "REJECTED":
             reason = result.get("reason") or result.get("reason_code")
-            return f"주문이 거부되었습니다: {summary}. 사유: {reason}"
+            return f"주문이 거부되었습니다: {summary}. 사유: {reason}", None
         # Anything else may still have reached the broker: never resend.
         return (
             f"주문 결과를 확인하지 못했습니다: {summary}. 주문이 들어갔을 수 있으니 "
             "다시 주문하기 전에 증권사 앱에서 꼭 확인해 주세요."
+        ), None
+
+    async def _funding(self, user_key: str, code: str, cost: float) -> dict[str, Any] | None:
+        """The sell of the funding stock a buy costing `cost` needs: KIS's own buyable
+        amount for the stock (no margin) is short, and enough of the funding stock is
+        sellable, sold at the best bid. None when the buy fits, or when there is not
+        enough to sell (the buy then goes as it is, and KIS says why if it refuses)."""
+        assert self._funding_code is not None
+        buyable = await self._get(f"/internal/members/{user_key}/account", {"code": code})
+        short = cost - float(buyable["buyable"]["amount"])
+        if short <= 0:
+            return None
+        held = await self._get(
+            f"/internal/members/{user_key}/account", {"code": self._funding_code}
         )
+        book = await self._get(
+            f"/internal/members/{user_key}/quote",
+            {"code": self._funding_code, "book": "true"},
+        )
+        bids = [level["price"] for level in book.get("bids") or ()]
+        position = held.get("position")
+        if not bids or position is None:
+            return None
+        price = int(max(bids))
+        quantity = math.ceil(short / price)
+        if quantity > int(position.get("sellable_quantity") or 0):
+            return None
+        label = f"{position.get('name') or self._funding_code}({self._funding_code}) {quantity:,}주"
+        return {
+            "request_id": uuid.uuid4().hex,
+            "code": self._funding_code,
+            "name": position.get("name") or self._funding_code,
+            "side": "SELL",
+            "quantity": quantity,
+            "order_type": "LIMIT",
+            "price": price,
+            "label": label,
+            "summary": f"{label} {_amount(price, 'KRW')} 지정가 매도",
+        }
+
+    async def _filled(self, user_key: str, order_no: str, quantity: int) -> bool:
+        """Whether the order filled in full (`filled`, not `remaining`: a cancel also
+        leaves none), looked up a second apart a few times."""
+        today = datetime.now(_KST).date().isoformat()
+        for check in range(FUNDING_CHECKS):
+            if check:
+                await self._sleep(FUNDING_PAUSE_SECONDS)
+            try:
+                reply = await self._get(
+                    f"/internal/members/{user_key}/orders", {"market": "KR", "date": today}
+                )
+            except (httpx.HTTPError, ValueError, TypeError):
+                continue
+            for row in reply.get("orders") or ():
+                if str(row.get("order_no")) == order_no and int(row.get("filled") or 0) >= quantity:
+                    return True
+        return False
+
+    async def _get(self, path: str, params: Mapping[str, str]) -> dict[str, Any]:
+        response = await self._client.get(path, params=params)
+        response.raise_for_status()
+        reply = response.json()
+        if not isinstance(reply, dict):
+            raise TypeError("broker reply is not an object")
+        return reply
 
     async def aclose(self) -> None:
         if self._owns_client:

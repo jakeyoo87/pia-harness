@@ -323,3 +323,104 @@ class UsOrderTest(unittest.IsolatedAsyncioTestCase):
         result = await self.tool.prepare(MEMBER, call(price=285500.5))
         self.assertIsNone(result.action)
         self.assertIn("whole won", result.observation_text)
+
+
+MMF = "488770"
+
+
+class FundingBroker(FakeBroker):
+    """A Korean account keeping its cash in the money-market ETF (PIA's operation)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.buyable = 200000
+        self.sellable = 8
+        self.filled = 3
+        self.listing: httpx.Response | None = None
+        self.placed_no = iter(["0000000001", "0000000002"])
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        code = request.url.params.get("code")
+        if path == f"/internal/members/{MEMBER}/account":
+            if code == MMF:
+                position = {"code": MMF, "name": "KODEX 머니마켓액티브", "sellable_quantity": self.sellable}
+                return httpx.Response(200, json={"buyable": {}, "position": position})
+            return httpx.Response(200, json={"buyable": {"amount": self.buyable}, "position": None})
+        if path == f"/internal/members/{MEMBER}/quote" and code == MMF:
+            return httpx.Response(200, json={"asks": [{"price": 105030}], "bids": [{"price": 105020}, {"price": 105015}]})
+        if path == f"/internal/members/{MEMBER}/orders" and request.method == "GET":
+            if self.listing is not None:
+                return self.listing
+            return httpx.Response(200, json={"orders": [{"order_no": "0000000001", "filled": self.filled}]})
+        if path == f"/internal/members/{MEMBER}/orders":
+            self.orders.append(json.loads(request.content))
+            return httpx.Response(
+                200, json={"status": "ACCEPTED", "broker_order_no": next(self.placed_no), "ordered_at": None}
+            )
+        return super().handle(request)
+
+
+class FundingTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.broker = FundingBroker()
+        self.watched: list[dict] = []
+        self.pauses: list[float] = []
+
+        async def on_accepted(user_key, order):
+            self.watched.append(dict(order))
+
+        async def sleep(seconds):
+            self.pauses.append(seconds)
+
+        client = httpx.AsyncClient(
+            base_url="https://broker.example", transport=httpx.MockTransport(self.broker.handle)
+        )
+        self.tool = BrokerOrderTool(
+            base_url="https://broker.example", client=client, on_accepted=on_accepted,
+            funding_code=MMF, sleep=sleep,
+        )
+
+    async def test_a_buy_that_fits_is_one_order(self) -> None:
+        self.broker.buyable = 300000
+        prepared = await self.tool.prepare(MEMBER, call(quantity=1))
+        assert prepared.action is not None
+        self.assertNotIn("funding", json.loads(prepared.action.arguments_json))
+        self.assertTrue(prepared.action.confirmation.startswith("삼성전자(005930) 1주를"))
+
+    async def test_a_short_buy_sells_the_cash_first_in_one_confirmation(self) -> None:
+        # 285,500 − 200,000 = 85,500 short: one share at the best bid 105,020.
+        prepared = await self.tool.prepare(MEMBER, call(quantity=1))
+        assert prepared.action is not None
+        self.assertTrue(
+            prepared.action.confirmation.startswith(
+                "KODEX 머니마켓액티브(488770) 1주를 105,020원에 팔고, 삼성전자(005930) 1주를 285,500원 지정가로 매수할까요?"
+            ),
+            prepared.action.confirmation,
+        )
+        text = await self.tool.execute(MEMBER, prepared.action)
+        sell, buy = self.broker.orders
+        self.assertEqual((MMF, "SELL", 1, 105020), (sell["code"], sell["side"], sell["quantity"], sell["price"]))
+        self.assertEqual(("005930", "BUY", 1, 285500), (buy["code"], buy["side"], buy["quantity"], buy["price"]))
+        self.assertEqual(["0000000001", "0000000002"], [o["broker_order_no"] for o in self.watched])
+        self.assertIn("\n주문이 접수되었습니다: 삼성전자(005930) 1주 285,500원 지정가 매수", text)
+        # Market buys and too little to sell: one order as before.
+        prepared = await self.tool.prepare(MEMBER, call(quantity=1, order_type="MARKET"))
+        assert prepared.action is not None
+        self.assertNotIn("funding", json.loads(prepared.action.arguments_json))
+        self.broker.sellable = 0
+        prepared = await self.tool.prepare(MEMBER, call(quantity=1))
+        assert prepared.action is not None
+        self.assertNotIn("funding", json.loads(prepared.action.arguments_json))
+
+    async def test_no_buy_until_the_sell_has_filled(self) -> None:
+        self.broker.filled = 0
+        prepared = await self.tool.prepare(MEMBER, call(quantity=1))
+        assert prepared.action is not None
+        text = await self.tool.execute(MEMBER, prepared.action)
+        (sell,) = self.broker.orders
+        self.assertEqual("SELL", sell["side"])
+        self.assertEqual([1.0] * 9, self.pauses)
+        self.assertIn("체결이 확인되지 않아 삼성전자(005930) 1주 285,500원 지정가 매수 주문은 넣지 않았어요.", text)
+        # The sale was told to the host before the checks (they may fail).
+        self.assertEqual(["0000000001"], [o["broker_order_no"] for o in self.watched])

@@ -446,6 +446,7 @@ Broker 현재가 (계좌 미연결이면 "Member Web에서 연결·확인 필요
   - ACCEPTED: "주문이 접수되었습니다: 요약 (주문번호 …). 체결 여부는 증권사 앱에서 확인해 주세요." host가 `on_accepted(user_key, order)`를 주면(PIA: 체결 알림, pia-agent `plans/2026-11-14_fills-and-cancel.md` §3) 접수된 주문(`request_id`, `code`, `name`, `side`, `quantity`, `broker_order_no`, `ordered_at`)을 넘기고, 마지막 문장은 "체결되면 알려 드릴게요."가 된다. 고리가 실패하면 주문 결과는 그대로 두고 마지막 문장만 "체결 알림을 등록하지 못했어요. 체결 여부는 증권사 앱에서 확인해 주세요."로 바꾸고 `pia_harness` WARNING(`harness.order_tracking_failed error_type=…`)을 남긴다. 결과 문장을 해석해 접수를 알아내지 않는다.
   - REJECTED: "주문이 거부되었습니다: 요약. 사유: KIS 거부 문구(없으면 code)"
   - 그 밖(UNKNOWN, 응답 오류, 통신 실패): "주문 결과를 확인하지 못했습니다: 요약. 주문이 들어갔을 수 있으니 다시 주문하기 전에 증권사 앱에서 꼭 확인해 주세요." 자동으로 다시 보내지 않는다.
+- 자금 마련(0.7.26, pia-agent `plans/2026-11-24_portfolio-user-trades.md` §1): host가 `funding_code`(현금을 두는 국내 종목; PIA: 단기채 ETF 488770)를 주면, 국내 **지정가** 매수의 금액(수량 × 지정가)이 Broker 계좌 조회(`/account?code=종목`)의 매수 가능 금액(`buyable.amount`, KIS 미수 없는 매수 금액)보다 클 때 모자란 만큼을 그 종목의 최우선 매수호가로 파는 주문을 같은 확인에 묶는다("… n주를 B원에 팔고, … 지정가로 매수할까요?"). 매도 가능 수량이 모자라거나 호가가 없으면 지금처럼 한 주문이다. 실행은 매도 → 접수 직후 `on_accepted` → 당일 주문 조회(`/orders?market=KR&date=`)에서 그 주문의 `filled`가 주문 수량이 될 때까지 1초 간격 최대 10번 → 매수. 체결이 확인되지 않거나 매도가 접수되지 않으면 매수는 넣지 않고 그렇게 알린다. 시장가 매수에는 쓰지 않는다(매수 가능 조회가 현재가 지정가 기준).
 - 같은 확인 대기를 두 번 실행해도 같은 `request_id`라 Broker가 한 번만 주문한다.
 - 범위는 매수·매도다. 잔고·매수 가능은 `broker`의 account로 본다(→ 6.2.3). 취소·체결 조회는 아직 없다.
 
