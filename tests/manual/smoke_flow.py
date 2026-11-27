@@ -3,21 +3,18 @@
 Manual only: it calls paid APIs and model decisions vary, so it is not part of pytest
 or CI. Scenarios run in order in one conversation, so later ones can refer to earlier
 answers. Keys come from the environment and are never printed; Jina is called
-without a key. The execution and broker sets use a fake pia-broker with fixed
-replies; no real order or account lookup is ever sent. The financials set adds
-past_financials with fake OpenDART and SEC replies (tests/manual/fake_financials.py).
-The market_feed set adds market_feed_search over a fake feed DB
-(tests/manual/fake_market_feed.py) next to the broker and financials tools.
+without a key. The financials set adds past_financials with fake OpenDART and SEC
+replies (tests/manual/fake_financials.py). Only the harness's own tools run here; a
+host's tools (PIA's broker, order and feed tools) are checked in the host.
 
     OPENROUTER_API_KEY=... EXA_API_KEY=... NAVER_API_HUB_CLIENT_ID=... \\
     NAVER_API_HUB_CLIENT_SECRET=... python -m tests.manual.smoke_flow \\
-        [--set read|execution|broker|onboarding|financials|market_feed] [--only 1,2]
+        [--set read|financials] [--only 1,2]
         [--model ID]
         [--context-limit N] [--extra-prompt-file PATH]
 
-The onboarding sets take the host's own instructions (pia-agent
-ONBOARDING_PROMPT) through --extra-prompt-file, not a copy. A scenario entry with
-"seed" instead of "message" puts earlier Turns or Memory in place first.
+--extra-prompt-file appends a host's own instructions. A scenario entry with "seed"
+instead of "message" puts earlier Turns or Memory in place first.
 """
 
 from __future__ import annotations
@@ -36,21 +33,16 @@ from typing import Any
 import httpx
 
 from pia_harness import (
-    BrokerOrderTool,
-    BrokerReadTool,
     Choices,
     ConversationOrchestrator,
     ExaWebSearch,
     JinaPageExtractor,
-    MarketFeedSearchTool,
     ModelTokenBudget,
     NaverNewsSearch,
     OpenRouterModelAdapter,
     PastFinancialsTool,
     ReadToolDefinition,
-    ReadToolResult,
 )
-from pia_harness.broker_read import _ArgumentProblem, _resolve
 from pia_harness.compaction import TokenCompactor
 from pia_harness.context import PromptContextAssembler
 from pia_harness.memory import MemoryReviewer
@@ -58,35 +50,9 @@ from pia_harness.session import MemoryDocument, new_turn_id
 from pia_harness.testing import InMemoryConversationStore
 
 from .fake_financials import client as fake_financials_client
-from .fake_market_feed import fetch as fake_feed_fetch
 
 SCENARIOS = Path(__file__).with_name("scenarios")
-SCENARIO_SETS = (
-    "read",
-    "execution",
-    "broker",
-    "onboarding",
-    "onboarding_reset",
-    "onboarding_legacy",
-    "financials",
-    "market_feed",
-)
-_ONBOARDING_SETS = frozenset({"onboarding", "onboarding_reset", "onboarding_legacy"})
-# Sets that run with the fake pia-broker and the broker prompt, as PIA does.
-_BROKER_SETS = frozenset({"broker", "financials", "market_feed", *_ONBOARDING_SETS})
-# name: (code, market, current price). The fake order reply is UNKNOWN for 005935
-# so one scenario sees the "check the broker app" result. US codes are exchange:ticker
-# and found by ticker too; "마이크론" matches two names, as in the real list.
-FAKE_INSTRUMENTS = {
-    "삼성전자": ("005930", "KOSPI", 285500),
-    "삼성전자우": ("005935", "KOSPI", 231000),
-    "SK하이닉스": ("000660", "KOSPI", 351000),
-    "하나마이크론": ("067310", "KOSDAQ", 25000),
-    "엔비디아": ("NAS:NVDA", "NAS", 233.95),
-    "테슬라": ("NAS:TSLA", "NAS", 251.3),
-    "애플": ("NAS:AAPL", "NAS", 254.1),
-    "마이크론 테크놀로지": ("NAS:MU", "NAS", 120.45),
-}
+SCENARIO_SETS = ("read", "financials")
 USER = "smoke-flow-user"
 SYSTEM_PROMPT = (
     "You are PIA, a Korean personal investment assistant. Answer in Korean, "
@@ -97,34 +63,7 @@ MEMORY_INSTRUCTION = (
     "investment style, risk tolerance, holdings or interests the user states. "
     "Do not keep news content or one-off questions."
 )
-# Copies of what PIA adds (pia-agent app/core.py), word for word, so a run checks the
-# real text: the order rules go with the order tool (SYSTEM_PROMPT's order sentence
-# and ORDER_PROMPT), the broker line with the broker tool (BROKER_READ_PROMPT).
-ORDER_PROMPT = (
-    " Never claim a new order was placed, accepted or rejected without an order "
-    "tool result; results already in the conversation may be explained again. "
-    "PIA can place Korean and US stock buy and sell orders (a US market order is "
-    "placed as a limit order at the current price), "
-    "but only after the user "
-    "agrees to the confirmation question in the very next message. If a "
-    "confirmation has lapsed or there is none, ask the user to request the order "
-    "again; never say that PIA cannot place orders."
-)
-BROKER_READ_PROMPT = (
-    " For the user's own account and the market figures the broker tool offers, "
-    "use the broker tool rather than web search."
-)
-# The line PIA adds when it registers market_feed_search (plan
-# plans/2026-10-17_market-feed-search.md), word for word.
-MARKET_FEED_PROMPT = (
-    " For recent news, opinions, price targets or scheduled events on markets, "
-    "sectors or stocks, use market_feed_search first when it applies, before "
-    "news_search and web_search."
-)
 _MEMORY_ACTIONS = {"update": "UPDATE", "forget": "FORGET"}
-_EXECUTION_TOOLS = frozenset({"order", "confirm"})
-# Bars by period, as the broker returns them (pia-broker README).
-_BAR_UNIT = {"6m": "week", "1y": "week", "3y": "month", "5y": "month"}
 
 
 @dataclass
@@ -145,7 +84,6 @@ class Record:
     usage: list[int] = field(default_factory=list)
     # Memory after the Turn.
     memory_text: str = ""
-    orders_sent: int = 0
     # The options delivered under the answer, if any.
     choices: Choices | None = None
     # Provider calls besides the loop model, for the cost of one question.
@@ -269,394 +207,6 @@ def _instrument_extract(state: dict[str, Any], extractor: JinaPageExtractor) -> 
     extractor.extract = logged_extract  # type: ignore[method-assign]
 
 
-def _fake_broker(started: dict[str, Any], orders: list[dict[str, Any]]):
-    """pia-broker's internal routes with fixed data (README 4~8 of pia-broker)."""
-
-    def item(name: str) -> dict[str, str]:
-        code, market, _ = FAKE_INSTRUMENTS[name]
-        return {"code": code, "name": name, "market": market}
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        # Trading needs a connection; its status remains readable without one.
-        if started.get("broker_not_connected") and path.startswith(
-            "/internal/members/"
-        ):
-            if path.endswith("/broker-status"):
-                return httpx.Response(200, json={"connection": None})
-            return httpx.Response(409, json={"code": "BROKER_NOT_CONNECTED"})
-        if path == "/internal/instruments":
-            query = "".join(request.url.params["query"].split()).casefold()
-            exact = [
-                name
-                for name, (code, _, _) in FAKE_INSTRUMENTS.items()
-                if "".join(name.split()).casefold() == query
-                or code.casefold() == query
-                or code.partition(":")[2].casefold() == query
-            ]
-            found = exact or [
-                n for n in FAKE_INSTRUMENTS if query in "".join(n.split()).casefold()
-            ]
-            _log(started["started"], "BROKER search", f"{query} -> {found}")
-            if len(found) == 1:
-                return httpx.Response(200, json={"status": "FOUND", **item(found[0])})
-            if found:
-                candidates = [item(name) for name in found]
-                return httpx.Response(
-                    200, json={"status": "AMBIGUOUS", "candidates": candidates}
-                )
-            return httpx.Response(200, json={"status": "NOT_FOUND"})
-        if path.endswith("/quote") and "code" not in request.url.params:
-            return httpx.Response(200, json=_fake_read(path, request.url.params))
-        if path.endswith("/quote"):
-            code = request.url.params["code"]
-            price = next(v[2] for v in FAKE_INSTRUMENTS.values() if v[0] == code)
-            now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-            currency = "USD" if ":" in code else "KRW"
-            return httpx.Response(
-                200,
-                json={
-                    "code": code,
-                    "price": price,
-                    "currency": currency,
-                    "observed_at": now,
-                },
-            )
-        if path.endswith(("/account", "/history", "/ranking", "/broker-status")):
-            reply = _fake_read(path, request.url.params)
-            # A scenario may set broker_us_error: the US part fails, Korea stays.
-            if "us" in reply and started.get("broker_us_error"):
-                reply = {**reply, "us": None, "us_error": started["broker_us_error"]}
-            return httpx.Response(200, json=reply)
-        if path.endswith("/orders"):
-            body = json.loads(request.content)
-            orders.append(body)
-            _log(started["started"], "BROKER ORDER", json.dumps(body))
-            if body["code"] == "005935":
-                return httpx.Response(
-                    200, json={"status": "UNKNOWN", "order_id": body["request_id"]}
-                )
-            return httpx.Response(
-                200,
-                json={
-                    "status": "ACCEPTED",
-                    "order_id": body["request_id"],
-                    "broker_order_no": f"{len(orders):010d}",
-                    "ordered_at": datetime.now(UTC).isoformat(),
-                },
-            )
-        return httpx.Response(404)
-
-    return httpx.AsyncClient(
-        base_url="https://broker.invalid", transport=httpx.MockTransport(handle)
-    )
-
-
-def _fake_read(path: str, params: httpx.QueryParams) -> dict[str, Any]:
-    """Fixed replies in the shapes of pia-broker's read routes."""
-
-    now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    position = {
-        "code": "005930",
-        "name": "삼성전자",
-        "quantity": 10,
-        "sellable_quantity": 10,
-        "average_price": 270000,
-        "current_price": 285500,
-        "valuation": 2855000,
-        "profit": 155000,
-        "profit_rate": 5.74,
-    }
-    if path.endswith("/broker-status"):
-        connection = {
-            "broker": "KIS",
-            "lifecycle_status": "PENDING",
-            "verification_status": "VERIFIED",
-            "verification_reason": None,
-        }
-        return {"connection": connection}
-    us_position = {
-        "code": "NAS:NVDA",
-        "name": "엔비디아",
-        "quantity": 2,
-        "sellable_quantity": 2,
-        "average_price": 180.25,
-        "current_price": 233.95,
-        "valuation": 467.9,
-        "profit": 107.4,
-        "profit_rate": 29.79,
-    }
-    if path.endswith("/account"):
-        if "code" in params and ":" in params["code"]:
-            buyable = {
-                "code": params["code"],
-                "currency": "USD",
-                "amount": 12.5,
-                "quantity": 0,
-                "unit_price": 233.95,
-                "after_exchange_quantity": 12,
-                "observed_at": now,
-            }
-            held = us_position if params["code"] == "NAS:NVDA" else None
-            return {"buyable": buyable, "position": held}
-        if "code" in params:
-            buyable = {
-                "code": params["code"],
-                "currency": "KRW",
-                "amount": 2855000,
-                "quantity": 10,
-                "unit_price": 285500,
-                "after_exchange_quantity": None,
-                "observed_at": now,
-            }
-            held = position if params["code"] == "005930" else None
-            return {"buyable": buyable, "position": held}
-        return {
-            "positions": [position],
-            "cash": 3000000,
-            "cash_d2": 2500000,
-            "total_valuation": 5855000,
-            "total_profit": 155000,
-            "observed_at": now,
-            "us": {
-                "currency": "USD",
-                "positions": [us_position],
-                "cash": 12.5,
-                "exchange_rate": 1344.2,
-                "observed_at": now,
-            },
-        }
-    series = next(
-        (
-            (kind, params[kind])
-            for kind in ("market", "macro", "commodity")
-            if kind in params
-        ),
-        None,
-    )
-    if series is not None and (
-        path.endswith("/quote")
-        or (path.endswith("/history") and series[1] not in ("kospi", "kosdaq"))
-    ):
-        # A market index, macro figure or commodity: fixed values in the broker's
-        # series shapes (pia-broker README 9).
-        kind, key = series
-        value = {
-            "us10y": 4.1234,
-            "usdkrw": 1384.5512,
-            "gold": 2650.4,
-            "wti": 71.23,
-        }.get(key, 6012.25)
-        unit_of = {
-            "us10y": "%",
-            "usdkrw": "KRW per USD",
-            "gold": "USD per troy ounce",
-            "wti": "USD per barrel",
-        }.get(key, "points")
-        if path.endswith("/quote"):
-            return {
-                kind: key,
-                "name": key.upper(),
-                "unit": unit_of,
-                "price": value,
-                "change": -0.031,
-                "change_rate": -0.75,
-                "observed_at": now,
-            }
-        return {
-            "data": "prices",
-            "code": None,
-            "market": None,
-            kind: key,
-            "name": key.upper(),
-            "price_unit": unit_of,
-            "period": params["period"],
-            "unit": _BAR_UNIT.get(params["period"], "day"),
-            "observed_at": now,
-            "rows": [
-                {
-                    "date": f"2026-09-{day:02d}",
-                    "open": value,
-                    "high": value,
-                    "low": value,
-                    "close": value,
-                    "volume": None,
-                    "trading_value": None,
-                }
-                for day in range(25, 21, -1)
-            ],
-        }
-    if path.endswith("/history") and ":" in params.get("code", ""):
-        # A US stock: prices only, in USD (investor flows are Korean only).
-        return {
-            "data": "prices",
-            "code": params["code"],
-            "market": None,
-            "price_unit": "USD",
-            "period": params["period"],
-            "unit": _BAR_UNIT.get(params["period"], "day"),
-            "observed_at": now,
-            "rows": [
-                {
-                    "date": f"2026-09-{day:02d}",
-                    "open": 250.1,
-                    "high": 255.2,
-                    "low": 248.05,
-                    "close": 251.3,
-                    "volume": 90000000,
-                    "trading_value": None,
-                }
-                for day in range(25, 21, -1)
-            ],
-        }
-    if path.endswith("/history"):
-        stock = "code" in params
-        if params["data"] == "investors":
-            flows = {
-                "individual_net_volume": -120000,
-                "individual_net_value": -34260,
-                "foreign_net_volume": 100000,
-                "foreign_net_value": 28550,
-                "institution_net_volume": 20000,
-                "institution_net_value": 5710,
-            }
-            rows = [
-                {
-                    "date": f"2026-09-{day:02d}",
-                    "close": 285500 if stock else 812.34,
-                    "change": 1500 if stock else 3.21,
-                    "flows": flows,
-                }
-                for day in range(25, 21, -1)
-            ]
-        else:
-            close = 285500 if stock else 2621.07
-            rows = [
-                {
-                    "date": f"2026-09-{day:02d}",
-                    "open": close,
-                    "high": close,
-                    "low": close,
-                    "close": close,
-                    # A market counts thousands of shares and millions of KRW.
-                    "volume": 1000000 if stock else 412345,
-                    "trading_value": 285500000000 if stock else 15234567,
-                }
-                for day in range(25, 21, -1)
-            ]
-        return {
-            "data": params["data"],
-            "code": params.get("code"),
-            "market": params.get("market"),
-            "price_unit": "KRW" if stock else "points",
-            "period": params["period"],
-            "unit": _BAR_UNIT.get(params["period"], "day"),
-            "observed_at": now,
-            "rows": rows,
-        }
-    figures = {
-        "market_cap": {"market_cap": 16135729, "market_cap_share": 23.84},
-        "foreign_buying": {"net_buy_value": 72542, "net_buy_volume": 254000},
-        "short_selling": {"short_volume": 1200000, "short_value": 342600000000},
-    }.get(params["by"], {})
-    # Enough distinct rows for any asked count, best first by the ranked figure.
-    us = params["market"] == "us"
-    names = (
-        (
-            "NVDA",
-            "AAPL",
-            "GOOGL",
-            "MSFT",
-            "AMZN",
-            "TSM",
-            "META",
-            "AVGO",
-            "TSLA",
-            "BRK/B",
-        )
-        if us
-        else (
-            "삼성전자",
-            "SK하이닉스",
-            "삼성전자우",
-            "LG에너지솔루션",
-            "삼성바이오로직스",
-        )
-    )
-    rows = []
-    for rank in range(30):
-        base = names[rank % len(names)]
-        name = base if rank < len(names) else f"{base} 계열{rank}"
-        rate = (
-            round(9.5 - rank * 0.3, 2)
-            if params["by"] != "losers"
-            else -round(9.5 - rank * 0.3, 2)
-        )
-        figures = (
-            {
-                "market_cap": (5800000000000 if us else 16135729)
-                - rank * (150000000000 if us else 400000)
-            }
-            if params["by"] == "market_cap"
-            else {
-                "trading_value": (24000000000 if us else 2400000000000)
-                - rank * 500000000
-            }
-            if params["by"] in ("volume", "trading_value") and us
-            else dict(figures)
-        )
-        rows.append(
-            {
-                "code": (
-                    f"{'NYS' if base in ('TSM', 'BRK/B') else 'NAS'}:{base}"
-                    if us
-                    else f"{rank + 1:06d}"
-                )
-                + ("" if rank < len(names) or not us else str(rank)),
-                "name": name,
-                "price": 200.5 + rank if us else 285500 - rank * 1000,
-                "change": 1.25 if us else 1500,
-                "change_rate": rate,
-                "volume": 1000000 * (30 - rank),  # best first, like the ranked figure
-                "figures": figures,
-            }
-        )
-    if us:
-        return {
-            "by": params["by"],
-            "market": "us",
-            "currency": "USD",
-            "observed_at": now,
-            "rows": rows,
-        }
-    reply = {
-        "by": params["by"],
-        "market": params["market"],
-        "currency": "KRW",
-        "observed_at": now,
-        "rows": rows,
-    }
-    if params["by"] == "short_selling":
-        reply |= {"period": params["period"], "basis_dates": ["20260922", "20260926"]}
-    return reply
-
-
-def _filled(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Broker arguments as the tool runs them, defaults included; {} if it would not run."""
-
-    if name != "broker":
-        return arguments
-    try:
-        filled = _resolve(arguments)
-    except _ArgumentProblem:
-        return {}
-    # The chosen target under its own argument name, as a scenario expects it.
-    kind, value = filled.pop("target", (None, None))
-    if kind is not None:
-        filled[kind] = value
-    return filled
-
-
 # Scenario keys that make a step checked; a step with none of them is observed.
 _CHECK_KEYS = frozenset(
     {
@@ -666,7 +216,6 @@ _CHECK_KEYS = frozenset(
         "expect_memory",
         "expect_choices",
         "then",
-        "expect_sql",
         "uses",
         "answer_includes",
         "answer_excludes",
@@ -708,12 +257,9 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
         wanted = scenario["expect_args"].items()
         ok = ok and any(
             name == expect
-            and all(_filled(name, arguments).get(k) == v for k, v in wanted)
+            and all(arguments.get(k) == v for k, v in wanted)
             for name, arguments in record.first_calls
         )
-    if expect == "broker":  # a broker lookup must not start an order
-        used = {name for step in record.steps for name in step.split("+")}
-        ok = ok and not _EXECUTION_TOOLS & used
     if "expect_memory" in scenario:
         ok = ok and record.memory == scenario["expect_memory"]
     if "expect_choices" in scenario:
@@ -723,13 +269,6 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
     used = {name for step in record.steps for name in step.split("+")}
     ok = ok and not set(scenario.get("forbid", ())) & used
     ok = ok and set(scenario.get("uses", ())) <= used
-    # market_feed: each named word appears in some query the model wrote.
-    queries = " ".join(
-        str(arguments.get("sql", "")).lower()
-        for name, arguments in record.all_calls
-        if name == "market_feed_search"
-    )
-    ok = ok and all(word.lower() in queries for word in scenario.get("expect_sql", ()))
     ok = ok and all(
         text in record.answer for text in scenario.get("answer_includes", ())
     )
@@ -740,27 +279,6 @@ def _check(scenario: dict[str, Any], record: Record) -> str:
         word in record.memory_text for word in scenario.get("memory_excludes", ())
     )
     return "PASS" if ok else "CHECK"
-
-
-def _fake_daily(state: dict[str, Any]) -> ReadToolDefinition:
-    """Only published fake data; PIA owns the real store and display functions."""
-    async def execute(user_key, call, inputs):
-        del user_key, call, inputs
-        day = (datetime.now(UTC) + timedelta(hours=9)).date()
-        if state.get("daily_yesterday"):
-            day -= timedelta(days=1)
-        return ReadToolResult(
-            f"[Market Daily · {day.month}월 {day.day}일 ({'월화수목금토일'[day.weekday()]})]\n시장 흐름과 주요 소식\n"
-            "코스피 2,600 (+0.5%)\n주요 소식: 반도체 업황 개선 기대.\n"
-            f"전체 보기: https://member.example/daily/issues/{day.isoformat()}-{'A' * 43}.html"
-        )
-    return ReadToolDefinition(
-        name="market_daily",
-        description=("Read the latest published Market Daily summary and full-page link. "
-                     "Today's KST issue or yesterday's; keep its actual date. No arguments."),
-        arguments_schema={"type": "object", "properties": {}, "additionalProperties": False},
-        execute=execute,
-    )
 
 
 async def run(
@@ -806,29 +324,9 @@ async def run(
     _instrument_extract(state, extractor)
     search_tools = (logged(news.tool()), logged(search.tool()))
     store = InMemoryConversationStore()
-    orders: list[dict[str, Any]] = []
-    execution_tools = ()
-    broker_tools = ()
-    broker_client = None
-    if scenario_set in ("execution", *_BROKER_SETS):
-        broker_client = _fake_broker(state, orders)
-        execution_tools = (
-            BrokerOrderTool(
-                base_url="https://broker.invalid", client=broker_client
-            ).tool(),
-        )
-    if scenario_set in _BROKER_SETS:
-        broker_tools = (
-            logged_result(
-                BrokerReadTool(
-                    base_url="https://broker.invalid", client=broker_client
-                ).tool()
-            ),
-        )
-
     financials_client = None
     financial_tools = ()
-    if scenario_set in ("financials", "market_feed", *_ONBOARDING_SETS):
+    if scenario_set == "financials":
         financials_client = fake_financials_client()
         financial_tools = (
             logged_result(
@@ -839,14 +337,6 @@ async def run(
                 ).tool()
             ),
         )
-
-    feed = None
-    feed_tools = ()
-    if scenario_set in ("market_feed", *_ONBOARDING_SETS):
-        feed = MarketFeedSearchTool(fetch=fake_feed_fetch(state))
-        feed_tools = (logged_result(feed.tool()),)
-
-    daily_tools = (logged_result(_fake_daily(state)),) if scenario_set in _ONBOARDING_SETS else ()
 
     async def deliver(user_key: str, text: str, choices: Choices | None) -> None:
         print("  ----- answer -----\n" + text + "\n  ------------------", flush=True)
@@ -867,24 +357,11 @@ async def run(
         compactor=TokenCompactor(store, model.summarize),
         generate_reply=model.generate_reply,
         deliver=deliver,
-        system_prompt=SYSTEM_PROMPT
-        + (ORDER_PROMPT if scenario_set in ("execution", *_BROKER_SETS) else "")
-        + (BROKER_READ_PROMPT if scenario_set in _BROKER_SETS else "")
-        + (MARKET_FEED_PROMPT if scenario_set in ("market_feed", *_ONBOARDING_SETS) else "")
-        + (f"\n\n{extra_prompt}" if extra_prompt else ""),
+        system_prompt=SYSTEM_PROMPT + (f"\n\n{extra_prompt}" if extra_prompt else ""),
         token_budget=budget,
         model_id=model_id,
         explicit_memory_failure_notice="(메모리 변경에 실패했습니다.)",
-        read_tools=(
-            # PIA's order: the feed comes before the search tools.
-            *feed_tools,
-            *search_tools,
-            extractor.tool(),
-            *broker_tools,
-            *financial_tools,
-            *daily_tools,
-        ),
-        execution_tools=execution_tools,
+        read_tools=(*search_tools, extractor.tool(), *financial_tools),
     )
     rows = []
     try:
@@ -895,10 +372,6 @@ async def run(
                 continue
             print(f"\n===== {scenario['id']}: {scenario['message']}", flush=True)
             state["record"], state["started"] = Record(), time.monotonic()
-            state["broker_us_error"] = scenario.get("broker_us_error")
-            state["broker_not_connected"] = scenario.get("broker_not_connected")
-            state["feed_down"] = scenario.get("feed_down", False)
-            state["daily_yesterday"] = scenario.get("daily_yesterday", False)
             first = asyncio.create_task(
                 orchestrator.submit(user_key=USER, message=scenario["message"])
             )
@@ -911,12 +384,10 @@ async def run(
                         orchestrator.submit(user_key=USER, message=scenario["then"])
                     )
                 )
-            sent_before = len(orders)
             results = await asyncio.gather(*tasks)
             record: Record = state["record"]
             memory = store.get_memory(USER)
             record.memory_text = memory.memory_text if memory else ""
-            record.orders_sent = len(orders) - sent_before
             _log(state["started"], "RESULT", " ".join(str(r.status) for r in results))
             _log(
                 state["started"],
@@ -937,8 +408,6 @@ async def run(
                 )
             if any(result.compaction_failed for result in results):
                 _log(state["started"], "COMPACTION", "failed")
-            if scenario_set in ("execution", *_BROKER_SETS):
-                _log(state["started"], "ORDERS SENT", str(len(orders)))
             rows.append(
                 (
                     scenario["id"],
@@ -958,12 +427,8 @@ async def run(
         await news.aclose()
         await extractor.aclose()
         await model.aclose()
-        if broker_client is not None:
-            await broker_client.aclose()
         if financials_client is not None:
             await financials_client.aclose()
-        if feed is not None:
-            await feed.aclose()
 
     print(
         "\n===== summary (id | expect | model steps | check | time"
